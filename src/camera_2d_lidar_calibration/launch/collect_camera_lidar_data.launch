@@ -1,0 +1,26 @@
+<launch>
+    <!-- <node name="ydlidar_node"  pkg="ydlidar"  type="ydlidar_node" output="screen" respawn="false" >
+        <param name="port"         type="string" value="/dev/ttyS4"/>  
+        <param name="frame_id"     type="string" value="laser"/>
+        <param name="resolution_fixed"    type="bool"   value="true"/>
+        <param name="auto_reconnect"    type="bool"   value="true"/>
+        <param name="reversion"    type="bool"   value="true"/>
+        <param name="angle_min"    type="double" value="-180" />
+        <param name="angle_max"    type="double" value="180" />
+        <param name="range_min"    type="double" value="0.08" />
+        <param name="range_max"    type="double" value="4.0" />
+        <param name="ignore_array" type="string" value="" />
+        <param name="samp_rate"    type="int"    value="9"/>
+        <param name="frequency"    type="double" value="12"/>
+        <remap from="scan" to="scan" />
+  </node>
+    <node name="ucar_camera" pkg="ucar_camera" type="ucar_camera.py" output="screen"/> -->
+    <node name="collect_camera_lidar_data" pkg="camera_2d_lidar_calibration" type="collect_camera_lidar_data.py" output="screen">
+        <param name="image_topic" value="/ucar_camera/image_raw" />
+        <param name="config_file" value="$(find camera_2d_lidar_calibration)/config/config.yaml" />
+        <param name="output_file" value="$(find camera_2d_lidar_calibration)/data/data.txt" />
+    </node>
+
+    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find camera_2d_lidar_calibration)/rviz/show.rviz" />
+
+</launch>

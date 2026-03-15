@@ -1,0 +1,6 @@
+# SetGoal.srv
+float64 x  # 目标点的 x 坐标
+float64 y  # 目标点的 y 坐标
+float64 yaw  # 目标点的欧拉角（绕 Z 轴旋转角度，单位：弧度）
+---
+bool success  # 服务响应，表示是否成功
