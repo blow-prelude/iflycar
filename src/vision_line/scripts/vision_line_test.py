@@ -89,11 +89,27 @@ class ImageProcess:
                 self.frame = cv2.imread(self.img_path)
             else:
                 self.frame = self.cap.get_picture()
+            if self.frame is not None and (
+                self.frame.shape[0] >= 640 or self.frame.shape[1] >= 480
+            ):
+                # 将图片按比例缩小，使宽和高都不超过640和480
+                h, w = self.frame.shape[:2]
+                scale = min(640 / h, 480 / w)
+                new_h = int(h * scale)
+                new_w = int(w * scale)
+                self.frame = cv2.resize(
+                    self.frame, (new_w, new_h), interpolation=cv2.INTER_AREA
+                )
+
             grey = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
             binary = cv2.threshold(grey, 100, 200, cv2.THRESH_BINARY)[1]
-            kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
-            erode = cv2.erode(binary, kernel, iterations=2)  # 用腐消除图像中较亮的区域
-            return erode
+            # kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+            # erode = cv2.erode(binary, kernel, iterations=2)  # 用腐消除图像中较亮的区域
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            close = cv2.morphologyEx(
+                binary, cv2.MORPH_CLOSE, kernel, iterations=3
+            )  # 用闭运算消除图像中较暗的区域
+            return close
         except Exception as e:
             logging.error(f"Error occurred during image processing: {e}")
 
@@ -101,7 +117,7 @@ class ImageProcess:
         """从图像的中线往两边搜索，获取赛道边线"""
         mid_x = img.shape[1] // 2
         # 从图像下方（靠近车辆）开始搜索
-        up_ratio = 0.4
+        up_ratio = 0.1
         down_ratio = 0.9
         try:
             for j in range(
@@ -110,29 +126,43 @@ class ImageProcess:
                 left_f, right_f = 0, 0
                 # 左侧赛道线
                 for i in range(mid_x, -1, -1):
-                    if img[j, i] == 255 and img[j, i - 1] == 0:
+                    if i <= 1:
+                        break
+                    if img[j, i] != 0 and img[j, i - 1] == 0:
+                        logging.info(
+                            f"find left line at {i}, {j} , value : {img[j, i]}"
+                        )
                         left_f = 1
                         # 如果列表为空，则直接添加从黑到白的跳变点；否则要判断是否和上一个边界点连续
                         if len(self.left_line) == 0:
                             self.left_line.append((i, j))
                         else:
                             if (
-                                abs(self.left_line[len(self.left_line) - 1][0] - i) < 3
+                                abs(self.left_line[len(self.left_line) - 1][0] - i) < 10
                                 and abs(self.left_line[len(self.left_line) - 1][1] - j)
-                                < 3
+                                < 5
                             ):
                                 self.left_line.append((i, j))
+                            else:
+                                logging.info(
+                                    f"jump too far at {i}, {j} , last point : {self.left_line[len(self.left_line) - 1]}"
+                                )
 
                 # 右侧赛道线
                 for i in range(mid_x, img.shape[1], 1):
-                    if img[j, i] == 255 and img[j, i + 1] == 0:
+                    if i >= img.shape[1] - 1:
+                        break
+                    if img[j, i] != 0 and img[j, i + 1] == 0:
+                        logging.debug(
+                            f"find right line at {i}, {j} , value : {img[j, i]}"
+                        )
                         right_f = 1
                         if len(self.right_line) == 0:
                             self.right_line.append((i, j))
                         else:
                             if (
                                 abs(self.right_line[len(self.right_line) - 1][0] - i)
-                                < 3
+                                < 10
                                 and abs(
                                     self.right_line[len(self.right_line) - 1][1] - j
                                 )
@@ -145,7 +175,7 @@ class ImageProcess:
                     mid_x = (
                         self.left_line[len(self.left_line) - 1][0]
                         + self.right_line[len(self.right_line) - 1][0]
-                    ) / 2
+                    ) // 2
                     self.mid_line.append((mid_x, j))
                     left_f = 0
                     right_f = 0
@@ -174,9 +204,7 @@ class ImageProcess:
 
 
 def main():
-    up_ratio = 0.4
-    down_ratio = 0.9
-    imgprocess = ImageProcess(r"D:\programs\ucar_ws\src\vision_line\scripts\test1.png")
+    imgprocess = ImageProcess(r"D:\programs\ucar_ws\src\vision_line\scripts\test3.jpg")
     img = imgprocess.preprocess()
     cv2.imshow("img", img)
     imgprocess.get_side_line(img)
