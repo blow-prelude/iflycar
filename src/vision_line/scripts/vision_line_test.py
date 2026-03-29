@@ -71,11 +71,19 @@ class CameraCapture:
 
 
 class ImageProcess:
-    def __init__(self, img_path=None):
-        if img_path is None:
+    def __init__(self, img_path=None, use_camera=False):
+        """
+        初始化图像处理对象
+
+        Args:
+            img_path: 图片路径，如果提供则从图片读取
+            use_camera: 是否使用摄像头，默认False
+        """
+        if use_camera:
             self.cap = CameraCapture(
                 CameraConfig.INDEX, CameraConfig.WIDTH, CameraConfig.HEIGHT
             )
+            self.img_path = None
         else:
             self.cap = None
             self.img_path = img_path
@@ -90,16 +98,29 @@ class ImageProcess:
     def preprocess(self):
         """做预处理，得到二值化的图像"""
         try:
-            if self.cap is None:
-                self.frame = cv2.imread(self.img_path)
-            else:
-                self.frame = self.cap.get_picture()
-            if self.frame is not None and (
-                self.frame.shape[0] >= 640 or self.frame.shape[1] >= 480
-            ):
+            # 如果frame已经设置好（视频处理模式），直接使用
+            if self.frame is None:
+                if self.cap is not None:
+                    # 使用摄像头
+                    self.frame = self.cap.get_picture()
+                elif self.img_path is not None:
+                    # 从图片文件读取
+                    self.frame = cv2.imread(self.img_path)
+                else:
+                    # 既没有摄像头也没有图片路径
+                    logging.error("No image source available")
+                    return None
+
+            # 检查frame是否有效
+            if self.frame is None:
+                logging.error("Failed to get frame")
+                return None
+
+            # 如果图片太大，按比例缩小
+            if self.frame.shape[0] >= 240 or self.frame.shape[1] >= 320:
                 # 将图片按比例缩小，使宽和高都不超过640和480
                 h, w = self.frame.shape[:2]
-                scale = min(640 / h, 480 / w)
+                scale = min(240 / h, 320 / w)
                 new_h = int(h * scale)
                 new_w = int(w * scale)
                 self.frame = cv2.resize(
@@ -117,6 +138,7 @@ class ImageProcess:
             return close
         except Exception as e:
             logging.error(f"Error occurred during image processing: {e}")
+            return None
 
     def get_side_line(self, img):
         """从图像的中线往两边搜索，获取赛道边线"""
@@ -125,6 +147,13 @@ class ImageProcess:
         up_ratio = 0.55
         down_ratio = 0.95
         try:
+            # 清空列表
+            self.left_line.clear()
+            self.right_line.clear()
+            self.supple_left_line.clear()
+            self.supple_right_line.clear()
+            self.mid_line = []
+            self.fit_mid_line = []
             for j in range(
                 int(img.shape[0] * down_ratio), int(img.shape[0] * up_ratio), -1
             ):
@@ -312,7 +341,7 @@ class ImageProcess:
                 x = int(np.polyval(coefficients, y))
                 self.fit_mid_line.append((x, y))
 
-            logging.info(
+            logging.debug(
                 f"Polynomial fitting completed: {len(self.fit_mid_line)} points, "
                 f"coefficients: {coefficients}"
             )
@@ -322,7 +351,7 @@ class ImageProcess:
     def draw_line(self):
         """绘制边线"""
         try:
-            logging.info(
+            logging.debug(
                 f"length of left_line: {len(self.supple_left_line)} , lenth of right_line: {len(self.supple_right_line)}"
             )
             if self.frame is None:
@@ -561,31 +590,90 @@ class ImageProcess:
 
 
 def main():
-    imgprocess = ImageProcess(r"D:\programs\ucar_ws\src\vision_line\pictures\test3.png")
-    img = imgprocess.preprocess()
-    cv2.imshow("img", img)
+    # 视频文件路径
+    video_path = r"D:\programs\ucar_ws\src\vision_line\videos\test1.avi"
 
-    ##  绘制直方图
-    # hist_img_lower, white_counts, peaks = imgprocess.plot_column_histogram(
-    #     img, 0.6, 0.9
-    # )
-    # if hist_img_lower is not None:
-    #     cv2.imshow("histogram_lower_half", hist_img_lower)
-    #     logging.info(f"Detected peaks at x positions: {peaks}")
-    #     if len(peaks) >= 2:
-    #         left_peak = peaks[0]
-    #         right_peak = peaks[-1]
-    #         center = (left_peak + right_peak) // 2
-    #         logging.info(
-    #             f"Left line: {left_peak}, Right line: {right_peak}, Center: {center}"
-    #         )
+    # 打开视频文件
+    cap = cv2.VideoCapture(video_path)
 
-    imgprocess.get_side_line(img)
-    imgprocess.fit_polynomial()
-    canvas = imgprocess.draw_line()
-    cv2.imshow("processed_img", canvas)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    if not cap.isOpened():
+        logging.error(f"Cannot open video: {video_path}")
+        return
+
+    logging.info(f"Video opened: {video_path}")
+    logging.info(
+        f"Video properties: {cap.get(cv2.CAP_PROP_FRAME_WIDTH)}x{cap.get(cv2.CAP_PROP_FRAME_HEIGHT)}, {cap.get(cv2.CAP_PROP_FPS)} FPS, {cap.get(cv2.CAP_PROP_FRAME_COUNT)} frames"
+    )
+
+    # 创建ImageProcess对象（不传入图片路径，用于处理视频帧）
+    imgprocess = ImageProcess()
+    imgprocess.cap = None  # 确保不使用摄像头
+
+    frame_count = 0
+    paused = False
+
+    try:
+        while True:
+            # 如果暂停，只显示当前帧
+            if not paused:
+                ret, frame = cap.read()
+                if not ret:
+                    logging.info("Video processing completed")
+                    break
+
+                frame_count += 1
+                if frame_count % 30 == 0:  # 每30帧打印一次进度
+                    logging.info(
+                        f"Processing frame {frame_count}/{int(cap.get(cv2.CAP_PROP_FRAME_COUNT))}"
+                    )
+
+                # 保存当前帧到imgprocess
+                imgprocess.frame = frame
+
+                # 预处理
+                binary_img = imgprocess.preprocess()
+                if binary_img is None:
+                    logging.warning(f"Frame {frame_count} preprocessing failed")
+                    continue
+
+                imgprocess.get_side_line(binary_img)
+
+                # 多项式拟合
+                imgprocess.fit_polynomial()
+
+                # 绘制结果
+                canvas = imgprocess.draw_line()
+
+                # 显示二值化图像
+                if binary_img is not None:
+                    cv2.imshow("binary", binary_img)
+
+                # 显示处理结果
+                if canvas is not None:
+                    cv2.imshow("processed_img", canvas)
+
+            # 按键控制
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):  # q键退出
+                logging.info(f"User quit at frame {frame_count}")
+                break
+            elif key == ord(" "):  # 空格键暂停/继续
+                paused = not paused
+                logging.info(
+                    f"Video {'paused' if paused else 'resumed'} at frame {frame_count}"
+                )
+            elif key == ord("s"):  # s键单帧前进（暂停时）
+                if paused:
+                    paused = False
+                    logging.info(f"Step forward at frame {frame_count}")
+
+    except KeyboardInterrupt:
+        logging.info(f"Interrupted by user at frame {frame_count}")
+
+    finally:
+        # 释放资源
+        cap.release()
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
