@@ -172,15 +172,16 @@ class ImageProcess:
                             self.left_line.append((i, j))
                         else:
                             if (
-                                abs(self.left_line[len(self.left_line) - 1][0] - i) < 10
+                                abs(self.left_line[len(self.left_line) - 1][0] - i) < 30
                                 and abs(self.left_line[len(self.left_line) - 1][1] - j)
-                                < 5
+                                < 10
                             ):
                                 self.left_line.append((i, j))
                             else:
-                                logging.debug(
+                                logging.info(
                                     f"jump too far at {i}, {j} , last point : {self.left_line[len(self.left_line) - 1]}"
                                 )
+                        break  # 找到边线后break
 
                 # 右侧赛道线
                 for i in range(mid_x, img.shape[1], 1):
@@ -196,17 +197,18 @@ class ImageProcess:
                         else:
                             if (
                                 abs(self.right_line[len(self.right_line) - 1][0] - i)
-                                < 10
+                                < 30
                                 and abs(
                                     self.right_line[len(self.right_line) - 1][1] - j
                                 )
-                                < 5
+                                < 10
                             ):
                                 self.right_line.append((i, j))
                             else:
-                                logging.debug(
-                                    f"jump too far at {i}, {j} , last point : {self.left_line[len(self.left_line) - 1]}"
+                                logging.info(
+                                    f"jump too far at {i}, {j} , last point : {self.right_line[len(self.right_line) - 1]}"
                                 )
+                        break
 
                 if left_f == 1 and right_f == 1:
                     # 线性补值：对于间隔较大的两个像素点，计算斜率并填充中间点
