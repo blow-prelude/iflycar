@@ -89,10 +89,10 @@ def rotate_image(image_path, direction="clockwise", angle=90, output_path=None):
 if __name__ == "__main__":
     # ========== 参数设置 ==========
     # 输入图片路径
-    image_path = r"src\vision_line\scripts\raw1.png"
+    image_path = r"src\vision_line\scripts\test3.jpg"
 
     # 旋转方向: 'clockwise' 顺时针, 'counterclockwise' 逆时针
-    direction = "clockwise"
+    direction = "counterclockwise"
 
     # 旋转角度 (0-360)
     angle = 90
