@@ -140,6 +140,83 @@ class ImageProcess:
             logging.error(f"Error occurred during image processing: {e}")
             return None
 
+    def _linear_interpolation(self, line_points):
+        """对边线点进行线性插值，填充间隔过大的点
+
+        Args:
+            line_points: 原始边线点列表
+
+        Returns:
+            插值后的边线点列表
+        """
+        if len(line_points) < 2:
+            return line_points.copy()
+
+        supple_line = line_points.copy()
+        i = 0
+        while i < len(supple_line) - 1:
+            x1, y1 = supple_line[i]
+            x2, y2 = supple_line[i + 1]
+            dx = abs(x2 - x1)
+            dy = abs(y2 - y1)
+
+            # 如果两点间距离过大，进行线性插值
+            if dx > 10 or dy > 5:
+                # 计算需要插入的点数量（每隔3-5个像素填充一个点）
+                num_points = max(dx // 5, dy // 3, 2)
+
+                # 在两点之间进行线性插值
+                for t in range(1, num_points + 1):
+                    ratio = t / (num_points + 1)
+                    new_x = int(x1 + (x2 - x1) * ratio)
+                    new_y = int(y1 + (y2 - y1) * ratio)
+                    # 确保新点在两点之间
+                    if min(y1, y2) < new_y < max(y1, y2):
+                        supple_line.insert(i + t, (new_x, new_y))
+
+                i += num_points + 1
+            else:
+                i += 1
+
+        return supple_line
+
+    def _fill_boundary(self, left_line, right_line, img_shape):
+        """将边线延伸到图像边界，防止计算中线时越界
+
+        Args:
+            left_line: 左边线点列表
+            right_line: 右边线点列表
+            img_shape: 图像形状 (height, width)
+
+        Returns:
+            (填充后的左边线, 填充后的右边线)
+        """
+        img_height, img_width = img_shape[0], img_shape[1]
+
+        # 左边线边界填充
+        if len(left_line) > 0:
+            bottom_point = left_line[0]
+            bottom_y = bottom_point[1]
+            # 从图像底部向上延伸到第一个点
+            temp_left_line = []
+            for j1 in range(img_height - 1, bottom_y, -2):
+                # 左边线延伸到图像左边界 (x=0)
+                temp_left_line.append((0, j1))
+            left_line = temp_left_line + left_line
+
+        # 右边线边界填充
+        if len(right_line) > 0:
+            bottom_point = right_line[0]
+            bottom_y = bottom_point[1]
+            # 从图像底部向上延伸到第一个点
+            temp_right_line = []
+            for j1 in range(img_height - 1, bottom_y, -2):
+                # 右边线延伸到图像右边界
+                temp_right_line.append((img_width - 1, j1))
+            right_line = temp_right_line + right_line
+
+        return left_line, right_line
+
     def get_side_line(self, img):
         """从图像的中线往两边搜索，获取赛道边线"""
         mid_x = img.shape[1] // 2
@@ -157,7 +234,6 @@ class ImageProcess:
             for j in range(
                 int(img.shape[0] * down_ratio), int(img.shape[0] * up_ratio), -1
             ):
-                left_f, right_f = 0, 0
                 # 左侧赛道线
                 for i in range(mid_x, -1, -1):
                     if i <= 1:
@@ -166,7 +242,6 @@ class ImageProcess:
                         logging.debug(
                             f"find left line at {i}, {j} , value : {img[j, i]}"
                         )
-                        left_f = 1
                         # 如果列表为空，则直接添加从黑到白的跳变点；否则要判断是否和上一个边界点连续
                         if len(self.left_line) == 0:
                             self.left_line.append((i, j))
@@ -191,7 +266,6 @@ class ImageProcess:
                         logging.debug(
                             f"find right line at {i}, {j} , value : {img[j, i]}"
                         )
-                        right_f = 1
                         if len(self.right_line) == 0:
                             self.right_line.append((i, j))
                         else:
@@ -210,100 +284,15 @@ class ImageProcess:
                                 )
                         break
 
-                if left_f == 1 and right_f == 1:
-                    # 线性补值：对于间隔较大的两个像素点，计算斜率并填充中间点
-                    left_before_supple = len(self.left_line)
-                    right_before_supple = len(self.right_line)
+                if len(self.left_line) > 0 and len(self.right_line) > 0:
+                    # 线性插值
+                    self.supple_left_line = self._linear_interpolation(self.left_line)
+                    self.supple_right_line = self._linear_interpolation(self.right_line)
 
-                    # 对左边线进行线性插值补充
-                    if left_before_supple >= 2:
-                        self.supple_left_line = self.left_line.copy()
-                        i = 0
-                        while i < len(self.supple_left_line) - 1:
-                            x1, y1 = self.supple_left_line[i]
-                            x2, y2 = self.supple_left_line[i + 1]
-                            dx = abs(x2 - x1)
-                            dy = abs(y2 - y1)
-
-                            # 如果两点间距离过大，进行线性插值
-                            if dx > 10 or dy > 5:
-                                # 计算需要插入的点数量（每隔3-5个像素填充一个点）
-                                num_points = max(dx // 5, dy // 3, 2)
-
-                                # 在两点之间进行线性插值
-                                for t in range(1, num_points + 1):
-                                    ratio = t / (num_points + 1)
-                                    new_x = int(x1 + (x2 - x1) * ratio)
-                                    new_y = int(y1 + (y2 - y1) * ratio)
-                                    # 确保新点在两点之间
-                                    if min(y1, y2) < new_y < max(y1, y2):
-                                        self.supple_left_line.insert(
-                                            i + t, (new_x, new_y)
-                                        )
-
-                                i += num_points + 1
-                            else:
-                                i += 1
-                    else:
-                        self.supple_left_line = self.left_line.copy()
-
-                    # 对右边线进行线性插值补充
-                    if right_before_supple >= 2:
-                        self.supple_right_line = self.right_line.copy()
-                        i = 0
-                        while i < len(self.supple_right_line) - 1:
-                            x1, y1 = self.supple_right_line[i]
-                            x2, y2 = self.supple_right_line[i + 1]
-                            dx = abs(x2 - x1)
-                            dy = abs(y2 - y1)
-
-                            # 如果两点间距离过大，进行线性插值
-                            if dx > 10 or dy > 5:
-                                # 计算需要插入的点数量
-                                num_points = max(dx // 5, dy // 3, 2)
-
-                                # 在两点之间进行线性插值
-                                for t in range(1, num_points + 1):
-                                    ratio = t / (num_points + 1)
-                                    new_x = int(x1 + (x2 - x1) * ratio)
-                                    new_y = int(y1 + (y2 - y1) * ratio)
-                                    if min(y1, y2) < new_y < max(y1, y2):
-                                        self.supple_right_line.insert(
-                                            i + t, (new_x, new_y)
-                                        )
-
-                                i += num_points + 1
-                            else:
-                                i += 1
-                    else:
-                        self.supple_right_line = self.right_line.copy()
-
-                    # 将图像边界填充为白色，防止计算中线时越界
-                    # 在列表最前端加上图像边界的像素点，使得赛道一直延伸到底端
-                    if len(self.supple_left_line) > 0:
-                        bottom_point = self.supple_left_line[0]
-                        bottom_y = bottom_point[1]
-                        # 从图像底部（img.shape[0]-1）向上延伸到第一个点
-                        temp_left_line = []
-                        for j1 in range(img.shape[0] - 1, bottom_y, -2):
-                            # 左边线延伸到图像左边界 (x=0)
-                            temp_left_line.append((0, j1))
-                        self.supple_left_line = temp_left_line + self.supple_left_line
-
-                    if len(self.supple_right_line) > 0:
-                        bottom_point = self.supple_right_line[0]
-                        bottom_y = bottom_point[1]
-                        # 从图像底部向上延伸到第一个点
-                        temp_right_line = []
-                        for j1 in range(img.shape[0] - 1, bottom_y, -2):
-                            # 右边线延伸到图像右边界
-                            temp_right_line.append((img.shape[1] - 1, j1))
-                        self.supple_right_line = (
-                            temp_right_line + self.supple_right_line
-                        )
-
-                    left_f = 0
-                    right_f = 0
+                    # 填充边界，使线段一直延伸到左右下角
+                    self.supple_left_line, self.supple_right_line = self._fill_boundary(
+                        self.supple_left_line, self.supple_right_line, img.shape
+                    )
 
             # 使用优化后的边线计算中线
             for j in range(
