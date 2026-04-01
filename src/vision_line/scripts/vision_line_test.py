@@ -547,9 +547,6 @@ class ImageProcess:
             right_x: 右边线x坐标
         """
         try:
-            if white_counts is None:
-                raise ValueError("white_counts is None")
-
             # 计算窗口的上下左右边界
             start_row_ratio = 0.6
             end_row_ratio = 0.9
