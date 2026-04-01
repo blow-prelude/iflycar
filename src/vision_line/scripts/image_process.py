@@ -2,13 +2,7 @@ import logging
 
 import cv2
 import numpy as np
-
-
-class CameraConfig:
-    INDEX = 0
-    WIDTH = 640
-    HEIGHT = 480
-
+from camera_capture import CameraCapture
 
 logging.basicConfig(
     level=logging.INFO,
@@ -16,58 +10,13 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-
-class CameraCapture:
-    def __init__(self, index=None, width=None, height=None) -> None:
-        """初始化摄像头
-
-        Args:
-            index: 摄像头索引，默认使用 CameraConfig.INDEX
-            width: 分辨率宽度，默认使用 CameraConfig.WIDTH
-            height: 分辨率高度，默认使用 CameraConfig.HEIGHT
-        """
-        idx = index if index is not None else CameraConfig.INDEX
-        w = width if width is not None else CameraConfig.WIDTH
-        h = height if height is not None else CameraConfig.HEIGHT
-
-        self.cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-
-        if not self.cap.isOpened():
-            logging.error("Cannot open camera.")
-            raise RuntimeError(f"Failed to open camera at index {idx}")
-
-    def get_picture(self):
-        """获取一帧图片并做预处理"""
-        ret, frame = self.cap.read()
-        if not ret:
-            logging.error("Failed to grab frame")
-            return None
-        return frame
-
-    def is_opened(self):
-        """检查摄像头是否已打开"""
-        return self.cap is not None and self.cap.isOpened()
-
-    def close(self):
-        """关闭摄像头"""
-        if self.cap is not None:
-            self.cap.release()
-            self.cap = None
-
-    def __enter__(self):
-        """上下文管理器入口"""
-        return self
-
-    def __exit__(self, _exc_type, _exc_val, _exc_tb):
-        """上下文管理器出口，自动释放资源"""
-        self.close()
-        return False
-
-    def __del__(self):
-        """析构函数，对象销毁时自动释放资源"""
-        self.close()
+transformation_matrix = np.array(
+    [
+        [-0.498345, -1.637252, 251.246087],
+        [-0.021773, 0.349689, -81.638093],
+        [-0.000241, -0.009225, 1.000000],
+    ]
+)
 
 
 class ImageProcess:
@@ -80,20 +29,29 @@ class ImageProcess:
             use_camera: 是否使用摄像头，默认False
         """
         if use_camera:
-            self.cap = CameraCapture(
-                CameraConfig.INDEX, CameraConfig.WIDTH, CameraConfig.HEIGHT
-            )
+            self.cap = CameraCapture(index=0, width=640, height=480)
             self.img_path = None
         else:
             self.cap = None
             self.img_path = img_path
         self.frame = None
+        self.canvas = None
         self.left_line = []
         self.right_line = []
         self.supple_left_line = []
         self.supple_right_line = []
         self.mid_line = []
         self.fit_mid_line = []
+
+        # 上一帧的边线信息（用于指导当前帧搜索）
+        self.prev_left_line = []  # 上一帧的左边线点列表
+        self.prev_right_line = []  # 上一帧的右边线点列表
+        self.prev_supple_left_line = []  # 上一帧优化后的左边线
+        self.prev_supple_right_line = []  # 上一帧优化后的右边线
+
+        # 搜索配置参数
+        self.search_range = 100  # 搜索范围（像素），向左/右搜索的最大距离
+        self.search_offset = 30  # 搜索偏移量（像素）
 
     def preprocess(self):
         """做预处理，得到二值化的图像"""
@@ -126,6 +84,7 @@ class ImageProcess:
                 self.frame = cv2.resize(
                     self.frame, (new_w, new_h), interpolation=cv2.INTER_AREA
                 )
+                self.canvas = self.frame.copy()
 
             grey = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
             binary = cv2.threshold(grey, 180, 255, cv2.THRESH_BINARY)[1]
@@ -139,6 +98,145 @@ class ImageProcess:
         except Exception as e:
             logging.error(f"Error occurred during image processing: {e}")
             return None
+
+    def get_canvas(self):
+        """获取用于绘制的画布（当前帧的副本）
+
+        Returns:
+            画布图像（frame的副本），如果frame为None则返回None
+        """
+        if self.frame is None:
+            logging.warning("Frame is None, cannot create canvas")
+            return None
+        return self.frame.copy()
+
+    def perspective_transform(self, img, matrix, output_size=None):
+        """对图像进行透视变换
+
+        Args:
+            matrix: 3x3透视变换矩阵
+            img: 原始图像（BGR格式）
+            output_size: 输出图像的尺寸 (width, height)，如果为None则使用原图像尺寸
+
+        Returns:
+            透视变换后的图像，如果变换失败则返回None
+        """
+        try:
+            if matrix is None:
+                logging.error("Perspective transform matrix is None")
+                return None
+
+            if img is None:
+                logging.error("Input image is None")
+                return None
+
+            # 如果没有指定输出尺寸，使用原图像尺寸
+            if output_size is None:
+                output_size = (img.shape[1], img.shape[0])  # (width, height)
+
+            # 执行透视变换
+            transformed_img = cv2.warpPerspective(
+                img,
+                matrix,
+                output_size,
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_REPLICATE,
+            )
+
+            logging.debug(
+                f"Perspective transform completed, output size: {output_size}"
+            )
+            return transformed_img
+
+        except Exception as e:
+            logging.error(f"Error occurred during perspective transform: {e}")
+            return None
+
+    def get_perspective_matrix(self, src_points, dst_points):
+        """根据源点和目标点计算透视变换矩阵
+
+        Args:
+            src_points: 源图像中的4个点，格式为 [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+            dst_points: 目标图像中的4个点，格式与src_points相同
+
+        Returns:
+            3x3透视变换矩阵，如果计算失败则返回None
+        """
+        try:
+            if len(src_points) != 4 or len(dst_points) != 4:
+                logging.error(
+                    "Source and destination points must contain exactly 4 points"
+                )
+                return None
+
+            # 转换为numpy数组并指定数据类型
+            src_pts = np.array(src_points, dtype=np.float32)
+            dst_pts = np.array(dst_points, dtype=np.float32)
+
+            # 计算透视变换矩阵
+            matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
+
+            logging.debug("Perspective matrix computed successfully")
+            return matrix
+
+        except Exception as e:
+            logging.error(f"Error occurred while computing perspective matrix: {e}")
+            return None
+
+    def _get_search_start_point(self, y_coord, prev_line, img_width, is_left=True):
+        """根据上一帧边线位置获取当前帧的搜索起点
+
+        Args:
+            y_coord: 当前搜索行的y坐标
+            prev_line: 上一帧的边线点列表
+            img_width: 图像宽度
+            is_left: 是否为左边线（True=左边线，False=右边线）
+
+        Returns:
+            int: 搜索起点的x坐标，如果没有上一帧信息则返回中线位置
+        """
+        # 如果没有上一帧信息，返回图像中线
+        if len(prev_line) == 0:
+            return img_width // 2
+
+        # 在上一帧边线中查找y坐标最接近的点
+        best_match = None
+        min_y_diff = float("inf")
+
+        for point in prev_line:
+            x, y = point
+            y_diff = abs(y - y_coord)
+            if y_diff < min_y_diff:
+                min_y_diff = y_diff
+                best_match = point
+
+        if best_match is not None:
+            prev_x, prev_y = best_match
+            # 左边线：从上一帧点的右侧偏移位置开始向左搜索
+            # 右边线：从上一帧点的左侧偏移位置开始向右搜索
+            if is_left:
+                start_x = prev_x + self.search_offset
+            else:
+                start_x = prev_x - self.search_offset
+
+            # 边界检查
+            start_x = max(0, min(start_x, img_width - 1))
+            return start_x
+
+        # 如果没有找到匹配点，返回中线
+        return img_width // 2
+
+    def _update_prev_frame_lines(self):
+        """在每帧处理完成后，更新上一帧的边线信息"""
+        # 只有当当前帧成功检测到边线时才更新
+        if len(self.left_line) > 0 and len(self.right_line) > 0:
+            self.prev_left_line = self.left_line.copy()
+            self.prev_right_line = self.right_line.copy()
+
+            # 同时保存优化后的边线，用于更精确的y坐标匹配
+            if len(self.supple_left_line) > 0 and len(self.supple_right_line) > 0:
+                self.prev_supple_left_line = self.supple_left_line.copy()
+                self.prev_supple_right_line = self.supple_right_line.copy()
 
     def _linear_interpolation(self, line_points):
         """对边线点进行线性插值，填充间隔过大的点
@@ -217,28 +315,70 @@ class ImageProcess:
 
         return left_line, right_line
 
-    def get_side_line(self, img):
-        """从图像的中线往两边搜索，获取赛道边线"""
+    def get_side_line_task_1(self, img, canvas, is_draw=False):
+        """从图像的中线往两边搜索，获取赛道边线
+
+        Args:
+            img: 输入的二值化图像
+            canvas: 用于绘制的画布图像
+            is_draw: 是否在canvas上绘制调试信息，默认为False
+        """
         mid_x = img.shape[1] // 2
         # 从图像下方（靠近车辆）开始搜索
         up_ratio = 0.55
-        down_ratio = 0.95
+        down_ratio = 0.90
         try:
             # 清空列表
             self.left_line.clear()
             self.right_line.clear()
             self.supple_left_line.clear()
             self.supple_right_line.clear()
-            self.mid_line = []
-            self.fit_mid_line = []
+            self.mid_line.clear()
+            self.fit_mid_line.clear()
+
+            # 确定使用哪组上一帧边线数据（优先使用优化后的边线）
+            use_prev_supple = (
+                len(self.prev_supple_left_line) > 0
+                and len(self.prev_supple_right_line) > 0
+            )
+            prev_left = (
+                self.prev_supple_left_line if use_prev_supple else self.prev_left_line
+            )
+            prev_right = (
+                self.prev_supple_right_line if use_prev_supple else self.prev_right_line
+            )
+
+            # 第一帧或边线丢失标志
+            is_first_frame = len(prev_left) == 0 or len(prev_right) == 0
+
+            if is_first_frame:
+                logging.info(
+                    "First frame or no previous frame data, using center line search"
+                )
+
             for j in range(
                 int(img.shape[0] * down_ratio), int(img.shape[0] * up_ratio), -1
             ):
                 # 左侧赛道线
-                for i in range(mid_x, -1, -1):
+                # 获取搜索起点
+                left_start_x = self._get_search_start_point(
+                    j, prev_left, img.shape[1], is_left=True
+                )
+                # 如果是第一帧，从中线开始搜索；否则从上一帧边线点右侧开始搜索
+                search_start = mid_x if is_first_frame else left_start_x
+
+                # 绘制左边线搜索起点（紫色）
+                if is_draw:
+                    cv2.circle(canvas, (search_start, j), 3, (255, 0, 255), -1)
+
+                # 计算搜索终点（避免搜索超出范围）
+                search_end_left = max(0, search_start - self.search_range)
+
+                found_left = False
+                for i in range(search_start, search_end_left, -1):
                     if i <= 1:
                         break
-                    if img[j, i] != 0 and img[j, i - 1] == 0:
+                    if img[j, i] == 0 and img[j, i - 1] != 0:
                         logging.debug(
                             f"find left line at {i}, {j} , value : {img[j, i]}"
                         )
@@ -247,22 +387,43 @@ class ImageProcess:
                             self.left_line.append((i, j))
                         else:
                             if (
-                                abs(self.left_line[len(self.left_line) - 1][0] - i) < 30
+                                abs(self.left_line[len(self.left_line) - 1][0] - i) < 50
                                 and abs(self.left_line[len(self.left_line) - 1][1] - j)
-                                < 10
+                                < 50
                             ):
                                 self.left_line.append((i, j))
+                                found_left = True
+                                break  # 找到边线后break
                             else:
                                 logging.info(
                                     f"jump too far at {i}, {j} , last point : {self.left_line[len(self.left_line) - 1]}"
                                 )
-                        break  # 找到边线后break
+
+                if not found_left and not is_first_frame:
+                    logging.debug(f"Left line not found at row {j} within search range")
 
                 # 右侧赛道线
-                for i in range(mid_x, img.shape[1], 1):
+                # 获取搜索起点
+                right_start_x = self._get_search_start_point(
+                    j, prev_right, img.shape[1], is_left=False
+                )
+                # 如果是第一帧，从中线开始搜索；否则从上一帧边线点左侧开始搜索
+                search_start = mid_x if is_first_frame else right_start_x
+
+                # 绘制右边线搜索起点（青色）
+                if is_draw:
+                    cv2.circle(canvas, (search_start, j), 3, (255, 255, 0), -1)
+
+                # 计算搜索终点（避免搜索超出范围）
+                search_end_right = min(
+                    img.shape[1] - 1, search_start + self.search_range
+                )
+
+                found_right = False
+                for i in range(search_start, search_end_right, 1):
                     if i >= img.shape[1] - 1:
                         break
-                    if img[j, i] != 0 and img[j, i + 1] == 0:
+                    if img[j, i] == 0 and img[j, i + 1] != 0:
                         logging.debug(
                             f"find right line at {i}, {j} , value : {img[j, i]}"
                         )
@@ -271,18 +432,24 @@ class ImageProcess:
                         else:
                             if (
                                 abs(self.right_line[len(self.right_line) - 1][0] - i)
-                                < 30
+                                < 50
                                 and abs(
                                     self.right_line[len(self.right_line) - 1][1] - j
                                 )
-                                < 10
+                                < 50
                             ):
                                 self.right_line.append((i, j))
+                                found_right = True
+                                break
                             else:
                                 logging.info(
                                     f"jump too far at {i}, {j} , last point : {self.right_line[len(self.right_line) - 1]}"
                                 )
-                        break
+
+                if not found_right and not is_first_frame:
+                    logging.debug(
+                        f"Right line not found at row {j} within search range"
+                    )
 
                 if len(self.left_line) > 0 and len(self.right_line) > 0:
                     # 线性插值
@@ -307,6 +474,9 @@ class ImageProcess:
 
         except Exception as e:
             logging.error(f"Error occurred during getting side lines : {e}")
+        finally:
+            # 更新上一帧的边线信息
+            self._update_prev_frame_lines()
 
     def fit_polynomial(self):
         """根据self.mid_line的原始值，用二次函数拟合曲线，返回曲线上的点的列表 self.fit_mid_line"""
@@ -339,29 +509,52 @@ class ImageProcess:
         except Exception as e:
             logging.error(f"Error occurred during polynomial fitting: {e}")
 
-    def draw_line(self):
-        """绘制边线"""
+    def draw_line(self, canvas):
+        """绘制边线、中线
+
+        Args:
+            canvas: 用于绘制的画布图像
+
+        Returns:
+            绘制后的画布图像，如果出错则返回None
+        """
         try:
-            logging.debug(
+            if canvas is None:
+                logging.error("Canvas is None")
+                return None
+
+            # 检查并转换为3通道BGR格式
+            if len(canvas.shape) == 2:
+                # 单通道图像（灰度图），转换为BGR
+                canvas = cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGR)
+                logging.debug("Canvas converted from grayscale to BGR")
+            elif canvas.shape[2] != 3:
+                # 非3通道图像，转换为BGR
+                canvas = cv2.cvtColor(
+                    canvas,
+                    cv2.COLOR_BGRA2BGR if canvas.shape[2] == 4 else cv2.COLOR_GRAY2BGR,
+                )
+                logging.debug(
+                    f"Canvas converted to BGR (original channels: {canvas.shape[2]})"
+                )
+
+            logging.info(
                 f"length of left_line: {len(self.supple_left_line)} , lenth of right_line: {len(self.supple_right_line)}"
             )
-            if self.frame is None:
-                raise ValueError("frame is None")
-            img = self.frame.copy()
             # 绘制优化后的左边线（红色）
             for i in range(len(self.supple_left_line)):
-                cv2.circle(img, self.supple_left_line[i], 2, (0, 0, 255), -1)
+                cv2.circle(canvas, self.supple_left_line[i], 2, (0, 0, 255), -1)
             # 绘制优化后的右边线（绿色）
             for i in range(len(self.supple_right_line)):
-                cv2.circle(img, self.supple_right_line[i], 2, (0, 255, 0), -1)
+                cv2.circle(canvas, self.supple_right_line[i], 2, (0, 0, 255), -1)
             for i in range(len(self.mid_line)):
-                cv2.circle(img, self.mid_line[i], 2, (255, 0, 0), -1)
+                cv2.circle(canvas, self.mid_line[i], 2, (255, 0, 0), -1)
             for i in range(len(self.fit_mid_line)):
-                cv2.circle(img, self.fit_mid_line[i], 2, (255, 255, 0), -1)
-            return img
+                cv2.circle(canvas, self.fit_mid_line[i], 2, (255, 255, 255), -1)
+            return canvas
         except Exception as e:
             logging.error(f"Error occurred during drawing lines: {e}")
-            return self.frame
+            return None
 
     def plot_column_histogram(
         self,
@@ -611,7 +804,7 @@ def main():
 
                 frame_count += 1
                 if frame_count % 30 == 0:  # 每30帧打印一次进度
-                    logging.info(
+                    logging.debug(
                         f"Processing frame {frame_count}/{int(cap.get(cv2.CAP_PROP_FRAME_COUNT))}"
                     )
 
@@ -624,13 +817,19 @@ def main():
                     logging.warning(f"Frame {frame_count} preprocessing failed")
                     continue
 
-                imgprocess.get_side_line(binary_img)
+                # 获取用于绘制的画布
+                canvas = imgprocess.get_canvas()
+                if canvas is None:
+                    logging.warning(f"Frame {frame_count} failed to get canvas")
+                    continue
+
+                # 获取边线（传入canvas用于绘制调试信息）
+                imgprocess.get_side_line_task_1(binary_img, canvas, is_draw=True)
 
                 # 多项式拟合
                 imgprocess.fit_polynomial()
 
-                # 绘制结果
-                canvas = imgprocess.draw_line()
+                canvas = imgprocess.draw_line(canvas)
 
                 # 显示二值化图像
                 if binary_img is not None:
@@ -639,6 +838,43 @@ def main():
                 # 显示处理结果
                 if canvas is not None:
                     cv2.imshow("processed_img", canvas)
+
+                # # 做透视变换
+                # perspective_img = imgprocess.perspective_transform(
+                #     binary_img, transformation_matrix
+                # )
+
+                # # 获取用于绘制的画布
+                # canvas = imgprocess.get_canvas()
+                # if canvas is None:
+                #     logging.warning(f"Frame {frame_count} failed to get canvas")
+                #     continue
+
+                # # 获取边线（传入canvas用于绘制调试信息）
+                # imgprocess.get_side_line(perspective_img, canvas, is_draw=False)
+
+                # # 多项式拟合
+                # imgprocess.fit_polynomial()
+
+                # # 绘制结果
+                # perspective_copy = perspective_img.copy()
+                # perspective_copy = imgprocess.draw_line(perspective_copy)
+
+                # original = imgprocess.get_canvas()
+                # if original is not None:
+                #     cv2.imshow("original", original)
+
+                # # 显示二值化图像
+                # if binary_img is not None:
+                #     cv2.imshow("binary", binary_img)
+
+                # # 显示透视变换图像
+                # if perspective_img is not None:
+                #     cv2.imshow("perspective", perspective_img)
+
+                # # 显示处理结果
+                # if perspective_copy is not None:
+                #     cv2.imshow("processed_img", perspective_copy)
 
             # 按键控制
             key = cv2.waitKey(1) & 0xFF
