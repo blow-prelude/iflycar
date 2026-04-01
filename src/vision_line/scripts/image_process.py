@@ -183,6 +183,19 @@ class ImageProcess:
             logging.error(f"Error occurred while computing perspective matrix: {e}")
             return None
 
+    def get_angle_np(self, p1, p2, p3):
+        """
+        计算由三点p1、p2、p3形成的夹角，p2为顶点，返回角度
+        return:
+            angle: 角度值，单位为度，保留两位小数
+        """
+        # 转向量
+        v1 = np.array(p2) - np.array(p1)
+        v2 = np.array(p3) - np.array(p1)
+
+        rad = np.arccos(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+        return np.round(np.degrees(rad), 2)
+
     def _get_search_start_point(self, y_coord, prev_line, img_width, is_left=True):
         """根据上一帧边线位置获取当前帧的搜索起点
 
@@ -314,6 +327,37 @@ class ImageProcess:
             right_line = temp_right_line + right_line
 
         return left_line, right_line
+
+    def fit_polynomial(self):
+        """根据self.mid_line的原始值，用二次函数拟合曲线，返回曲线上的点的列表 self.fit_mid_line"""
+        self.fit_mid_line = []
+        if len(self.mid_line) < 3:
+            logging.warning("Not enough points for polynomial fitting")
+            return
+
+        try:
+            # 提取y和x坐标（y为自变量，x为因变量）
+            y_points = np.array([point[1] for point in self.mid_line])
+            x_points = np.array([point[0] for point in self.mid_line])
+
+            # 二次多项式拟合: x = a*y^2 + b*y + c
+            coefficients = np.polyfit(y_points, x_points, 2)
+
+            # 生成y的序列（从最小y到最大y）
+            y_min = int(y_points.min())
+            y_max = int(y_points.max())
+
+            # 计算拟合曲线上的点
+            for y in range(y_min, y_max + 1):
+                x = int(np.polyval(coefficients, y))
+                self.fit_mid_line.append((x, y))
+
+            logging.debug(
+                f"Polynomial fitting completed: {len(self.fit_mid_line)} points, "
+                f"coefficients: {coefficients}"
+            )
+        except Exception as e:
+            logging.error(f"Error occurred during polynomial fitting: {e}")
 
     def get_side_line_task_1(self, img, canvas, is_draw=False):
         """从图像的中线往两边搜索，获取赛道边线
@@ -478,36 +522,245 @@ class ImageProcess:
             # 更新上一帧的边线信息
             self._update_prev_frame_lines()
 
-    def fit_polynomial(self):
-        """根据self.mid_line的原始值，用二次函数拟合曲线，返回曲线上的点的列表 self.fit_mid_line"""
-        self.fit_mid_line = []
-        if len(self.mid_line) < 3:
-            logging.warning("Not enough points for polynomial fitting")
-            return
+    def get_side_line_task_2(self, img, canvas, is_draw=False):
+        """从图像的中线往两边搜索，获取赛道边线
 
+        Args:
+            img: 输入的二值化图像
+            canvas: 用于绘制的画布图像
+            is_draw: 是否在canvas上绘制调试信息，默认为False
+        """
+        # 从图像中间向两边搜索，获取边线
+        up_ratio = 0.55
+        down_ratio = 0.90
+
+        x_continual = 5
+        y_continual = 5
+
+        angle_thresh = 3
+
+        prev_aver_x, prev_aver_y, prev2_aver_x, prev2_aver_y = None, None, None, None
+        find_left_corner, find_right_corner = False, False
+        cx, cy = 0, 0
+        mid_x = int(img.shape[1] // 2)
         try:
-            # 提取y和x坐标（y为自变量，x为因变量）
-            y_points = np.array([point[1] for point in self.mid_line])
-            x_points = np.array([point[0] for point in self.mid_line])
+            self.left_line.clear()
+            self.right_line.clear()
+            self.supple_left_line.clear()
+            self.supple_right_line.clear()
+            self.mid_line.clear()
+            self.fit_mid_line.clear()
+            for y in range(
+                int(img.shape[0] * down_ratio), int(img.shape[0] * up_ratio), -1
+            ):
+                for x in range(mid_x, 0, -1):
+                    if img[y, x] == 0 and img[y, x - 1] != 0:
+                        logging.debug(
+                            f"find left line at {x}, {y} , value : {img[y, x]}"
+                        )
+                        if len(self.left_line) == 0:
+                            self.left_line.append((x, y))
+                            break
+                        else:
+                            # 判断连续性
+                            if (
+                                abs(y - self.left_line[len(self.left_line) - 1][1])
+                                < x_continual
+                                and abs(x - self.left_line[len(self.left_line) - 1][0])
+                                < y_continual
+                            ):
+                                # 判断斜率是否发生突变
+                                if (
+                                    find_left_corner is False
+                                    and len(self.left_line) >= 9
+                                ):
+                                    cur_aver_x = (
+                                        self.left_line[len(self.left_line) - 2][0]
+                                        + self.left_line[len(self.left_line) - 1][0]
+                                        + x
+                                    ) // 3
+                                    cur_aver_y = (
+                                        self.left_line[len(self.left_line) - 2][1]
+                                        + self.left_line[len(self.left_line) - 1][1]
+                                        + y
+                                    ) // 3
+                                    if (
+                                        prev2_aver_x is None
+                                        and prev2_aver_y is None
+                                        and prev_aver_x is None
+                                        and prev_aver_y is None
+                                    ):
+                                        prev_aver_x = (
+                                            self.left_line[len(self.left_line) - 3][0]
+                                            + self.left_line[len(self.left_line) - 4][0]
+                                            + self.left_line[len(self.left_line) - 5][0]
+                                        ) // 3
+                                        prev_aver_y = (
+                                            self.left_line[len(self.left_line) - 3][1]
+                                            + self.left_line[len(self.left_line) - 4][1]
+                                            + self.left_line[len(self.left_line) - 5][1]
+                                        ) // 3
+                                        prev2_aver_x = (
+                                            self.left_line[len(self.left_line) - 6][0]
+                                            + self.left_line[len(self.left_line) - 7][0]
+                                            + self.left_line[len(self.left_line) - 8][0]
+                                        ) // 3
+                                        prev2_aver_y = (
+                                            self.left_line[len(self.left_line) - 6][1]
+                                            + self.left_line[len(self.left_line) - 7][1]
+                                            + self.left_line[len(self.left_line) - 8][1]
+                                        ) // 3
 
-            # 二次多项式拟合: x = a*y^2 + b*y + c
-            coefficients = np.polyfit(y_points, x_points, 2)
+                                    else:
+                                        angle = self.get_angle_np(
+                                            (cur_aver_x, cur_aver_y),
+                                            (prev_aver_x, prev_aver_y),
+                                            (prev2_aver_x, prev2_aver_y),
+                                        )
+                                        if angle > angle_thresh:
+                                            # 记录突变点
+                                            logging.info(
+                                                f"slope mutation detected at {x}, {y} , angle: {angle} , last point : {self.left_line[len(self.left_line) - 1]}"
+                                            )
+                                            left_c = (cur_aver_x, cur_aver_y)
+                                            find_left_corner = True
+                                # cur_dy = cur_aver_y - prev_aver_y if prev_aver_y is not None else 0
+                                # cur_dx = cur_aver_x - prev_aver_x if prev_aver_x is not None else 0
+                                # prev_dy = prev_aver_y - prev2_aver_y if prev_aver_y is not None and prev2_aver_y is not None else 0
+                                # prev_dx = prev_aver_x - prev2_aver_x if prev_aver_x is not None and prev2_aver_x is not None else 0
 
-            # 生成y的序列（从最小y到最大y）
-            y_min = int(y_points.min())
-            y_max = int(y_points.max())
+                                self.left_line.append((x, y))
+                                break
 
-            # 计算拟合曲线上的点
-            for y in range(y_min, y_max + 1):
-                x = int(np.polyval(coefficients, y))
-                self.fit_mid_line.append((x, y))
+                            else:
+                                logging.debug(
+                                    f"jump too far at {x}, {y} , last point : {self.left_line[len(self.left_line) - 1]}"
+                                )
 
-            logging.debug(
-                f"Polynomial fitting completed: {len(self.fit_mid_line)} points, "
-                f"coefficients: {coefficients}"
-            )
+                for x in range(mid_x, img.shape[1] - 1):
+                    if img[y, x] == 0 and img[y, x + 1] != 0:
+                        logging.debug(
+                            f"find right line at {x}, {y} , value : {img[y, x]}"
+                        )
+                        if len(self.right_line) == 0:
+                            self.right_line.append((x, y))
+                            break
+                        else:
+                            # 判断连续性
+                            if (
+                                abs(y - self.right_line[len(self.right_line) - 1][1])
+                                < x_continual
+                                and abs(
+                                    x - self.right_line[len(self.right_line) - 1][0]
+                                )
+                                < y_continual
+                            ):
+                                if (
+                                    find_right_corner is False
+                                    and len(self.right_line) >= 9
+                                ):
+                                    cur_aver_x = (
+                                        self.right_line[len(self.right_line) - 2][0]
+                                        + self.right_line[len(self.right_line) - 1][0]
+                                        + x
+                                    ) // 3
+                                    cur_aver_y = (
+                                        self.right_line[len(self.right_line) - 2][1]
+                                        + self.right_line[len(self.right_line) - 1][1]
+                                        + y
+                                    ) // 3
+                                    if (
+                                        prev2_aver_x is None
+                                        and prev2_aver_y is None
+                                        and prev_aver_x is None
+                                        and prev_aver_y is None
+                                    ):
+                                        prev_aver_x = (
+                                            self.right_line[len(self.right_line) - 3][0]
+                                            + self.right_line[len(self.right_line) - 4][
+                                                0
+                                            ]
+                                            + self.right_line[len(self.right_line) - 5][
+                                                0
+                                            ]
+                                        ) // 3
+                                        prev_aver_y = (
+                                            self.right_line[len(self.right_line) - 3][1]
+                                            + self.right_line[len(self.right_line) - 4][
+                                                1
+                                            ]
+                                            + self.right_line[len(self.right_line) - 5][
+                                                1
+                                            ]
+                                        ) // 3
+                                        prev2_aver_x = (
+                                            self.right_line[len(self.right_line) - 6][0]
+                                            + self.right_line[len(self.right_line) - 7][
+                                                0
+                                            ]
+                                            + self.right_line[len(self.right_line) - 8][
+                                                0
+                                            ]
+                                        ) // 3
+                                        prev2_aver_y = (
+                                            self.right_line[len(self.right_line) - 6][1]
+                                            + self.right_line[len(self.right_line) - 7][
+                                                1
+                                            ]
+                                            + self.right_line[len(self.right_line) - 8][
+                                                1
+                                            ]
+                                        ) // 3
+
+                                    else:
+                                        angle = self.get_angle_np(
+                                            (cur_aver_x, cur_aver_y),
+                                            (prev_aver_x, prev_aver_y),
+                                            (prev2_aver_x, prev2_aver_y),
+                                        )
+                                        # logging.info(f"angle:{angle} ")
+                                        if angle > angle_thresh:
+                                            # 记录突变点
+                                            logging.info(
+                                                f"slope mutation detected at {x}, {y} , angle: {angle} , last point : {self.right_line[len(self.right_line) - 1]}"
+                                            )
+                                            right_c = (cur_aver_x, cur_aver_y)
+
+                                            find_right_corner = True
+                                self.right_line.append((x, y))
+                                break
+                            else:
+                                logging.debug(
+                                    f"jump too far at {x}, {y} , last point : {self.right_line[len(self.right_line) - 1]}"
+                                )
+
+            # 线性补插，优化边线
+            if len(self.left_line) > 0 and len(self.right_line) > 0:
+                # 线性插值
+                self.supple_left_line = self._linear_interpolation(self.left_line)
+                self.supple_right_line = self._linear_interpolation(self.right_line)
+
+            # 用优化后的边线计算中线
+            for j in range(
+                min(len(self.supple_left_line), len(self.supple_right_line))
+            ):
+                line_mid_x = (
+                    self.supple_left_line[j][0] + self.supple_right_line[j][0]
+                ) // 2
+                line_mid_y = self.supple_left_line[j][1]
+                self.mid_line.append((line_mid_x, line_mid_y))
+
+            # 多项式拟合中线
+            # self.fit_polynomial()
+
+            if is_draw and find_left_corner and find_right_corner:
+                cv2.circle(canvas, (left_c), 4, (255, 0, 255), -1)
+                cv2.circle(canvas, (right_c), 4, (255, 0, 255), -1)
+
+            return canvas
+
         except Exception as e:
-            logging.error(f"Error occurred during polynomial fitting: {e}")
+            logging.error(f"Error occurred during getting side lines : {e}")
 
     def draw_line(self, canvas):
         """绘制边线、中线
@@ -538,7 +791,7 @@ class ImageProcess:
                     f"Canvas converted to BGR (original channels: {canvas.shape[2]})"
                 )
 
-            logging.info(
+            logging.debug(
                 f"length of left_line: {len(self.supple_left_line)} , lenth of right_line: {len(self.supple_right_line)}"
             )
             # 绘制优化后的左边线（红色）
@@ -772,7 +1025,7 @@ class ImageProcess:
 
 def main():
     # 视频文件路径
-    video_path = r"D:\programs\ucar_ws\src\vision_line\videos\test1.avi"
+    video_path = r"D:\programs\ucar_ws\src\vision_line\videos\test2.avi"
 
     # 打开视频文件
     cap = cv2.VideoCapture(video_path)
@@ -824,10 +1077,9 @@ def main():
                     continue
 
                 # 获取边线（传入canvas用于绘制调试信息）
-                imgprocess.get_side_line_task_1(binary_img, canvas, is_draw=True)
-
-                # 多项式拟合
-                imgprocess.fit_polynomial()
+                canvas = imgprocess.get_side_line_task_2(
+                    binary_img, canvas, is_draw=True
+                )
 
                 canvas = imgprocess.draw_line(canvas)
 

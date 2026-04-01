@@ -1,6 +1,7 @@
 import logging
 
 import cv2
+import numpy as np
 
 
 class CameraConfig:
@@ -70,3 +71,20 @@ class CameraCapture:
     def __del__(self):
         """析构函数，对象销毁时自动释放资源"""
         self.close()
+
+
+def get_angle_np(p1, p2, p3):
+    """
+    计算由三点p1、p2、p3形成的夹角，p2为顶点，返回角度
+    return:
+        angle: 角度值，单位为度，保留两位小数
+    """
+    # 转向量
+    v1 = np.array(p2) - np.array(p1)
+    v2 = np.array(p3) - np.array(p1)
+    rad = np.arccos(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+    return np.round(np.degrees(rad), 2)
+
+
+if __name__ == "__main__":
+    logging.info(get_angle_np((0, 0), (1, 0), (1, 1)))
