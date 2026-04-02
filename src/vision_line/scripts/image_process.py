@@ -183,18 +183,15 @@ class ImageProcess:
             logging.error(f"Error occurred while computing perspective matrix: {e}")
             return None
 
-    def get_angle_np(self, p1, p2, p3):
+    def get_angle_np(self, k1, k2):
         """
-        计算由三点p1、p2、p3形成的夹角，p2为顶点，返回角度
+        已知斜率计算夹角，返回角度
         return:
             angle: 角度值，单位为度，保留两位小数
         """
-        # 转向量
-        v1 = np.array(p2) - np.array(p1)
-        v2 = np.array(p3) - np.array(p1)
-
-        rad = np.arccos(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
-        return np.round(np.degrees(rad), 2)
+        cos_theta = (1 + k1 * k2) / (np.sqrt(1 + k1**2) * np.sqrt(1 + k2**2))
+        cos_theta = np.clip(cos_theta, -1, 1)  # 防止浮点误差越界
+        return np.degrees(np.arccos(cos_theta))
 
     def _get_search_start_point(self, y_coord, prev_line, img_width, is_left=True):
         """根据上一帧边线位置获取当前帧的搜索起点
@@ -534,12 +531,14 @@ class ImageProcess:
         up_ratio = 0.55
         down_ratio = 0.90
 
-        x_continual = 5
-        y_continual = 5
+        x_continual = 10
+        y_continual = 10
 
-        angle_thresh = 3
+        angle_high_thresh = 120
+        angle_low_thresh = 70
 
-        prev_aver_x, prev_aver_y, prev2_aver_x, prev2_aver_y = None, None, None, None
+        prev_aver_x, prev_aver_y = None, None
+        cur_k, prev_k = None, None
         find_left_corner, find_right_corner = False, False
         cx, cy = 0, 0
         mid_x = int(img.shape[1] // 2)
@@ -572,7 +571,7 @@ class ImageProcess:
                                 # 判断斜率是否发生突变
                                 if (
                                     find_left_corner is False
-                                    and len(self.left_line) >= 9
+                                    and len(self.left_line) >= 2
                                 ):
                                     cur_aver_x = (
                                         self.left_line[len(self.left_line) - 2][0]
@@ -584,46 +583,40 @@ class ImageProcess:
                                         + self.left_line[len(self.left_line) - 1][1]
                                         + y
                                     ) // 3
-                                    if (
-                                        prev2_aver_x is None
-                                        and prev2_aver_y is None
-                                        and prev_aver_x is None
-                                        and prev_aver_y is None
-                                    ):
-                                        prev_aver_x = (
-                                            self.left_line[len(self.left_line) - 3][0]
-                                            + self.left_line[len(self.left_line) - 4][0]
-                                            + self.left_line[len(self.left_line) - 5][0]
-                                        ) // 3
-                                        prev_aver_y = (
-                                            self.left_line[len(self.left_line) - 3][1]
-                                            + self.left_line[len(self.left_line) - 4][1]
-                                            + self.left_line[len(self.left_line) - 5][1]
-                                        ) // 3
-                                        prev2_aver_x = (
-                                            self.left_line[len(self.left_line) - 6][0]
-                                            + self.left_line[len(self.left_line) - 7][0]
-                                            + self.left_line[len(self.left_line) - 8][0]
-                                        ) // 3
-                                        prev2_aver_y = (
-                                            self.left_line[len(self.left_line) - 6][1]
-                                            + self.left_line[len(self.left_line) - 7][1]
-                                            + self.left_line[len(self.left_line) - 8][1]
-                                        ) // 3
+
+                                    if prev_aver_x is None and prev_aver_y is None:
+                                        prev_aver_x, prev_aver_y = (
+                                            cur_aver_x,
+                                            cur_aver_y,
+                                        )
+                                        continue
 
                                     else:
-                                        angle = self.get_angle_np(
-                                            (cur_aver_x, cur_aver_y),
-                                            (prev_aver_x, prev_aver_y),
-                                            (prev2_aver_x, prev2_aver_y),
+                                        cur_k = (cur_aver_y - prev_aver_y) / (
+                                            cur_aver_x - prev_aver_x + 1e-5
                                         )
-                                        if angle > angle_thresh:
-                                            # 记录突变点
-                                            logging.info(
-                                                f"slope mutation detected at {x}, {y} , angle: {angle} , last point : {self.left_line[len(self.left_line) - 1]}"
-                                            )
-                                            left_c = (cur_aver_x, cur_aver_y)
-                                            find_left_corner = True
+                                        if prev_k is not None:
+                                            angle = self.get_angle_np(cur_k, prev_k)
+                                            if (
+                                                angle_low_thresh
+                                                < angle
+                                                < angle_high_thresh
+                                            ):
+                                                # 记录突变点
+                                                logging.info(
+                                                    f"slope mutation detected at {x}, {y} , angle: {angle} , last point : {self.left_line[len(self.left_line) - 1]}, prev_k: {prev_k} ,cur_k: {cur_k} "
+                                                )
+
+                                                left_c = (cur_aver_x, cur_aver_y)
+
+                                                find_left_corner = True
+                                        # 更新点
+                                        prev_k = cur_k
+                                        prev_aver_x, prev_aver_y = (
+                                            cur_aver_x,
+                                            cur_aver_y,
+                                        )
+
                                 # cur_dy = cur_aver_y - prev_aver_y if prev_aver_y is not None else 0
                                 # cur_dx = cur_aver_x - prev_aver_x if prev_aver_x is not None else 0
                                 # prev_dy = prev_aver_y - prev2_aver_y if prev_aver_y is not None and prev2_aver_y is not None else 0
@@ -657,7 +650,7 @@ class ImageProcess:
                             ):
                                 if (
                                     find_right_corner is False
-                                    and len(self.right_line) >= 9
+                                    and len(self.right_line) >= 2
                                 ):
                                     cur_aver_x = (
                                         self.right_line[len(self.right_line) - 2][0]
@@ -669,64 +662,41 @@ class ImageProcess:
                                         + self.right_line[len(self.right_line) - 1][1]
                                         + y
                                     ) // 3
-                                    if (
-                                        prev2_aver_x is None
-                                        and prev2_aver_y is None
-                                        and prev_aver_x is None
-                                        and prev_aver_y is None
-                                    ):
-                                        prev_aver_x = (
-                                            self.right_line[len(self.right_line) - 3][0]
-                                            + self.right_line[len(self.right_line) - 4][
-                                                0
-                                            ]
-                                            + self.right_line[len(self.right_line) - 5][
-                                                0
-                                            ]
-                                        ) // 3
-                                        prev_aver_y = (
-                                            self.right_line[len(self.right_line) - 3][1]
-                                            + self.right_line[len(self.right_line) - 4][
-                                                1
-                                            ]
-                                            + self.right_line[len(self.right_line) - 5][
-                                                1
-                                            ]
-                                        ) // 3
-                                        prev2_aver_x = (
-                                            self.right_line[len(self.right_line) - 6][0]
-                                            + self.right_line[len(self.right_line) - 7][
-                                                0
-                                            ]
-                                            + self.right_line[len(self.right_line) - 8][
-                                                0
-                                            ]
-                                        ) // 3
-                                        prev2_aver_y = (
-                                            self.right_line[len(self.right_line) - 6][1]
-                                            + self.right_line[len(self.right_line) - 7][
-                                                1
-                                            ]
-                                            + self.right_line[len(self.right_line) - 8][
-                                                1
-                                            ]
-                                        ) // 3
+                                    if prev_aver_x is None and prev_aver_y is None:
+                                        prev_aver_x, prev_aver_y = (
+                                            cur_aver_x,
+                                            cur_aver_y,
+                                        )
+                                        continue
 
                                     else:
-                                        angle = self.get_angle_np(
-                                            (cur_aver_x, cur_aver_y),
-                                            (prev_aver_x, prev_aver_y),
-                                            (prev2_aver_x, prev2_aver_y),
+                                        cur_k = (cur_aver_y - prev_aver_y) / (
+                                            cur_aver_x - prev_aver_x + 1e-5
                                         )
-                                        # logging.info(f"angle:{angle} ")
-                                        if angle > angle_thresh:
-                                            # 记录突变点
-                                            logging.info(
-                                                f"slope mutation detected at {x}, {y} , angle: {angle} , last point : {self.right_line[len(self.right_line) - 1]}"
-                                            )
-                                            right_c = (cur_aver_x, cur_aver_y)
+                                        if prev_k is not None:
+                                            angle = self.get_angle_np(cur_k, prev_k)
+                                            if (
+                                                angle_low_thresh
+                                                < angle
+                                                < angle_high_thresh
+                                            ):
+                                                # 记录突变点
+                                                logging.info(
+                                                    f"slope mutation detected at {x}, {y} , angle: {angle} , last point : ({prev_aver_x},{prev_aver_y}), prev_k: {prev_k} ,cur_k: {cur_k} "
+                                                )
 
-                                            find_right_corner = True
+                                                right_c = (cur_aver_x, cur_aver_y)
+
+                                                find_right_corner = True
+                                        # 更新点
+                                        prev_k = cur_k
+                                        prev_aver_x, prev_aver_y = (
+                                            cur_aver_x,
+                                            cur_aver_y,
+                                        )
+
+                                        # logging.info(f"angle:{angle} ")
+
                                 self.right_line.append((x, y))
                                 break
                             else:
@@ -753,11 +723,10 @@ class ImageProcess:
             # 多项式拟合中线
             # self.fit_polynomial()
 
-            if is_draw and find_left_corner and find_right_corner:
-                cv2.circle(canvas, (left_c), 4, (255, 0, 255), -1)
-                cv2.circle(canvas, (right_c), 4, (255, 0, 255), -1)
-
-            return canvas
+            if is_draw and find_left_corner:
+                cv2.circle(canvas, (left_c), 4, (0, 255, 0), -1)
+            if is_draw and find_right_corner:
+                cv2.circle(canvas, (right_c), 4, (0, 255, 0), -1)
 
         except Exception as e:
             logging.error(f"Error occurred during getting side lines : {e}")
@@ -1077,9 +1046,7 @@ def main():
                     continue
 
                 # 获取边线（传入canvas用于绘制调试信息）
-                canvas = imgprocess.get_side_line_task_2(
-                    binary_img, canvas, is_draw=True
-                )
+                imgprocess.get_side_line_task_2(binary_img, canvas, is_draw=True)
 
                 canvas = imgprocess.draw_line(canvas)
 
@@ -1152,5 +1119,31 @@ def main():
         cv2.destroyAllWindows()
 
 
+def main_pic():
+    # 图片文件路径
+    img_path = r"D:\programs\ucar_ws\src\vision_line\pictures\test1.png"
+    try:
+        # 创建ImageProcess对象
+        imgprocess = ImageProcess(img_path)
+        # 预处理
+        binary_img = imgprocess.preprocess()
+        # 获取用于绘制的画布
+        canvas = imgprocess.get_canvas()
+        # 获取边线（传入canvas用于绘制调试信息）
+        imgprocess.get_side_line_task_2(binary_img, canvas, is_draw=True)
+        canvas = imgprocess.draw_line(canvas)
+        # 显示二值化图像
+        if binary_img is not None:
+            cv2.imshow("binary", binary_img)
+        # 显示处理结果
+        if canvas is not None:
+            cv2.imshow("processed_img", canvas)
+        cv2.waitKey(0)
+    except Exception as e:
+        logging.error(f"Error occurred in main_pic: {e}")
+    finally:
+        cv2.destroyAllWindows()
+
+
 if __name__ == "__main__":
-    main()
+    main_pic()
