@@ -534,8 +534,8 @@ class ImageProcess:
         x_continual = 10
         y_continual = 10
 
-        angle_high_thresh = 80
-        angle_low_thresh = 45
+        angle_high_thresh = 110
+        angle_low_thresh = 30
 
         left_prev_x, left_prev_y, right_prev_x, right_prev_y = (
             None,
@@ -581,10 +581,7 @@ class ImageProcess:
                                 # 选择两个点为一个点蔟，增加稳定性
                                 if find_left_corner is False:
                                     # 第一个点，不参与计算夹角
-                                    if (
-                                        left_prev_x is None
-                                        and left_prev_y is None
-                                    ):
+                                    if left_prev_x is None and left_prev_y is None:
                                         left_prev_x, left_prev_y = x, y
 
                                     else:
@@ -653,19 +650,16 @@ class ImageProcess:
                             ):
                                 # 通过夹角找拐点
                                 if find_right_corner is False:
-                                    if (
-                                        right_prev_x is None
-                                        and right_prev_y is None
-                                    ):
+                                    if right_prev_x is None and right_prev_y is None:
                                         right_prev_x, right_prev_y = x, y
 
                                     else:
                                         logging.debug(
                                             f"right_prev_x: {right_prev_x} , right_prev_y: {right_prev_y} , cur_x: {x} , cur_y: {y} "
                                         )
-                                        right_cur_k = (
-                                            y - right_prev_y
-                                        ) / (x - right_prev_x + 1e-5)
+                                        right_cur_k = (y - right_prev_y) / (
+                                            x - right_prev_x + 1e-5
+                                        )
                                         if right_prev_k is not None:
                                             angle = self.get_angle_np(
                                                 right_cur_k, right_prev_k
@@ -699,6 +693,61 @@ class ImageProcess:
                                 logging.debug(
                                     f"jump too far at {x}, {y} , last point : {self.right_line[len(self.right_line) - 1]}"
                                 )
+
+            # 找到双拐点后，用右边线拐点后的斜率补充左边线
+            if left_c is not None and right_c is not None:
+                # 在 right_line 中找到 right_c 的索引
+                right_c_idx = None
+                for idx, pt in enumerate(self.right_line):
+                    if pt[0] == right_c[0] and pt[1] == right_c[1]:
+                        right_c_idx = idx
+                        break
+
+                if right_c_idx is not None and right_c_idx + 1 < len(self.right_line):
+                    # 计算 right_c 之后的点的整体斜率
+                    post_corner = self.right_line[right_c_idx + 1 :]
+                    right_total_dx = post_corner[-1][0] - post_corner[0][0]
+                    right_total_dy = post_corner[-1][1] - post_corner[0][1]
+
+                    if abs(right_total_dx) > 1e-5:
+                        right_avg_slope = right_total_dy / right_total_dx
+
+                        # 在 left_line 中找到 left_c 的索引
+                        left_c_idx = None
+                        for idx, pt in enumerate(self.left_line):
+                            if pt[0] == left_c[0] and pt[1] == left_c[1]:
+                                left_c_idx = idx
+                                break
+
+                        if left_c_idx is not None:
+                            post_corner_left = self.left_line[left_c_idx + 1 :]
+                            left_total_dx = (
+                                post_corner_left[-1][0] - post_corner_left[0][0]
+                            )
+                            left_total_dy = (
+                                post_corner_left[-1][1] - post_corner_left[0][1]
+                            )
+                            if abs(left_total_dx) > 1e-5:
+                                left_avg_slope = left_total_dy / left_total_dx
+
+                                # 如果斜率关于y轴线对称，说明遇到十字路口，才需要补线
+                                # if right_avg_slope < 0 and left_avg_slope > 0:
+                                if right_avg_slope * left_avg_slope < 0:
+                                    # 移除 left_c 之后的点
+                                    self.left_line = self.left_line[: left_c_idx + 1]
+
+                                    # 用平均斜率从 left_c 向上延伸
+                                    lx, ly = left_c
+                                    up_limit = int(img.shape[0] * 0.55)
+
+                                    for step in range(1, 100):
+                                        new_y = ly - step
+                                        if new_y < up_limit:
+                                            break
+                                        new_x = int(lx + (new_y - ly) / right_avg_slope)
+                                        if new_x < 0 or new_x >= img.shape[1]:
+                                            break
+                                        self.left_line.append((new_x, new_y))
 
             # 线性补插，优化边线
             if len(self.left_line) > 0 and len(self.right_line) > 0:
@@ -1125,7 +1174,7 @@ def main():
 
 def main_pic():
     # 图片文件路径
-    img_path = r"D:\programs\ucar_ws\src\vision_line\pictures\test1.png"
+    img_path = r"D:\programs\ucar_ws\src\vision_line\pictures\test5.png"
     try:
         # 创建ImageProcess对象
         imgprocess = ImageProcess(img_path)
