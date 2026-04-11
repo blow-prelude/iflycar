@@ -537,7 +537,7 @@ class ImageProcess:
         angle_high_thresh = 80
         angle_low_thresh = 45
 
-        left_prev_aver_x, left_prev_aver_y, right_prev_aver_x, right_prev_aver_y = (
+        left_prev_x, left_prev_y, right_prev_x, right_prev_y = (
             None,
             None,
             None,
@@ -579,33 +579,20 @@ class ImageProcess:
                             ):
                                 # 根据夹角判断是否遇到拐点
                                 # 选择两个点为一个点蔟，增加稳定性
-                                if (
-                                    find_left_corner is False
-                                    and len(self.left_line) % 2 == 1
-                                ):
-                                    cur_aver_x = (
-                                        self.left_line[len(self.left_line) - 1][0] + x
-                                    ) // 2
-                                    cur_aver_y = (
-                                        +self.left_line[len(self.left_line) - 1][1] + y
-                                    ) // 2
-
-                                    # 只有一个点蔟，不参与计算夹角
+                                if find_left_corner is False:
+                                    # 第一个点，不参与计算夹角
                                     if (
-                                        left_prev_aver_x is None
-                                        and left_prev_aver_y is None
+                                        left_prev_x is None
+                                        and left_prev_y is None
                                     ):
-                                        left_prev_aver_x, left_prev_aver_y = (
-                                            cur_aver_x,
-                                            cur_aver_y,
-                                        )
+                                        left_prev_x, left_prev_y = x, y
 
                                     else:
                                         logging.debug(
-                                            f"left_prev_aver_x: {left_prev_aver_x} , left_prev_aver_y: {left_prev_aver_y} , cur_aver_x: {cur_aver_x} , cur_aver_y: {cur_aver_y} "
+                                            f"left_prev_x: {left_prev_x} , left_prev_y: {left_prev_y} , cur_x: {x} , cur_y: {y} "
                                         )
-                                        left_cur_k = (cur_aver_y - left_prev_aver_y) / (
-                                            cur_aver_x - left_prev_aver_x + 1e-5
+                                        left_cur_k = (y - left_prev_y) / (
+                                            x - left_prev_x + 1e-5
                                         )
                                         if left_prev_k is not None:
                                             angle = self.get_angle_np(
@@ -622,21 +609,18 @@ class ImageProcess:
                                             ):
                                                 # 记录突变点
                                                 logging.info(
-                                                    f"slope mutation detected at {cur_aver_x}, {cur_aver_y} , angle: {angle} , prev_k: {left_prev_k} ,cur_k: {left_cur_k} "
+                                                    f"slope mutation detected at {x}, {y} , angle: {angle} , prev_k: {left_prev_k} ,cur_k: {left_cur_k} "
                                                 )
-                                                # 找打拐点后就不再寻找
+                                                # 找到拐点后就不再寻找
                                                 left_c = (
-                                                    left_prev_aver_x,
-                                                    left_prev_aver_y,
+                                                    left_prev_x,
+                                                    left_prev_y,
                                                 )
                                                 find_left_corner = True
 
                                         # 更新点
                                         left_prev_k = left_cur_k
-                                        left_prev_aver_x, left_prev_aver_y = (
-                                            cur_aver_x,
-                                            cur_aver_y,
-                                        )
+                                        left_prev_x, left_prev_y = x, y
 
                                 # 如果不是拐点，正常添加到边线中
                                 self.left_line.append((x, y))
@@ -668,33 +652,20 @@ class ImageProcess:
                                 < y_continual
                             ):
                                 # 通过夹角找拐点
-                                if (
-                                    find_right_corner is False
-                                    and len(self.right_line) % 2 == 1
-                                ):
-                                    cur_aver_x = (
-                                        self.right_line[len(self.right_line) - 1][0] + x
-                                    ) // 2
-                                    cur_aver_y = (
-                                        +self.right_line[len(self.right_line) - 1][1]
-                                        + y
-                                    ) // 2
+                                if find_right_corner is False:
                                     if (
-                                        right_prev_aver_x is None
-                                        and right_prev_aver_y is None
+                                        right_prev_x is None
+                                        and right_prev_y is None
                                     ):
-                                        right_prev_aver_x, right_prev_aver_y = (
-                                            cur_aver_x,
-                                            cur_aver_y,
-                                        )
+                                        right_prev_x, right_prev_y = x, y
 
                                     else:
                                         logging.debug(
-                                            f"right_prev_aver_x: {right_prev_aver_x} , right_prev_aver_y: {right_prev_aver_y} , cur_aver_x: {cur_aver_x} , cur_aver_y: {cur_aver_y} "
+                                            f"right_prev_x: {right_prev_x} , right_prev_y: {right_prev_y} , cur_x: {x} , cur_y: {y} "
                                         )
                                         right_cur_k = (
-                                            cur_aver_y - right_prev_aver_y
-                                        ) / (cur_aver_x - right_prev_aver_x + 1e-5)
+                                            y - right_prev_y
+                                        ) / (x - right_prev_x + 1e-5)
                                         if right_prev_k is not None:
                                             angle = self.get_angle_np(
                                                 right_cur_k, right_prev_k
@@ -714,16 +685,13 @@ class ImageProcess:
 
                                                 # 只寻找一个拐点
                                                 right_c = (
-                                                    right_prev_aver_x,
-                                                    right_prev_aver_y,
+                                                    right_prev_x,
+                                                    right_prev_y,
                                                 )
                                                 find_right_corner = True
                                         # 更新点
                                         right_prev_k = right_cur_k
-                                        right_prev_aver_x, right_prev_aver_y = (
-                                            cur_aver_x,
-                                            cur_aver_y,
-                                        )
+                                        right_prev_x, right_prev_y = x, y
 
                                 self.right_line.append((x, y))
                                 break
