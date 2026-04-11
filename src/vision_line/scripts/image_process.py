@@ -269,9 +269,9 @@ class ImageProcess:
             dy = abs(y2 - y1)
 
             # 如果两点间距离过大，进行线性插值
-            if dx > 10 or dy > 5:
+            if dx > 6 or dy > 3:
                 # 计算需要插入的点数量（每隔3-5个像素填充一个点）
-                num_points = max(dx // 5, dy // 3, 2)
+                num_points = max(dx // 3, dy // 2, 2)
 
                 # 在两点之间进行线性插值
                 for t in range(1, num_points + 1):
@@ -546,7 +546,7 @@ class ImageProcess:
         left_cur_k, left_prev_k, right_cur_k, right_prev_k = None, None, None, None
 
         find_left_corner, find_right_corner = False, False
-        cx, cy = 0, 0
+        left_c, right_c = None, None
         mid_x = int(img.shape[1] // 2)
         try:
             self.left_line.clear()
@@ -555,10 +555,13 @@ class ImageProcess:
             self.supple_right_line.clear()
             self.mid_line.clear()
             self.fit_mid_line.clear()
+
+            # 从图像下方（靠近车辆）开始搜索
             for y in range(
                 int(img.shape[0] * down_ratio), int(img.shape[0] * up_ratio), -1
             ):
                 for x in range(mid_x, 0, -1):
+                    # 找打黑白跳变点
                     if img[y, x] == 0 and img[y, x - 1] != 0:
                         logging.debug(
                             f"find left line at {x}, {y} , value : {img[y, x]}"
@@ -567,14 +570,15 @@ class ImageProcess:
                             self.left_line.append((x, y))
                             break
                         else:
-                            # 判断连续性
+                            # 如果不是第一个点，判断连续性
                             if (
                                 abs(y - self.left_line[len(self.left_line) - 1][1])
                                 < x_continual
                                 and abs(x - self.left_line[len(self.left_line) - 1][0])
                                 < y_continual
                             ):
-                                # 判断斜率是否发生突变
+                                # 根据夹角判断是否遇到拐点
+                                # 选择两个点为一个点蔟，增加稳定性
                                 if (
                                     find_left_corner is False
                                     and len(self.left_line) % 2 == 1
@@ -586,6 +590,7 @@ class ImageProcess:
                                         +self.left_line[len(self.left_line) - 1][1] + y
                                     ) // 2
 
+                                    # 只有一个点蔟，不参与计算夹角
                                     if (
                                         left_prev_aver_x is None
                                         and left_prev_aver_y is None
@@ -596,7 +601,7 @@ class ImageProcess:
                                         )
 
                                     else:
-                                        logging.info(
+                                        logging.debug(
                                             f"left_prev_aver_x: {left_prev_aver_x} , left_prev_aver_y: {left_prev_aver_y} , cur_aver_x: {cur_aver_x} , cur_aver_y: {cur_aver_y} "
                                         )
                                         left_cur_k = (cur_aver_y - left_prev_aver_y) / (
@@ -609,6 +614,7 @@ class ImageProcess:
                                             logging.debug(
                                                 f"left line angle: {angle} , cur_k: {left_cur_k} , prev_k: {left_prev_k}"
                                             )
+                                            # 夹角在阈值之间，判定为拐点
                                             if (
                                                 angle_low_thresh
                                                 < angle
@@ -618,10 +624,13 @@ class ImageProcess:
                                                 logging.info(
                                                     f"slope mutation detected at {cur_aver_x}, {cur_aver_y} , angle: {angle} , prev_k: {left_prev_k} ,cur_k: {left_cur_k} "
                                                 )
-
-                                                left_c = (cur_aver_x, cur_aver_y)
-
+                                                # 找打拐点后就不再寻找
+                                                left_c = (
+                                                    left_prev_aver_x,
+                                                    left_prev_aver_y,
+                                                )
                                                 find_left_corner = True
+
                                         # 更新点
                                         left_prev_k = left_cur_k
                                         left_prev_aver_x, left_prev_aver_y = (
@@ -629,11 +638,7 @@ class ImageProcess:
                                             cur_aver_y,
                                         )
 
-                                # cur_dy = cur_aver_y - prev_aver_y if prev_aver_y is not None else 0
-                                # cur_dx = cur_aver_x - prev_aver_x if prev_aver_x is not None else 0
-                                # prev_dy = prev_aver_y - prev2_aver_y if prev_aver_y is not None and prev2_aver_y is not None else 0
-                                # prev_dx = prev_aver_x - prev2_aver_x if prev_aver_x is not None and prev2_aver_x is not None else 0
-
+                                # 如果不是拐点，正常添加到边线中
                                 self.left_line.append((x, y))
                                 break
 
@@ -642,16 +647,18 @@ class ImageProcess:
                                     f"jump too far at {x}, {y} , last point : {self.left_line[len(self.left_line) - 1]}"
                                 )
 
+                # 右线
                 for x in range(mid_x, img.shape[1] - 1):
+                    # 找到黑白跳变点
                     if img[y, x] == 0 and img[y, x + 1] != 0:
-                        logging.info(
+                        logging.debug(
                             f"find right line at {x}, {y} , value : {img[y, x]}"
                         )
                         if len(self.right_line) == 0:
                             self.right_line.append((x, y))
                             break
                         else:
-                            # 判断连续性
+                            # 如果不是第一个点，判断连续性
                             if (
                                 abs(y - self.right_line[len(self.right_line) - 1][1])
                                 < x_continual
@@ -660,6 +667,7 @@ class ImageProcess:
                                 )
                                 < y_continual
                             ):
+                                # 通过夹角找拐点
                                 if (
                                     find_right_corner is False
                                     and len(self.right_line) % 2 == 1
@@ -681,7 +689,7 @@ class ImageProcess:
                                         )
 
                                     else:
-                                        logging.info(
+                                        logging.debug(
                                             f"right_prev_aver_x: {right_prev_aver_x} , right_prev_aver_y: {right_prev_aver_y} , cur_aver_x: {cur_aver_x} , cur_aver_y: {cur_aver_y} "
                                         )
                                         right_cur_k = (
@@ -691,7 +699,7 @@ class ImageProcess:
                                             angle = self.get_angle_np(
                                                 right_cur_k, right_prev_k
                                             )
-                                            logging.info(
+                                            logging.debug(
                                                 f"right line angle: {angle} , cur_k: {right_cur_k} , prev_k: {right_prev_k}"
                                             )
                                             if (
@@ -701,11 +709,14 @@ class ImageProcess:
                                             ):
                                                 # 记录突变点
                                                 logging.info(
-                                                    f"slope mutation detected at {x}, {y} , angle: {angle} , last point : ({right_prev_aver_x},{right_prev_aver_y}), prev_k: {right_prev_k} ,cur_k: {right_cur_k} "
+                                                    f"slope mutation detected at {x}, {y} , angle: {angle} , prev_k: {right_prev_k} ,cur_k: {right_cur_k} "
                                                 )
 
-                                                right_c = (cur_aver_x, cur_aver_y)
-
+                                                # 只寻找一个拐点
+                                                right_c = (
+                                                    right_prev_aver_x,
+                                                    right_prev_aver_y,
+                                                )
                                                 find_right_corner = True
                                         # 更新点
                                         right_prev_k = right_cur_k
@@ -713,8 +724,6 @@ class ImageProcess:
                                             cur_aver_x,
                                             cur_aver_y,
                                         )
-
-                                        # logging.info(f"angle:{angle} ")
 
                                 self.right_line.append((x, y))
                                 break
@@ -729,6 +738,11 @@ class ImageProcess:
                 self.supple_left_line = self._linear_interpolation(self.left_line)
                 self.supple_right_line = self._linear_interpolation(self.right_line)
 
+                # 填充边界，使线段一直延伸到左右下角
+                self.supple_left_line, self.supple_right_line = self._fill_boundary(
+                    self.supple_left_line, self.supple_right_line, img.shape
+                )
+
             # 用优化后的边线计算中线
             for j in range(
                 min(len(self.supple_left_line), len(self.supple_right_line))
@@ -742,10 +756,10 @@ class ImageProcess:
             # 多项式拟合中线
             # self.fit_polynomial()
 
-            if is_draw and find_left_corner:
-                cv2.circle(canvas, (left_c), 4, (0, 255, 0), -1)
-            if is_draw and find_right_corner:
-                cv2.circle(canvas, (right_c), 4, (0, 255, 0), -1)
+            if is_draw and find_left_corner and left_c is not None:
+                cv2.circle(canvas, left_c, 4, (0, 255, 0), -1)
+            if is_draw and find_right_corner and right_c is not None:
+                cv2.circle(canvas, right_c, 4, (0, 255, 0), -1)
 
         except Exception as e:
             logging.error(f"Error occurred during getting side lines : {e}")
@@ -1067,6 +1081,9 @@ def main():
                 # 获取边线（传入canvas用于绘制调试信息）
                 imgprocess.get_side_line_task_2(binary_img, canvas, is_draw=True)
 
+                # 多项式拟合
+                imgprocess.fit_polynomial()
+
                 canvas = imgprocess.draw_line(canvas)
 
                 # 显示二值化图像
@@ -1165,4 +1182,4 @@ def main_pic():
 
 
 if __name__ == "__main__":
-    main_pic()
+    main()
