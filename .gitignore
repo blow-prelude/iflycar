@@ -1,2 +1,6 @@
 /devel
 /build
+/.vscode
+/.claude
+/.worktrees
+/src/.vscode
