@@ -91,10 +91,12 @@ class ImageProcess:
             # kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
             # erode = cv2.erode(binary, kernel, iterations=2)  # 用腐消除图像中较亮的区域
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            dila = cv2.dilate(binary, kernel, iterations=1)  # 用膨胀连接断开的线段
             close = cv2.morphologyEx(
                 binary, cv2.MORPH_CLOSE, kernel, iterations=3
             )  # 用闭运算消除图像中较暗的区域
-            return close
+            gauss = cv2.GaussianBlur(dila, (3, 3), 0)  # 用高斯模糊平滑图像，减少噪点
+            return dila
         except Exception as e:
             logging.error(f"Error occurred during image processing: {e}")
             return None
@@ -531,8 +533,8 @@ class ImageProcess:
         up_ratio = 0.55
         down_ratio = 0.90
 
-        x_continual = 10
-        y_continual = 10
+        x_continual = 40
+        y_continual = 15
 
         angle_high_thresh = 110
         angle_low_thresh = 30
