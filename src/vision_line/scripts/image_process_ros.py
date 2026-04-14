@@ -3,7 +3,6 @@ import logging
 import cv2
 import numpy as np
 import rospy
-from camera_capture import CameraCapture
 from cv_bridge import CvBridge, CvBridgeError
 from sensor_msgs.msg import Image
 
@@ -23,20 +22,17 @@ transformation_matrix = np.array(
 
 
 class ImageProcess:
-    def __init__(self, img_path=None, use_camera=False):
+    def __init__(self, img_path=None):
         """
         初始化图像处理对象
 
         Args:
             img_path: 图片路径，如果提供则从图片读取
-            use_camera: 是否使用摄像头，默认False
+
         """
-        if use_camera:
-            self.cap = CameraCapture(index=0, width=640, height=480)
-            self.img_path = None
-        else:
-            self.cap = None
-            self.img_path = img_path
+
+        self.img_path = img_path
+
         self.frame = None
         self.canvas = None
         self.left_line = []
@@ -61,10 +57,7 @@ class ImageProcess:
         try:
             # 如果frame已经设置好（视频处理模式），直接使用
             if self.frame is None:
-                if self.cap is not None:
-                    # 使用摄像头
-                    self.frame = self.cap.get_picture()
-                elif self.img_path is not None:
+                if self.img_path is not None:
                     # 从图片文件读取
                     self.frame = cv2.imread(self.img_path)
                 else:
@@ -1066,31 +1059,35 @@ class ImageProcessRosNode:
         except CvBridgeError as e:
             logging.error("CvBridge conversion failed: %s", e)
             return
+        try:
+            self.frame_count += 1
+            self.imgprocess.frame = frame
 
-        self.frame_count += 1
-        self.imgprocess.frame = frame
+            binary_img = self.imgprocess.preprocess()
+            if binary_img is None:
+                logging.warning("Frame %d preprocessing failed", self.frame_count)
+                return
 
-        binary_img = self.imgprocess.preprocess()
-        if binary_img is None:
-            logging.warning("Frame %d preprocessing failed", self.frame_count)
-            return
+            canvas = self.imgprocess.return_frame()
+            if canvas is None:
+                logging.warning("Frame %d failed to get canvas", self.frame_count)
+                return
+            # 识别边线和中线
+            self.imgprocess.get_side_line_task_1(binary_img, canvas, is_draw=True)
+            # 用多项式曲线拟合中线
+            self.imgprocess.fit_polynomial()
+            canvas = self.imgprocess.draw_line(canvas)
 
-        canvas = self.imgprocess.return_frame()
-        if canvas is None:
-            logging.warning("Frame %d failed to get canvas", self.frame_count)
-            return
-        # 识别边线和中线
-        self.imgprocess.get_side_line_task_1(binary_img, canvas, is_draw=True)
-        # 用多项式曲线拟合中线
-        self.imgprocess.fit_polynomial()
-        canvas = self.imgprocess.draw_line(canvas)
+            cv2.imshow("binary", binary_img)
+            if canvas is not None:
+                cv2.imshow("processed_img", canvas)
 
-        cv2.imshow("binary", binary_img)
-        if canvas is not None:
-            cv2.imshow("processed_img", canvas)
-
-        if (cv2.waitKey(1) & 0xFF) == ord("q"):
-            rospy.signal_shutdown("User requested exit")
+            if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                rospy.signal_shutdown("User requested exit")
+        except Exception as e:
+            logging.error("Error in image_callback: %s", e)
+        finally:
+            cv2.destroyAllWindows()
 
     def spin(self):
         try:
