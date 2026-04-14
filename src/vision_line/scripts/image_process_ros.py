@@ -2,7 +2,10 @@ import logging
 
 import cv2
 import numpy as np
+import rospy
 from camera_capture import CameraCapture
+from cv_bridge import CvBridge, CvBridgeError
+from sensor_msgs.msg import Image
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,15 +94,17 @@ class ImageProcess:
             # kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
             # erode = cv2.erode(binary, kernel, iterations=2)  # 用腐消除图像中较亮的区域
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            dila = cv2.dilate(binary, kernel, iterations=1)  # 用膨胀连接断开的线段
             close = cv2.morphologyEx(
                 binary, cv2.MORPH_CLOSE, kernel, iterations=3
             )  # 用闭运算消除图像中较暗的区域
-            return close
+            gauss = cv2.GaussianBlur(dila, (3, 3), 0)  # 用高斯模糊平滑图像，减少噪点
+            return dila
         except Exception as e:
             logging.error(f"Error occurred during image processing: {e}")
             return None
 
-    def get_canvas(self):
+    def return_frame(self):
         """获取用于绘制的画布（当前帧的副本）
 
         Returns:
@@ -152,36 +157,46 @@ class ImageProcess:
             logging.error(f"Error occurred during perspective transform: {e}")
             return None
 
-    # def get_perspective_matrix(self, src_points, dst_points):
-    #     """根据源点和目标点计算透视变换矩阵
+    def get_perspective_matrix(self, src_points, dst_points):
+        """根据源点和目标点计算透视变换矩阵
 
-    #     Args:
-    #         src_points: 源图像中的4个点，格式为 [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
-    #         dst_points: 目标图像中的4个点，格式与src_points相同
+        Args:
+            src_points: 源图像中的4个点，格式为 [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+            dst_points: 目标图像中的4个点，格式与src_points相同
 
-    #     Returns:
-    #         3x3透视变换矩阵，如果计算失败则返回None
-    #     """
-    #     try:
-    #         if len(src_points) != 4 or len(dst_points) != 4:
-    #             logging.error(
-    #                 "Source and destination points must contain exactly 4 points"
-    #             )
-    #             return None
+        Returns:
+            3x3透视变换矩阵，如果计算失败则返回None
+        """
+        try:
+            if len(src_points) != 4 or len(dst_points) != 4:
+                logging.error(
+                    "Source and destination points must contain exactly 4 points"
+                )
+                return None
 
-    #         # 转换为numpy数组并指定数据类型
-    #         src_pts = np.array(src_points, dtype=np.float32)
-    #         dst_pts = np.array(dst_points, dtype=np.float32)
+            # 转换为numpy数组并指定数据类型
+            src_pts = np.array(src_points, dtype=np.float32)
+            dst_pts = np.array(dst_points, dtype=np.float32)
 
-    #         # 计算透视变换矩阵
-    #         matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
+            # 计算透视变换矩阵
+            matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
 
-    #         logging.debug("Perspective matrix computed successfully")
-    #         return matrix
+            logging.debug("Perspective matrix computed successfully")
+            return matrix
 
-    #     except Exception as e:
-    #         logging.error(f"Error occurred while computing perspective matrix: {e}")
-    #         return None
+        except Exception as e:
+            logging.error(f"Error occurred while computing perspective matrix: {e}")
+            return None
+
+    def get_angle_np(self, k1, k2):
+        """
+        已知斜率计算夹角，返回角度
+        return:
+            angle: 角度值，单位为度，保留两位小数
+        """
+        cos_theta = (1 + k1 * k2) / (np.sqrt(1 + k1**2) * np.sqrt(1 + k2**2))
+        cos_theta = np.clip(cos_theta, -1, 1)  # 防止浮点误差越界
+        return np.degrees(np.arccos(cos_theta))
 
     def _get_search_start_point(self, y_coord, prev_line, img_width, is_left=True):
         """根据上一帧边线位置获取当前帧的搜索起点
@@ -259,9 +274,9 @@ class ImageProcess:
             dy = abs(y2 - y1)
 
             # 如果两点间距离过大，进行线性插值
-            if dx > 10 or dy > 5:
+            if dx > 6 or dy > 3:
                 # 计算需要插入的点数量（每隔3-5个像素填充一个点）
-                num_points = max(dx // 5, dy // 3, 2)
+                num_points = max(dx // 3, dy // 2, 2)
 
                 # 在两点之间进行线性插值
                 for t in range(1, num_points + 1):
@@ -315,7 +330,38 @@ class ImageProcess:
 
         return left_line, right_line
 
-    def get_side_line(self, img, canvas, is_draw=False):
+    def fit_polynomial(self):
+        """根据self.mid_line的原始值，用二次函数拟合曲线，返回曲线上的点的列表 self.fit_mid_line"""
+        self.fit_mid_line = []
+        if len(self.mid_line) < 3:
+            logging.warning("Not enough points for polynomial fitting")
+            return
+
+        try:
+            # 提取y和x坐标（y为自变量，x为因变量）
+            y_points = np.array([point[1] for point in self.mid_line])
+            x_points = np.array([point[0] for point in self.mid_line])
+
+            # 二次多项式拟合: x = a*y^2 + b*y + c
+            coefficients = np.polyfit(y_points, x_points, 2)
+
+            # 生成y的序列（从最小y到最大y）
+            y_min = int(y_points.min())
+            y_max = int(y_points.max())
+
+            # 计算拟合曲线上的点
+            for y in range(y_min, y_max + 1):
+                x = int(np.polyval(coefficients, y))
+                self.fit_mid_line.append((x, y))
+
+            logging.debug(
+                f"Polynomial fitting completed: {len(self.fit_mid_line)} points, "
+                f"coefficients: {coefficients}"
+            )
+        except Exception as e:
+            logging.error(f"Error occurred during polynomial fitting: {e}")
+
+    def get_side_line_task_1(self, img, canvas, is_draw=False):
         """从图像的中线往两边搜索，获取赛道边线
 
         Args:
@@ -478,36 +524,263 @@ class ImageProcess:
             # 更新上一帧的边线信息
             self._update_prev_frame_lines()
 
-    def fit_polynomial(self):
-        """根据self.mid_line的原始值，用二次函数拟合曲线，返回曲线上的点的列表 self.fit_mid_line"""
-        self.fit_mid_line = []
-        if len(self.mid_line) < 3:
-            logging.warning("Not enough points for polynomial fitting")
-            return
+    def get_side_line_task_2(self, img, canvas, is_draw=False):
+        """从图像的中线往两边搜索，获取赛道边线
 
+        Args:
+            img: 输入的二值化图像
+            canvas: 用于绘制的画布图像
+            is_draw: 是否在canvas上绘制调试信息，默认为False
+        """
+        # 从图像中间向两边搜索，获取边线
+        up_ratio = 0.55
+        down_ratio = 0.90
+
+        x_continual = 40
+        y_continual = 15
+
+        angle_high_thresh = 110
+        angle_low_thresh = 30
+
+        left_prev_x, left_prev_y, right_prev_x, right_prev_y = None, None, None, None
+
+        left_cur_k, left_prev_k, right_cur_k, right_prev_k = None, None, None, None
+
+        find_left_corner, find_right_corner = False, False
+        left_c, right_c = None, None
+        mid_x = int(img.shape[1] // 2)
         try:
-            # 提取y和x坐标（y为自变量，x为因变量）
-            y_points = np.array([point[1] for point in self.mid_line])
-            x_points = np.array([point[0] for point in self.mid_line])
+            self.left_line.clear()
+            self.right_line.clear()
+            self.supple_left_line.clear()
+            self.supple_right_line.clear()
+            self.mid_line.clear()
+            self.fit_mid_line.clear()
 
-            # 二次多项式拟合: x = a*y^2 + b*y + c
-            coefficients = np.polyfit(y_points, x_points, 2)
+            # 从图像下方（靠近车辆）开始搜索
+            for y in range(
+                int(img.shape[0] * down_ratio), int(img.shape[0] * up_ratio), -1
+            ):
+                for x in range(mid_x, 0, -1):
+                    # 找打黑白跳变点
+                    if img[y, x] == 0 and img[y, x - 1] != 0:
+                        logging.debug(
+                            f"find left line at {x}, {y} , value : {img[y, x]}"
+                        )
+                        if len(self.left_line) == 0:
+                            self.left_line.append((x, y))
+                            break
+                        else:
+                            # 如果不是第一个点，判断连续性
+                            if (
+                                abs(y - self.left_line[len(self.left_line) - 1][1])
+                                < x_continual
+                                and abs(x - self.left_line[len(self.left_line) - 1][0])
+                                < y_continual
+                            ):
+                                # 根据夹角判断是否遇到拐点
+                                # 选择两个点为一个点蔟，增加稳定性
+                                if find_left_corner is False:
+                                    # 第一个点，不参与计算夹角
+                                    if left_prev_x is None and left_prev_y is None:
+                                        left_prev_x, left_prev_y = x, y
 
-            # 生成y的序列（从最小y到最大y）
-            y_min = int(y_points.min())
-            y_max = int(y_points.max())
+                                    else:
+                                        logging.debug(
+                                            f"left_prev_x: {left_prev_x} , left_prev_y: {left_prev_y} , cur_x: {x} , cur_y: {y} "
+                                        )
+                                        left_cur_k = (y - left_prev_y) / (
+                                            x - left_prev_x + 1e-5
+                                        )
+                                        if left_prev_k is not None:
+                                            angle = self.get_angle_np(
+                                                left_cur_k, left_prev_k
+                                            )
+                                            logging.debug(
+                                                f"left line angle: {angle} , cur_k: {left_cur_k} , prev_k: {left_prev_k}"
+                                            )
+                                            # 夹角在阈值之间，判定为拐点
+                                            if (
+                                                angle_low_thresh
+                                                < angle
+                                                < angle_high_thresh
+                                            ):
+                                                # 记录突变点
+                                                logging.info(
+                                                    f"slope mutation detected at {x}, {y} , angle: {angle} , prev_k: {left_prev_k} ,cur_k: {left_cur_k} "
+                                                )
+                                                # 找到拐点后就不再寻找
+                                                left_c = (
+                                                    left_prev_x,
+                                                    left_prev_y,
+                                                )
+                                                find_left_corner = True
 
-            # 计算拟合曲线上的点
-            for y in range(y_min, y_max + 1):
-                x = int(np.polyval(coefficients, y))
-                self.fit_mid_line.append((x, y))
+                                        # 更新点
+                                        left_prev_k = left_cur_k
+                                        left_prev_x, left_prev_y = x, y
 
-            logging.debug(
-                f"Polynomial fitting completed: {len(self.fit_mid_line)} points, "
-                f"coefficients: {coefficients}"
-            )
+                                # 如果不是拐点，正常添加到边线中
+                                self.left_line.append((x, y))
+                                break
+
+                            else:
+                                logging.debug(
+                                    f"jump too far at {x}, {y} , last point : {self.left_line[len(self.left_line) - 1]}"
+                                )
+
+                # 右线
+                for x in range(mid_x, img.shape[1] - 1):
+                    # 找到黑白跳变点
+                    if img[y, x] == 0 and img[y, x + 1] != 0:
+                        logging.debug(
+                            f"find right line at {x}, {y} , value : {img[y, x]}"
+                        )
+                        if len(self.right_line) == 0:
+                            self.right_line.append((x, y))
+                            break
+                        else:
+                            # 如果不是第一个点，判断连续性
+                            if (
+                                abs(y - self.right_line[len(self.right_line) - 1][1])
+                                < x_continual
+                                and abs(
+                                    x - self.right_line[len(self.right_line) - 1][0]
+                                )
+                                < y_continual
+                            ):
+                                # 通过夹角找拐点
+                                if find_right_corner is False:
+                                    if right_prev_x is None and right_prev_y is None:
+                                        right_prev_x, right_prev_y = x, y
+
+                                    else:
+                                        logging.debug(
+                                            f"right_prev_x: {right_prev_x} , right_prev_y: {right_prev_y} , cur_x: {x} , cur_y: {y} "
+                                        )
+                                        right_cur_k = (y - right_prev_y) / (
+                                            x - right_prev_x + 1e-5
+                                        )
+                                        if right_prev_k is not None:
+                                            angle = self.get_angle_np(
+                                                right_cur_k, right_prev_k
+                                            )
+                                            logging.debug(
+                                                f"right line angle: {angle} , cur_k: {right_cur_k} , prev_k: {right_prev_k}"
+                                            )
+                                            if (
+                                                angle_low_thresh
+                                                < angle
+                                                < angle_high_thresh
+                                            ):
+                                                # 记录突变点
+                                                logging.info(
+                                                    f"slope mutation detected at {x}, {y} , angle: {angle} , prev_k: {right_prev_k} ,cur_k: {right_cur_k} "
+                                                )
+
+                                                # 只寻找一个拐点
+                                                right_c = (
+                                                    right_prev_x,
+                                                    right_prev_y,
+                                                )
+                                                find_right_corner = True
+                                        # 更新点
+                                        right_prev_k = right_cur_k
+                                        right_prev_x, right_prev_y = x, y
+
+                                self.right_line.append((x, y))
+                                break
+                            else:
+                                logging.debug(
+                                    f"jump too far at {x}, {y} , last point : {self.right_line[len(self.right_line) - 1]}"
+                                )
+
+            # 找到双拐点后，用右边线拐点后的斜率补充左边线
+            if left_c is not None and right_c is not None:
+                # 在 right_line 中找到 right_c 的索引
+                right_c_idx = None
+                for idx, pt in enumerate(self.right_line):
+                    if pt[0] == right_c[0] and pt[1] == right_c[1]:
+                        right_c_idx = idx
+                        break
+
+                if right_c_idx is not None and right_c_idx + 1 < len(self.right_line):
+                    # 计算 right_c 之后的点的整体斜率
+                    post_corner = self.right_line[right_c_idx + 1 :]
+                    right_total_dx = post_corner[-1][0] - post_corner[0][0]
+                    right_total_dy = post_corner[-1][1] - post_corner[0][1]
+
+                    if abs(right_total_dx) > 1e-5:
+                        right_avg_slope = right_total_dy / right_total_dx
+
+                        # 在 left_line 中找到 left_c 的索引
+                        left_c_idx = None
+                        for idx, pt in enumerate(self.left_line):
+                            if pt[0] == left_c[0] and pt[1] == left_c[1]:
+                                left_c_idx = idx
+                                break
+
+                        if left_c_idx is not None:
+                            post_corner_left = self.left_line[left_c_idx + 1 :]
+                            left_total_dx = (
+                                post_corner_left[-1][0] - post_corner_left[0][0]
+                            )
+                            left_total_dy = (
+                                post_corner_left[-1][1] - post_corner_left[0][1]
+                            )
+                            if abs(left_total_dx) > 1e-5:
+                                left_avg_slope = left_total_dy / left_total_dx
+
+                                # 如果斜率关于y轴线对称，说明遇到十字路口，才需要补线
+                                # if right_avg_slope < 0 and left_avg_slope > 0:
+                                if right_avg_slope * left_avg_slope < 0:
+                                    # 移除 left_c 之后的点
+                                    self.left_line = self.left_line[: left_c_idx + 1]
+
+                                    # 用平均斜率从 left_c 向上延伸
+                                    lx, ly = left_c
+                                    up_limit = int(img.shape[0] * 0.55)
+
+                                    for step in range(1, 100):
+                                        new_y = ly - step
+                                        if new_y < up_limit:
+                                            break
+                                        new_x = int(lx + (new_y - ly) / right_avg_slope)
+                                        if new_x < 0 or new_x >= img.shape[1]:
+                                            break
+                                        self.left_line.append((new_x, new_y))
+
+            # 线性补插，优化边线
+            if len(self.left_line) > 0 and len(self.right_line) > 0:
+                # 线性插值
+                self.supple_left_line = self._linear_interpolation(self.left_line)
+                self.supple_right_line = self._linear_interpolation(self.right_line)
+
+                # 填充边界，使线段一直延伸到左右下角
+                self.supple_left_line, self.supple_right_line = self._fill_boundary(
+                    self.supple_left_line, self.supple_right_line, img.shape
+                )
+
+            # 用优化后的边线计算中线
+            for j in range(
+                min(len(self.supple_left_line), len(self.supple_right_line))
+            ):
+                line_mid_x = (
+                    self.supple_left_line[j][0] + self.supple_right_line[j][0]
+                ) // 2
+                line_mid_y = self.supple_left_line[j][1]
+                self.mid_line.append((line_mid_x, line_mid_y))
+
+            # 多项式拟合中线
+            # self.fit_polynomial()
+
+            if is_draw and find_left_corner and left_c is not None:
+                cv2.circle(canvas, left_c, 4, (0, 255, 0), -1)
+            if is_draw and find_right_corner and right_c is not None:
+                cv2.circle(canvas, right_c, 4, (0, 255, 0), -1)
+
         except Exception as e:
-            logging.error(f"Error occurred during polynomial fitting: {e}")
+            logging.error(f"Error occurred during getting side lines : {e}")
 
     def draw_line(self, canvas):
         """绘制边线、中线
@@ -538,7 +811,7 @@ class ImageProcess:
                     f"Canvas converted to BGR (original channels: {canvas.shape[2]})"
                 )
 
-            logging.info(
+            logging.debug(
                 f"length of left_line: {len(self.supple_left_line)} , lenth of right_line: {len(self.supple_right_line)}"
             )
             # 绘制优化后的左边线（红色）
@@ -546,361 +819,289 @@ class ImageProcess:
                 cv2.circle(canvas, self.supple_left_line[i], 2, (0, 0, 255), -1)
             # 绘制优化后的右边线（绿色）
             for i in range(len(self.supple_right_line)):
-                cv2.circle(canvas, self.supple_right_line[i], 2, (0, 255, 0), -1)
+                cv2.circle(canvas, self.supple_right_line[i], 2, (0, 0, 255), -1)
             for i in range(len(self.mid_line)):
                 cv2.circle(canvas, self.mid_line[i], 2, (255, 0, 0), -1)
             for i in range(len(self.fit_mid_line)):
-                cv2.circle(canvas, self.fit_mid_line[i], 2, (255, 255, 0), -1)
+                cv2.circle(canvas, self.fit_mid_line[i], 2, (255, 255, 255), -1)
             return canvas
         except Exception as e:
             logging.error(f"Error occurred during drawing lines: {e}")
             return None
 
-    # def plot_column_histogram(
-    #     self,
-    #     binary_img,
-    #     start_row_ratio=0.0,
-    #     end_row_ratio=1.0,
-    #     min_peak_distance=20,
-    #     min_peak_height=None,
-    # ):
-    #     """沿x轴计算每列的白色像素点，并绘制成直方图
+    def plot_column_histogram(
+        self,
+        binary_img,
+        start_row_ratio=0.0,
+        end_row_ratio=1.0,
+        min_peak_distance=20,
+        min_peak_height=None,
+    ):
+        """沿x轴计算每列的白色像素点，并绘制成直方图
 
-    #     Args:
-    #         binary_img: 二值化后的图像（numpy数组）
-    #         start_row_ratio: 起始行比例（0.0-1.0），0.0表示从图像顶部开始
-    #         end_row_ratio: 结束行比例（0.0-1.0），1.0表示到图像底部结束
-    #         min_peak_distance: 峰值之间的最小距离（像素），默认20
-    #         min_peak_height: 峰值的最小高度，默认为最大值的30%
+        Args:
+            binary_img: 二值化后的图像（numpy数组）
+            start_row_ratio: 起始行比例（0.0-1.0），0.0表示从图像顶部开始
+            end_row_ratio: 结束行比例（0.0-1.0），1.0表示到图像底部结束
+            min_peak_distance: 峰值之间的最小距离（像素），默认20
+            min_peak_height: 峰值的最小高度，默认为最大值的30%
 
-    #     Returns:
-    #         hist_img: 绘制好直方图的图像
-    #         white_counts: 每列白色像素点数量的数组
-    #         peaks: 峰值的x坐标列表，从左到右排序
-    #     """
-    #     try:
-    #         if binary_img is None:
-    #             raise ValueError("binary_img is None")
+        Returns:
+            hist_img: 绘制好直方图的图像
+            white_counts: 每列白色像素点数量的数组
+            peaks: 峰值的x坐标列表，从左到右排序
+        """
+        try:
+            if binary_img is None:
+                raise ValueError("binary_img is None")
 
-    #         # 参数验证
-    #         if not (0.0 <= start_row_ratio < end_row_ratio <= 1.0):
-    #             raise ValueError(
-    #                 "start_row_ratio must be less than end_row_ratio, both in range [0.0, 1.0]"
-    #             )
+            # 参数验证
+            if not (0.0 <= start_row_ratio < end_row_ratio <= 1.0):
+                raise ValueError(
+                    "start_row_ratio must be less than end_row_ratio, both in range [0.0, 1.0]"
+                )
 
-    #         # 计算实际行范围
-    #         img_height = binary_img.shape[0]
-    #         start_row = int(start_row_ratio * img_height)
-    #         end_row = int(end_row_ratio * img_height)
+            # 计算实际行范围
+            img_height = binary_img.shape[0]
+            start_row = int(start_row_ratio * img_height)
+            end_row = int(end_row_ratio * img_height)
 
-    #         # 提取指定区域的图像
-    #         roi = binary_img[start_row:end_row, :]
+            # 提取指定区域的图像
+            roi = binary_img[start_row:end_row, :]
 
-    #         # 计算每列的白色像素点数量（只统计指定行范围）
-    #         white_counts = np.sum(roi == 255, axis=0)
+            # 计算每列的白色像素点数量（只统计指定行范围）
+            white_counts = np.sum(roi == 255, axis=0)
 
-    #         # 创建直方图图像
-    #         hist_height = 300
-    #         hist_img = np.zeros((hist_height, binary_img.shape[1], 3), dtype=np.uint8)
+            # 创建直方图图像
+            hist_height = 300
+            hist_img = np.zeros((hist_height, binary_img.shape[1], 3), dtype=np.uint8)
 
-    #         # 归一化到图像高度
-    #         if white_counts.max() > 0:
-    #             normalized_counts = (
-    #                 white_counts / white_counts.max() * (hist_height - 20)
-    #             ).astype(int)
-    #         else:
-    #             normalized_counts = white_counts
+            # 归一化到图像高度
+            if white_counts.max() > 0:
+                normalized_counts = (
+                    white_counts / white_counts.max() * (hist_height - 20)
+                ).astype(int)
+            else:
+                normalized_counts = white_counts
 
-    #         # 绘制直方图
-    #         for x, count in enumerate(normalized_counts):
-    #             cv2.line(
-    #                 hist_img,
-    #                 (x, hist_height - 1),
-    #                 (x, hist_height - 1 - count),
-    #                 (255, 255, 255),
-    #                 1,
-    #             )
+            # 绘制直方图
+            for x, count in enumerate(normalized_counts):
+                cv2.line(
+                    hist_img,
+                    (x, hist_height - 1),
+                    (x, hist_height - 1 - count),
+                    (255, 255, 255),
+                    1,
+                )
 
-    #         # 检测峰值
-    #         peaks = self._find_peaks(white_counts, min_peak_distance, min_peak_height)
+            # 检测峰值
+            peaks = self._find_peaks(white_counts, min_peak_distance, min_peak_height)
 
-    #         # 在直方图上标记峰值位置
-    #         for peak_x in peaks:
-    #             peak_height = int(normalized_counts[peak_x])
-    #             # 绘制峰值标记线（红色竖线）
-    #             cv2.line(
-    #                 hist_img,
-    #                 (peak_x, hist_height - 1),
-    #                 (peak_x, hist_height - 1 - peak_height),
-    #                 (0, 0, 255),
-    #                 2,
-    #             )
-    #             # 在峰值顶部绘制圆点
-    #             cv2.circle(
-    #                 hist_img,
-    #                 (peak_x, hist_height - 1 - peak_height),
-    #                 5,
-    #                 (0, 0, 255),
-    #                 -1,
-    #             )
+            # 在直方图上标记峰值位置
+            for peak_x in peaks:
+                peak_height = int(normalized_counts[peak_x])
+                # 绘制峰值标记线（红色竖线）
+                cv2.line(
+                    hist_img,
+                    (peak_x, hist_height - 1),
+                    (peak_x, hist_height - 1 - peak_height),
+                    (0, 0, 255),
+                    2,
+                )
+                # 在峰值顶部绘制圆点
+                cv2.circle(
+                    hist_img,
+                    (peak_x, hist_height - 1 - peak_height),
+                    5,
+                    (0, 0, 255),
+                    -1,
+                )
 
-    #         # 添加边框和标签
-    #         cv2.rectangle(
-    #             hist_img,
-    #             (0, 0),
-    #             (hist_img.shape[1] - 1, hist_img.shape[0] - 1),
-    #             (255, 255, 255),
-    #             2,
-    #         )
+            # 添加边框和标签
+            cv2.rectangle(
+                hist_img,
+                (0, 0),
+                (hist_img.shape[1] - 1, hist_img.shape[0] - 1),
+                (255, 255, 255),
+                2,
+            )
 
-    #         logging.info(
-    #             f"Column histogram generated: row range [{start_row}:{end_row}] "
-    #             f"({start_row_ratio * 100:.1f}%-{end_row_ratio * 100:.1f}%), "
-    #             f"max white pixels = {white_counts.max()}, "
-    #             f"peaks found: {len(peaks)} at positions: {peaks}"
-    #         )
-    #         return hist_img, white_counts, peaks
+            logging.info(
+                f"Column histogram generated: row range [{start_row}:{end_row}] "
+                f"({start_row_ratio * 100:.1f}%-{end_row_ratio * 100:.1f}%), "
+                f"max white pixels = {white_counts.max()}, "
+                f"peaks found: {len(peaks)} at positions: {peaks}"
+            )
+            return hist_img, white_counts, peaks
 
-    #     except Exception as e:
-    #         logging.error(f"Error occurred during plotting column histogram: {e}")
-    #         return None, None, []
+        except Exception as e:
+            logging.error(f"Error occurred during plotting column histogram: {e}")
+            return None, None, []
 
-    # def _find_peaks(self, data, min_distance=20, min_height=None):
-    #     """查找数据中的峰值
+    def _find_peaks(self, data, min_distance=20, min_height=None):
+        """查找数据中的峰值
 
-    #     Args:
-    #         data: 输入数据数组
-    #         min_distance: 峰值之间的最小距离
-    #         min_height: 峰值的最小高度，默认为最大值的30%
+        Args:
+            data: 输入数据数组
+            min_distance: 峰值之间的最小距离
+            min_height: 峰值的最小高度，默认为最大值的30%
 
-    #     Returns:
-    #         peaks: 峰值位置的列表，按x坐标排序
-    #     """
-    #     if min_height is None:
-    #         min_height = data.max() * 0.3 if data.max() > 0 else 0
+        Returns:
+            peaks: 峰值位置的列表，按x坐标排序
+        """
+        if min_height is None:
+            min_height = data.max() * 0.3 if data.max() > 0 else 0
 
-    #     peaks = []
-    #     n = len(data)
+        peaks = []
+        n = len(data)
 
-    #     for i in range(n):
-    #         # 检查当前点是否大于最小高度
-    #         if data[i] < min_height:
-    #             continue
+        for i in range(n):
+            # 检查当前点是否大于最小高度
+            if data[i] < min_height:
+                continue
 
-    #         # 检查是否是局部最大值
-    #         is_peak = True
-    #         half_window = min_distance // 2
+            # 检查是否是局部最大值
+            is_peak = True
+            half_window = min_distance // 2
 
-    #         # 检查左边
-    #         left_start = max(0, i - half_window)
-    #         if i > left_start and data[i] <= max(data[left_start:i]):
-    #             is_peak = False
+            # 检查左边
+            left_start = max(0, i - half_window)
+            if i > left_start and data[i] <= max(data[left_start:i]):
+                is_peak = False
 
-    #         # 检查右边
-    #         right_end = min(n, i + half_window + 1)
-    #         if i < right_end - 1 and data[i] <= max(data[i + 1 : right_end]):
-    #             is_peak = False
+            # 检查右边
+            right_end = min(n, i + half_window + 1)
+            if i < right_end - 1 and data[i] <= max(data[i + 1 : right_end]):
+                is_peak = False
 
-    #         if is_peak:
-    #             # 检查是否与已找到的峰值太近
-    #             too_close = False
-    #             for existing_peak in peaks:
-    #                 if abs(i - existing_peak) < min_distance:
-    #                     too_close = True
-    #                     # 如果新峰值更高，替换旧峰值
-    #                     if data[i] > data[existing_peak]:
-    #                         peaks.remove(existing_peak)
-    #                     else:
-    #                         break
-    #             if not too_close:
-    #                 peaks.append(i)
+            if is_peak:
+                # 检查是否与已找到的峰值太近
+                too_close = False
+                for existing_peak in peaks:
+                    if abs(i - existing_peak) < min_distance:
+                        too_close = True
+                        # 如果新峰值更高，替换旧峰值
+                        if data[i] > data[existing_peak]:
+                            peaks.remove(existing_peak)
+                        else:
+                            break
+                if not too_close:
+                    peaks.append(i)
 
-    #     # 按x坐标排序
-    #     peaks.sort()
-    #     return peaks
+        # 按x坐标排序
+        peaks.sort()
+        return peaks
 
-    # def slide_window(
-    #     self,
-    #     bin_img,
-    #     left_x_base,
-    #     right_x_base,
-    #     nwindows=8,
-    #     win_half_width=50,
-    #     min_threshold=100,
-    # ):
-    #     """滑动窗口法寻找赛道边线
+    def slide_window(
+        self,
+        bin_img,
+        left_x_base,
+        right_x_base,
+        nwindows=8,
+        win_half_width=50,
+        min_threshold=100,
+    ):
+        """滑动窗口法寻找赛道边线
 
-    #     Args:
-    #         white_counts: 每列白色像素点数量的数组
-    #         window_size: 窗口大小
-    #         min_threshold: 最小阈值，小于该值的列将被忽略
+        Args:
+            white_counts: 每列白色像素点数量的数组
+            window_size: 窗口大小
+            min_threshold: 最小阈值，小于该值的列将被忽略
 
-    #     Returns:
-    #         left_x: 左边线x坐标
-    #         right_x: 右边线x坐标
-    #     """
-    #     try:
-    #         if white_counts is None:
-    #             raise ValueError("white_counts is None")
+        Returns:
+            left_x: 左边线x坐标
+            right_x: 右边线x坐标
+        """
+        try:
+            # 计算窗口的上下左右边界
+            start_row_ratio = 0.6
+            end_row_ratio = 0.9
+            img_height = bin_img.shape[0]
+            high_row = int(start_row_ratio * img_height)
+            low_row = int(end_row_ratio * img_height)
+            win_height = (low_row - high_row) // nwindows
+            left_x_cur = left_x_base
+            right_x_cur = right_x_base
 
-    #         # 计算窗口的上下左右边界
-    #         start_row_ratio = 0.6
-    #         end_row_ratio = 0.9
-    #         img_height = bin_img.shape[0]
-    #         high_row = int(start_row_ratio * img_height)
-    #         low_row = int(end_row_ratio * img_height)
-    #         win_height = (low_row - high_row) // nwindows
-    #         left_x_cur = left_x_base
-    #         right_x_cur = right_x_base
+            lwin_y_low = high_row
+            lwin_y_high = lwin_y_low + win_height
+            lwin_x_low = left_x_cur - win_half_width
+            lwin_x_high = left_x_cur + win_half_width
 
-    #         lwin_y_low = high_row
-    #         lwin_y_high = lwin_y_low + win_height
-    #         lwin_x_low = left_x_cur - win_half_width
-    #         lwin_x_high = left_x_cur + win_half_width
+            rwin_y_low = high_row
+            rwin_y_high = lwin_y_low + win_height
+            rwin_x_low = right_x_cur - win_half_width
+            rwin_x_high = right_x_cur + win_half_width
 
-    #         rwin_y_low = high_row
-    #         rwin_y_high = lwin_y_low + win_height
-    #         rwin_x_low = right_x_cur - win_half_width
-    #         rwin_x_high = right_x_cur + win_half_width
+            # 绘制窗口
 
-    #         # 绘制窗口
+            # 找到窗口中的非零像素点
 
-    #         # 找到窗口中的非零像素点
+            # 如果窗口中的非零像素点数量大于阈值，则更新窗口
+        except Exception as e:
+            logging.error(f"Error occurred during sliding window: {e}")
+            return None, None
 
-    #         # 如果窗口中的非零像素点数量大于阈值，则更新窗口
-    #     except Exception as e:
-    #         logging.error(f"Error occurred during sliding window: {e}")
-    #         return None, None
+
+class ImageProcessRosNode:
+    def __init__(self):
+        rospy.init_node("image_process", anonymous=True)
+        self.bridge = CvBridge()
+        self.imgprocess = ImageProcess()
+        self.frame_count = 0
+
+        image_topic = rospy.get_param("~image_topic", "ucar_camera/image_raw")
+        self.image_sub = rospy.Subscriber(
+            image_topic,
+            Image,
+            self.image_callback,
+            queue_size=1,
+            buff_size=2**24,
+        )
+        logging.info("Subscribed image topic: %s", image_topic)
+
+    def image_callback(self, msg):
+        try:
+            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        except CvBridgeError as e:
+            logging.error("CvBridge conversion failed: %s", e)
+            return
+
+        self.frame_count += 1
+        self.imgprocess.frame = frame
+
+        binary_img = self.imgprocess.preprocess()
+        if binary_img is None:
+            logging.warning("Frame %d preprocessing failed", self.frame_count)
+            return
+
+        canvas = self.imgprocess.return_frame()
+        if canvas is None:
+            logging.warning("Frame %d failed to get canvas", self.frame_count)
+            return
+        # 识别边线和中线
+        self.imgprocess.get_side_line_task_1(binary_img, canvas, is_draw=True)
+        # 用多项式曲线拟合中线
+        self.imgprocess.fit_polynomial()
+        canvas = self.imgprocess.draw_line(canvas)
+
+        cv2.imshow("binary", binary_img)
+        if canvas is not None:
+            cv2.imshow("processed_img", canvas)
+
+        if (cv2.waitKey(1) & 0xFF) == ord("q"):
+            rospy.signal_shutdown("User requested exit")
+
+    def spin(self):
+        try:
+            rospy.spin()
+        finally:
+            cv2.destroyAllWindows()
 
 
 def main():
-    # 视频文件路径
-    video_path = r"D:\programs\ucar_ws\src\vision_line\videos\test1.avi"
-
-    # 打开视频文件
-    cap = cv2.VideoCapture(video_path)
-
-    if not cap.isOpened():
-        logging.error(f"Cannot open video: {video_path}")
-        return
-
-    logging.info(f"Video opened: {video_path}")
-    logging.info(
-        f"Video properties: {cap.get(cv2.CAP_PROP_FRAME_WIDTH)}x{cap.get(cv2.CAP_PROP_FRAME_HEIGHT)}, {cap.get(cv2.CAP_PROP_FPS)} FPS, {cap.get(cv2.CAP_PROP_FRAME_COUNT)} frames"
-    )
-
-    # 创建ImageProcess对象（不传入图片路径，用于处理视频帧）
-    imgprocess = ImageProcess()
-    imgprocess.cap = None  # 确保不使用摄像头
-
-    frame_count = 0
-    paused = False
-
-    try:
-        while True:
-            # 如果暂停，只显示当前帧
-            if not paused:
-                ret, frame = cap.read()
-                if not ret:
-                    logging.info("Video processing completed")
-                    break
-
-                frame_count += 1
-                if frame_count % 30 == 0:  # 每30帧打印一次进度
-                    logging.info(
-                        f"Processing frame {frame_count}/{int(cap.get(cv2.CAP_PROP_FRAME_COUNT))}"
-                    )
-
-                # 保存当前帧到imgprocess
-                imgprocess.frame = frame
-
-                # 预处理
-                binary_img = imgprocess.preprocess()
-                if binary_img is None:
-                    logging.warning(f"Frame {frame_count} preprocessing failed")
-                    continue
-
-                # 获取用于绘制的画布
-                canvas = imgprocess.get_canvas()
-                if canvas is None:
-                    logging.warning(f"Frame {frame_count} failed to get canvas")
-                    continue
-
-                # 获取边线（传入canvas用于绘制调试信息）
-                imgprocess.get_side_line(binary_img, canvas, is_draw=False)
-
-                # 多项式拟合
-                imgprocess.fit_polynomial()
-
-                canvas = imgprocess.draw_line(canvas)
-
-                # 显示二值化图像
-                if binary_img is not None:
-                    cv2.imshow("binary", binary_img)
-
-                # 显示处理结果
-                if canvas is not None:
-                    cv2.imshow("processed_img", canvas)
-
-                # # 做透视变换
-                # perspective_img = imgprocess.perspective_transform(
-                #     binary_img, transformation_matrix
-                # )
-
-                # # 获取用于绘制的画布
-                # canvas = imgprocess.get_canvas()
-                # if canvas is None:
-                #     logging.warning(f"Frame {frame_count} failed to get canvas")
-                #     continue
-
-                # # 获取边线（传入canvas用于绘制调试信息）
-                # imgprocess.get_side_line(perspective_img, canvas, is_draw=False)
-
-                # # 多项式拟合
-                # imgprocess.fit_polynomial()
-
-                # # 绘制结果
-                # perspective_copy = perspective_img.copy()
-                # perspective_copy = imgprocess.draw_line(perspective_copy)
-
-                # original = imgprocess.get_canvas()
-                # if original is not None:
-                #     cv2.imshow("original", original)
-
-                # # 显示二值化图像
-                # if binary_img is not None:
-                #     cv2.imshow("binary", binary_img)
-
-                # # 显示透视变换图像
-                # if perspective_img is not None:
-                #     cv2.imshow("perspective", perspective_img)
-
-                # # 显示处理结果
-                # if perspective_copy is not None:
-                #     cv2.imshow("processed_img", perspective_copy)
-
-            # 按键控制
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):  # q键退出
-                logging.info(f"User quit at frame {frame_count}")
-                break
-            elif key == ord(" "):  # 空格键暂停/继续
-                paused = not paused
-                logging.info(
-                    f"Video {'paused' if paused else 'resumed'} at frame {frame_count}"
-                )
-            elif key == ord("s"):  # s键单帧前进（暂停时）
-                if paused:
-                    paused = False
-                    logging.info(f"Step forward at frame {frame_count}")
-
-    except KeyboardInterrupt:
-        logging.info(f"Interrupted by user at frame {frame_count}")
-
-    finally:
-        # 释放资源
-        cap.release()
-        cv2.destroyAllWindows()
+    node = ImageProcessRosNode()
+    node.spin()
 
 
 if __name__ == "__main__":

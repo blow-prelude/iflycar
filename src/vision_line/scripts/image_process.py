@@ -539,12 +539,8 @@ class ImageProcess:
         angle_high_thresh = 110
         angle_low_thresh = 30
 
-        left_prev_x, left_prev_y, right_prev_x, right_prev_y = (
-            None,
-            None,
-            None,
-            None,
-        )
+        left_prev_x, left_prev_y, right_prev_x, right_prev_y = None, None, None, None
+
         left_cur_k, left_prev_k, right_cur_k, right_prev_k = None, None, None, None
 
         find_left_corner, find_right_corner = False, False
@@ -1160,10 +1156,6 @@ def main():
                 logging.info(
                     f"Video {'paused' if paused else 'resumed'} at frame {frame_count}"
                 )
-            elif key == ord("s"):  # s键单帧前进（暂停时）
-                if paused:
-                    paused = False
-                    logging.info(f"Step forward at frame {frame_count}")
 
     except KeyboardInterrupt:
         logging.info(f"Interrupted by user at frame {frame_count}")
