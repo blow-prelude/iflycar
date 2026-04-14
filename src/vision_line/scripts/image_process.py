@@ -101,7 +101,7 @@ class ImageProcess:
             logging.error(f"Error occurred during image processing: {e}")
             return None
 
-    def get_canvas(self):
+    def return_frame(self):
         """获取用于绘制的画布（当前帧的副本）
 
         Returns:
@@ -1092,7 +1092,7 @@ def main():
                     continue
 
                 # 获取用于绘制的画布
-                canvas = imgprocess.get_canvas()
+                canvas = imgprocess.return_frame()
                 if canvas is None:
                     logging.warning(f"Frame {frame_count} failed to get canvas")
                     continue
@@ -1183,7 +1183,7 @@ def main_pic():
         # 预处理
         binary_img = imgprocess.preprocess()
         # 获取用于绘制的画布
-        canvas = imgprocess.get_canvas()
+        canvas = imgprocess.return_frame()
         # 获取边线（传入canvas用于绘制调试信息）
         imgprocess.get_side_line_task_2(binary_img, canvas, is_draw=True)
         canvas = imgprocess.draw_line(canvas)
