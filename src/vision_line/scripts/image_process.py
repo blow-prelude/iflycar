@@ -17,6 +17,7 @@ class ProcessState(Enum):
     IDLE = 0  # 未收到指令，不处理
     TRACKING = 1  # 已收到指令，find_corner=False
     CORNER = 2  # 延时已到，find_corner=True
+    CROSS = 3  # 双拐点触发，find_corner=False，执行额外处理
 
 
 transformation_matrix = np.array(
@@ -51,6 +52,9 @@ class ImageProcess:
         self.supple_right_line = []
         self.mid_line = []
         self.fit_mid_line = []
+
+        self.left_c = None  # 本帧左边线拐点 (x, y)，未检测到时为 None
+        self.right_c = None  # 本帧右边线拐点 (x, y)，未检测到时为 None
 
         # 上一帧的边线信息（用于指导当前帧搜索）
         self.prev_left_line = []  # 上一帧的左边线点列表
@@ -367,6 +371,30 @@ class ImageProcess:
         except Exception as e:
             logging.error(f"Error occurred during polynomial fitting: {e}")
 
+    def judge_enter_cross_state(self, img_shape, y_ratio=0.75):
+        """判断是否满足进入 CROSS 状态的条件
+
+        Args:
+            img_shape: 图像形状 (height, width)
+            y_ratio: y 坐标阈值比例，默认 0.75
+
+        Returns:
+            bool: 满足条件返回 True，否则 False
+        """
+        if self.left_c is None or self.right_c is None:
+            return False
+        img_h = img_shape[0]
+        return self.left_c[1] >= img_h * y_ratio or self.right_c[1] >= img_h * y_ratio
+
+    def run_cross_stage(self, binary_img, canvas):
+        """CROSS 状态的额外处理（占位函数，待实现）
+
+        Args:
+            binary_img: 二值化图像
+            canvas: 画布图像
+        """
+        logging.info("CROSS stage triggered — placeholder, not yet implemented")
+
     def get_side_line_task_1(self, img, canvas, is_draw=False):
         """从图像的中线往两边搜索，获取赛道边线
 
@@ -541,7 +569,7 @@ class ImageProcess:
         """
         # 从图像中间向两边搜索，获取边线
         up_ratio = 0.55
-        down_ratio = 0.90
+        down_ratio = 0.95
 
         x_continual = 40
         y_continual = 15
@@ -563,6 +591,8 @@ class ImageProcess:
             self.supple_right_line.clear()
             self.mid_line.clear()
             self.fit_mid_line.clear()
+            self.left_c = None
+            self.right_c = None
 
             # 从图像下方（靠近车辆）开始搜索
             for y in range(
@@ -622,6 +652,7 @@ class ImageProcess:
                                                     left_prev_x,
                                                     left_prev_y,
                                                 )
+                                                self.left_c = left_c
                                                 find_left_corner = True
 
                                         # 更新点
@@ -691,6 +722,7 @@ class ImageProcess:
                                                     right_prev_x,
                                                     right_prev_y,
                                                 )
+                                                self.right_c = right_c
                                                 find_right_corner = True
                                         # 更新点
                                         right_prev_k = right_cur_k
@@ -790,11 +822,13 @@ class ImageProcess:
         except Exception as e:
             logging.error(f"Error occurred during getting side lines : {e}")
 
-    def draw_line(self, canvas):
+    def draw_line(self, canvas, fps=None, draw_fps=True):
         """绘制边线、中线
 
         Args:
             canvas: 用于绘制的画布图像
+            fps: 实时FPS值
+            draw_fps: 是否绘制实时FPS，默认为True
 
         Returns:
             绘制后的画布图像，如果出错则返回None
@@ -817,6 +851,20 @@ class ImageProcess:
                 )
                 logging.debug(
                     f"Canvas converted to BGR (original channels: {canvas.shape[2]})"
+                )
+
+            # 绘制实时FPS（左上角）
+            if draw_fps:
+                fps_text = f"FPS: {fps:.2f}" if fps is not None else "FPS: 0.00"
+                cv2.putText(
+                    canvas,
+                    fps_text,
+                    (10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 0),
+                    2,
+                    cv2.LINE_AA,
                 )
 
             logging.debug(
@@ -1063,20 +1111,19 @@ def main():
         return
 
     logging.info(f"Video opened: {video_path}")
-    logging.info(
-        f"Video properties: {cap.get(cv2.CAP_PROP_FRAME_WIDTH)}x{cap.get(cv2.CAP_PROP_FRAME_HEIGHT)}, {cap.get(cv2.CAP_PROP_FPS)} FPS, {cap.get(cv2.CAP_PROP_FRAME_COUNT)} frames"
-    )
 
-    # 创建ImageProcess对象（不传入图片路径，用于处理视频帧）
     imgprocess = ImageProcess()
     imgprocess.cap = None  # 确保不使用摄像头
 
-    frame_count = 0
     paused = False
+
+    # FPS 计算：使用高精度计时器，逐帧更新 imgprocess.fps
+    prev_t = None  # 上一帧时间戳（time.perf_counter）
+    fps = 0.0
 
     # 状态机参数
     command_received = True  # TODO: 替换为ROS订阅回调，动态更新
-    corner_delay_s = 2.0  # 延时秒数，超过后启用拐点检测
+    corner_delay_s = 1.5  # 延时秒数，超过后启用拐点检测
 
     # 状态机变量
     state = ProcessState.IDLE
@@ -1091,11 +1138,13 @@ def main():
                     logging.info("Video processing completed")
                     break
 
-                frame_count += 1
-                if frame_count % 30 == 0:  # 每30帧打印一次进度
-                    logging.debug(
-                        f"Processing frame {frame_count}/{int(cap.get(cv2.CAP_PROP_FRAME_COUNT))}"
-                    )
+                # --- 实时 FPS 计算（逐帧更新）---
+                now_t = time.perf_counter()
+                if prev_t is not None:
+                    dt = now_t - prev_t
+                    if dt > 1e-6:
+                        fps = 1.0 / dt
+                prev_t = now_t
 
                 # --- 状态机：状态转移 ---
                 if state == ProcessState.IDLE:
@@ -1103,7 +1152,11 @@ def main():
                         state = ProcessState.TRACKING
                         t0 = time.time()
                         logging.info("State: IDLE -> TRACKING (command received)")
-                elif state in (ProcessState.TRACKING, ProcessState.CORNER):
+                elif state in (
+                    ProcessState.TRACKING,
+                    ProcessState.CORNER,
+                    ProcessState.CROSS,
+                ):
                     if not command_received:
                         state = ProcessState.IDLE
                         t0 = None
@@ -1123,7 +1176,7 @@ def main():
                     # 预处理
                     binary_img = imgprocess.preprocess()
                     if binary_img is None:
-                        logging.warning(f"Frame {frame_count} preprocessing failed")
+                        logging.warning("Frame preprocessing failed")
                     else:
                         # 获取用于绘制的画布
                         canvas = imgprocess.return_frame()
@@ -1139,10 +1192,24 @@ def main():
                                 find_corner=find_corner,
                             )
 
+                            # CORNER 状态：处理完毕后检查是否进入 CROSS
+                            if state == ProcessState.CORNER:
+                                if imgprocess.judge_enter_cross_state(
+                                    binary_img.shape, 0.75
+                                ):
+                                    state = ProcessState.CROSS
+                                    logging.info(
+                                        "State: CORNER -> CROSS (dual corner detected)"
+                                    )
+
+                            # CROSS 状态：执行额外处理
+                            if state == ProcessState.CROSS:
+                                imgprocess.run_cross_stage(binary_img, canvas)
+
                             # 多项式拟合
                             imgprocess.fit_polynomial()
 
-                            canvas = imgprocess.draw_line(canvas)
+                            canvas = imgprocess.draw_line(canvas, fps, draw_fps=True)
 
                             # 显示二值化图像
                             cv2.imshow("binary", binary_img)
@@ -1190,16 +1257,19 @@ def main():
             # 按键控制
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):  # q键退出
-                logging.info(f"User quit at frame {frame_count}")
+                logging.info("User quit")
                 break
             elif key == ord(" "):  # 空格键暂停/继续
                 paused = not paused
-                logging.info(
-                    f"Video {'paused' if paused else 'resumed'} at frame {frame_count}"
-                )
+                if paused:
+                    logging.info("Video paused")
+                else:
+                    # 恢复播放时重置 prev_t，避免首帧 FPS 因暂停时间被拉低
+                    prev_t = None
+                    logging.info("Video resumed")
 
     except KeyboardInterrupt:
-        logging.info(f"Interrupted by user at frame {frame_count}")
+        logging.info("Interrupted by user , start exit...")
 
     finally:
         # 释放资源
