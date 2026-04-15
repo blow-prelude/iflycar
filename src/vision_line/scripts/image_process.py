@@ -1,4 +1,6 @@
 import logging
+import time
+from enum import Enum
 
 import cv2
 import numpy as np
@@ -9,6 +11,13 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+
+class ProcessState(Enum):
+    IDLE = 0  # 未收到指令，不处理
+    TRACKING = 1  # 已收到指令，find_corner=False
+    CORNER = 2  # 延时已到，find_corner=True
+
 
 transformation_matrix = np.array(
     [
@@ -521,13 +530,14 @@ class ImageProcess:
             # 更新上一帧的边线信息
             self._update_prev_frame_lines()
 
-    def get_side_line_task_2(self, img, canvas, is_draw=False):
+    def get_side_line_task_2(self, img, canvas, is_draw=False, find_corner=False):
         """从图像的中线往两边搜索，获取赛道边线
 
         Args:
             img: 输入的二值化图像
             canvas: 用于绘制的画布图像
             is_draw: 是否在canvas上绘制调试信息，默认为False
+            find_corner: 是否搜寻拐点
         """
         # 从图像中间向两边搜索，获取边线
         up_ratio = 0.55
@@ -575,9 +585,10 @@ class ImageProcess:
                                 and abs(x - self.left_line[len(self.left_line) - 1][0])
                                 < y_continual
                             ):
+                                # 需要根据传入参数判断是否寻找拐点
                                 # 根据夹角判断是否遇到拐点
                                 # 选择两个点为一个点蔟，增加稳定性
-                                if find_left_corner is False:
+                                if find_corner and not find_left_corner:
                                     # 第一个点，不参与计算夹角
                                     if left_prev_x is None and left_prev_y is None:
                                         left_prev_x, left_prev_y = x, y
@@ -603,7 +614,7 @@ class ImageProcess:
                                                 < angle_high_thresh
                                             ):
                                                 # 记录突变点
-                                                logging.info(
+                                                logging.debug(
                                                     f"slope mutation detected at {x}, {y} , angle: {angle} , prev_k: {left_prev_k} ,cur_k: {left_cur_k} "
                                                 )
                                                 # 找到拐点后就不再寻找
@@ -647,7 +658,7 @@ class ImageProcess:
                                 < y_continual
                             ):
                                 # 通过夹角找拐点
-                                if find_right_corner is False:
+                                if find_corner and find_right_corner is False:
                                     if right_prev_x is None and right_prev_y is None:
                                         right_prev_x, right_prev_y = x, y
 
@@ -671,7 +682,7 @@ class ImageProcess:
                                                 < angle_high_thresh
                                             ):
                                                 # 记录突变点
-                                                logging.info(
+                                                logging.debug(
                                                     f"slope mutation detected at {x}, {y} , angle: {angle} , prev_k: {right_prev_k} ,cur_k: {right_cur_k} "
                                                 )
 
@@ -1063,6 +1074,14 @@ def main():
     frame_count = 0
     paused = False
 
+    # 状态机参数
+    command_received = True  # TODO: 替换为ROS订阅回调，动态更新
+    corner_delay_s = 2.0  # 延时秒数，超过后启用拐点检测
+
+    # 状态机变量
+    state = ProcessState.IDLE
+    t0 = None  # 指令开始时刻
+
     try:
         while True:
             # 如果暂停，只显示当前帧
@@ -1078,36 +1097,58 @@ def main():
                         f"Processing frame {frame_count}/{int(cap.get(cv2.CAP_PROP_FRAME_COUNT))}"
                     )
 
-                # 保存当前帧到imgprocess
-                imgprocess.frame = frame
+                # --- 状态机：状态转移 ---
+                if state == ProcessState.IDLE:
+                    if command_received:
+                        state = ProcessState.TRACKING
+                        t0 = time.time()
+                        logging.info("State: IDLE -> TRACKING (command received)")
+                elif state in (ProcessState.TRACKING, ProcessState.CORNER):
+                    if not command_received:
+                        state = ProcessState.IDLE
+                        t0 = None
+                        logging.info("State: -> IDLE (command revoked)")
+                    elif state == ProcessState.TRACKING and t0 is not None:
+                        if time.time() - t0 >= corner_delay_s:
+                            state = ProcessState.CORNER
+                            logging.info(
+                                f"State: TRACKING -> CORNER (after {corner_delay_s}s)"
+                            )
 
-                # 预处理
-                binary_img = imgprocess.preprocess()
-                if binary_img is None:
-                    logging.warning(f"Frame {frame_count} preprocessing failed")
-                    continue
+                # --- 非 IDLE 状态才执行图像处理 ---
+                if state != ProcessState.IDLE:
+                    # 保存当前帧到imgprocess
+                    imgprocess.frame = frame
 
-                # 获取用于绘制的画布
-                canvas = imgprocess.return_frame()
-                if canvas is None:
-                    logging.warning(f"Frame {frame_count} failed to get canvas")
-                    continue
+                    # 预处理
+                    binary_img = imgprocess.preprocess()
+                    if binary_img is None:
+                        logging.warning(f"Frame {frame_count} preprocessing failed")
+                    else:
+                        # 获取用于绘制的画布
+                        canvas = imgprocess.return_frame()
+                        if canvas is not None:
+                            # 根据状态决定 find_corner 参数
+                            find_corner = state == ProcessState.CORNER
 
-                # 获取边线（传入canvas用于绘制调试信息）
-                imgprocess.get_side_line_task_2(binary_img, canvas, is_draw=True)
+                            # 获取边线（传入canvas用于绘制调试信息）
+                            imgprocess.get_side_line_task_2(
+                                binary_img,
+                                canvas,
+                                is_draw=True,
+                                find_corner=find_corner,
+                            )
 
-                # 多项式拟合
-                imgprocess.fit_polynomial()
+                            # 多项式拟合
+                            imgprocess.fit_polynomial()
 
-                canvas = imgprocess.draw_line(canvas)
+                            canvas = imgprocess.draw_line(canvas)
 
-                # 显示二值化图像
-                if binary_img is not None:
-                    cv2.imshow("binary", binary_img)
+                            # 显示二值化图像
+                            cv2.imshow("binary", binary_img)
 
-                # 显示处理结果
-                if canvas is not None:
-                    cv2.imshow("processed_img", canvas)
+                            # 显示处理结果
+                            cv2.imshow("processed_img", canvas)
 
                 # # 做透视变换
                 # perspective_img = imgprocess.perspective_transform(

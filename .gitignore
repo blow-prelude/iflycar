@@ -1,6 +1,8 @@
 /devel
 /build
+.catkin_workspace
 /.vscode
 /.claude
 /.worktrees
-/src/.vscode
+/docs
+
