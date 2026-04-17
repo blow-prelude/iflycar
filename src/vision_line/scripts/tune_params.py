@@ -24,6 +24,49 @@ logging.basicConfig(
 )
 
 
+class ParamSlider(QWidget):
+    """单个参数的滑动条组件"""
+
+    # 信号：参数值改变时发出 (参数名, 新值)
+    valueChanged = pyqtSignal(str, int)
+
+    def __init__(self, param_name: str, min_val: int, max_val: int, default_val: int, parent=None):
+        super().__init__(parent)
+        self.param_name = param_name
+
+        # 创建水平布局
+        layout = QHBoxLayout()
+
+        # 参数名称标签
+        name_label = QLabel(param_name)
+        name_label.setMinimumWidth(80)
+        layout.addWidget(name_label)
+
+        # 滑动条
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setMinimum(min_val)
+        self.slider.setMaximum(max_val)
+        self.slider.setValue(default_val)
+        self.slider.valueChanged.connect(self._on_value_changed)
+        layout.addWidget(self.slider)
+
+        # 数值显示标签
+        self.value_label = QLabel(str(default_val))
+        self.value_label.setMinimumWidth(40)
+        layout.addWidget(self.value_label)
+
+        self.setLayout(layout)
+
+    def _on_value_changed(self, value: int):
+        """滑动条值改变时的槽函数"""
+        self.value_label.setText(str(value))
+        self.valueChanged.emit(self.param_name, value)
+
+    def value(self) -> int:
+        """获取当前值"""
+        return self.slider.value()
+
+
 def cv2_to_qimage(img: np.ndarray) -> QImage:
     """将 OpenCV BGR 图像转换为 QImage
 
