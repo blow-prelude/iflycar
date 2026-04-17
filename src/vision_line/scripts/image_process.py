@@ -4,7 +4,6 @@ from enum import Enum
 
 import cv2
 import numpy as np
-from camera_capture import CameraCapture
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,6 +17,7 @@ class ProcessState(Enum):
     TRACKING = 1  # 已收到指令，find_corner=False
     CORNER = 2  # 延时已到，find_corner=True
     CROSS = 3  # 双拐点触发，find_corner=False，执行额外处理
+    TURNING = 4  # 新增：检测到停止线后的转弯状态
 
 
 transformation_matrix = np.array(
@@ -30,7 +30,7 @@ transformation_matrix = np.array(
 
 
 class ImageProcess:
-    def __init__(self, img_path=None, use_camera=False):
+    def __init__(self, img_path=None, img=None):
         """
         初始化图像处理对象
 
@@ -38,13 +38,9 @@ class ImageProcess:
             img_path: 图片路径，如果提供则从图片读取
             use_camera: 是否使用摄像头，默认False
         """
-        if use_camera:
-            self.cap = CameraCapture(index=0, width=640, height=480)
-            self.img_path = None
-        else:
-            self.cap = None
-            self.img_path = img_path
-        self.frame = None
+
+        self.img_path = img_path
+        self.frame = img
         self.canvas = None
         self.left_line = []
         self.right_line = []
@@ -66,53 +62,75 @@ class ImageProcess:
         self.search_range = 100  # 搜索范围（像素），向左/右搜索的最大距离
         self.search_offset = 30  # 搜索偏移量（像素）
 
+    def preprocess_gray(self):
+        try:
+            if self.img_path is not None:
+                # 从图片文件读取
+                self.frame = cv2.imread(self.img_path)
+
+            if self.frame is not None:
+                # 如果图片太大，按比例缩小
+                if self.frame.shape[0] >= 240 or self.frame.shape[1] >= 320:
+                    # 将图片按比例缩小，使宽和高都不超过640和480
+                    h, w = self.frame.shape[:2]
+                    scale = min(240 / h, 320 / w)
+                    new_h = int(h * scale)
+                    new_w = int(w * scale)
+                    self.frame = cv2.resize(
+                        self.frame, (new_w, new_h), interpolation=cv2.INTER_AREA
+                    )
+                gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
+                med = cv2.medianBlur(gray, 3)  # 中值滤波平滑图像，减少噪点
+                gauss = cv2.GaussianBlur(med, (3, 3), 0)  # 用高斯模糊平滑图像，减少噪点
+                return gauss
+            else:
+                logging.error("No image source available")
+                return None
+        except Exception as e:
+            logging.error(f"Error occurred during image preprocessing: {e}")
+            return None
+
     def preprocess(self):
         """做预处理，得到二值化的图像"""
         try:
-            # 如果frame已经设置好（视频处理模式），直接使用
-            if self.frame is None:
-                if self.cap is not None:
-                    # 使用摄像头
-                    self.frame = self.cap.get_picture()
-                elif self.img_path is not None:
-                    # 从图片文件读取
-                    self.frame = cv2.imread(self.img_path)
-                else:
-                    # 既没有摄像头也没有图片路径
-                    logging.error("No image source available")
-                    return None
+            if self.img_path is not None:
+                # 从图片文件读取
+                self.frame = cv2.imread(self.img_path)
 
-            # 检查frame是否有效
-            if self.frame is None:
-                logging.error("Failed to get frame")
-                return None
+            elif self.frame is not None:
+                # 如果图片太大，按比例缩小
+                if self.frame.shape[0] >= 240 or self.frame.shape[1] >= 320:
+                    # 将图片按比例缩小，使宽和高都不超过640和480
+                    h, w = self.frame.shape[:2]
+                    scale = min(240 / h, 320 / w)
+                    new_h = int(h * scale)
+                    new_w = int(w * scale)
+                    self.frame = cv2.resize(
+                        self.frame, (new_w, new_h), interpolation=cv2.INTER_AREA
+                    )
 
-            # 如果图片太大，按比例缩小
-            if self.frame.shape[0] >= 240 or self.frame.shape[1] >= 320:
-                # 将图片按比例缩小，使宽和高都不超过640和480
-                h, w = self.frame.shape[:2]
-                scale = min(240 / h, 320 / w)
-                new_h = int(h * scale)
-                new_w = int(w * scale)
-                self.frame = cv2.resize(
-                    self.frame, (new_w, new_h), interpolation=cv2.INTER_AREA
-                )
-                self.canvas = self.frame.copy()
+                gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
+                binary = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)[1]
+                # kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+                # erode = cv2.erode(binary, kernel, iterations=2)  # 用腐消除图像中较亮的区域
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+                dila = cv2.dilate(binary, kernel, iterations=1)  # 用膨胀连接断开的线段
+                close = cv2.morphologyEx(
+                    binary, cv2.MORPH_CLOSE, kernel, iterations=3
+                )  # 用闭运算消除图像中较暗的区域
+                gauss = cv2.GaussianBlur(
+                    dila, (3, 3), 0
+                )  # 用高斯模糊平滑图像，减少噪点
+                return dila
 
-            grey = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
-            binary = cv2.threshold(grey, 180, 255, cv2.THRESH_BINARY)[1]
-            # kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
-            # erode = cv2.erode(binary, kernel, iterations=2)  # 用腐消除图像中较亮的区域
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-            dila = cv2.dilate(binary, kernel, iterations=1)  # 用膨胀连接断开的线段
-            close = cv2.morphologyEx(
-                binary, cv2.MORPH_CLOSE, kernel, iterations=3
-            )  # 用闭运算消除图像中较暗的区域
-            gauss = cv2.GaussianBlur(dila, (3, 3), 0)  # 用高斯模糊平滑图像，减少噪点
-            return dila
+            else:
+                # 既没有摄像头也没有图片路径
+                raise ValueError("No image source available")
+        except ValueError as ve:
+            logging.error(f"Value error during image processing: {ve}")
+
         except Exception as e:
             logging.error(f"Error occurred during image processing: {e}")
-            return None
 
     def return_frame(self):
         """获取用于绘制的画布（当前帧的副本）
@@ -416,14 +434,22 @@ class ImageProcess:
         img_h = img_shape[0]
         return self.left_c[1] >= img_h * y_ratio or self.right_c[1] >= img_h * y_ratio
 
-    def run_cross_stage(self, binary_img, canvas):
-        """CROSS 状态的额外处理（占位函数，待实现）
+    def should_enter_turning(self, stop_mid, img_shape, y_thresh=0.78):
+        """判断是否应该进入 TURNING 状态
 
         Args:
-            binary_img: 二值化图像
-            canvas: 画布图像
+            stop_mid: 停止线中点坐标 (x, y) 或 None
+            img_shape: 图像形状 (h, w, ...)
+            y_thresh: y 坐标阈值（归一化），默认 0.78
+
+        Returns:
+            bool: True 表示应该进入 TURNING 状态
         """
-        logging.info("CROSS stage triggered — placeholder, not yet implemented")
+        if stop_mid is None:
+            return False
+
+        y_norm = stop_mid[1] / img_shape[0]
+        return y_norm > y_thresh
 
     def get_side_line_task_1(self, img, canvas, is_draw=False):
         """从图像的中线往两边搜索，获取赛道边线
@@ -608,9 +634,10 @@ class ImageProcess:
         right_nxt_p, right_cur_p, right_pre_p = None, None, None
 
         find_left_corner, find_right_corner = False, False
-        left_c, right_c = None, None
         mid_x = int(img.shape[1] // 2)
+
         try:
+            # 清空之前搜索到的赛道线
             self.left_line.clear()
             self.right_line.clear()
             self.supple_left_line.clear()
@@ -1004,6 +1031,45 @@ class ImageProcess:
             return None, None
 
 
+def main_test():
+    # 视频文件路径
+    video_path = r"D:\programs\ucar_ws\src\vision_line\videos\test2.avi"
+
+    # 打开视频文件
+    cap = cv2.VideoCapture(video_path)
+
+    if not cap.isOpened():
+        logging.error(f"Cannot open video: {video_path}")
+        return
+
+    logging.info(f"Video opened: {video_path}")
+
+    imgprocess = ImageProcess()
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                logging.info("Video completed or cannot read frame")
+                break
+
+            imgprocess.frame = frame
+            # 预处理
+            gray = imgprocess.preprocess_gray()
+            if gray is not None:
+                cv2.imshow("gray", gray)
+                cv2.waitKey(1)
+
+    except KeyboardInterrupt:
+        logging.info("Video processing interrupted by user")
+
+    except Exception as e:
+        logging.error(f"Error occurred during video processing: {e}")
+
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+
 def main():
     # 视频文件路径
     video_path = r"D:\programs\ucar_ws\src\vision_line\videos\test2.avi"
@@ -1018,7 +1084,6 @@ def main():
     logging.info(f"Video opened: {video_path}")
 
     imgprocess = ImageProcess()
-    imgprocess.cap = None  # 确保不使用摄像头
 
     paused = False
 
@@ -1113,7 +1178,7 @@ def main():
 
                             # CROSS 状态：执行额外处理
                             if state == ProcessState.CROSS:
-                                imgprocess.run_cross_stage(binary_img, canvas)
+                                pass
 
                             # 多项式拟合
                             imgprocess.fit_polynomial()
@@ -1213,4 +1278,4 @@ def main_pic():
 
 
 if __name__ == "__main__":
-    main()
+    main_test()
