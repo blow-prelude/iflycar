@@ -451,6 +451,35 @@ class ImageProcess:
         y_norm = stop_mid[1] / img_shape[0]
         return y_norm > y_thresh
 
+    def get_stop_line(self, binary_img, is_draw=False, canvas=None):
+        """在 ROI 内检测水平白线并返回其中点
+
+        Args:
+            binary_img: 二值化图像 (numpy array)
+            is_draw: 是否绘制调试信息
+            canvas: 绘制画布 (BGR 格式)
+
+        Returns:
+            Optional[Tuple[int, int]]: 成功返回 (mid_x, mid_y)，失败返回 None
+        """
+        # 输入验证
+        if binary_img is None:
+            logging.warning("binary_img is None")
+            return None
+
+        h, w = binary_img.shape[:2]
+
+        # 计算 ROI 边界
+        roi_y0 = int(h * 0.55)
+        roi_y1 = int(h * 0.80)
+        roi_x0 = int(w * 0.30)
+        roi_x1 = int(w * 0.70)
+
+        logging.debug(f"ROI: y=[{roi_y0}, {roi_y1}], x=[{roi_x0}, {roi_x1}]")
+
+        # TODO: 后续实现检测逻辑
+        return None
+
     def get_side_line_task_1(self, img, canvas, is_draw=False):
         """从图像的中线往两边搜索，获取赛道边线
 
