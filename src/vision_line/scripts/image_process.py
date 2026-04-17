@@ -477,8 +477,34 @@ class ImageProcess:
 
         logging.debug(f"ROI: y=[{roi_y0}, {roi_y1}], x=[{roi_x0}, {roi_x1}]")
 
-        # TODO: 后续实现检测逻辑
-        return None
+        # 种子点选择：x 固定为 ROI 中点
+        seed_x = (roi_x0 + roi_x1) // 2
+
+        # 从下往上扫描，在 [seed_x-4, seed_x+4] 范围内找第一个白点
+        x_seed, y_seed = None, None
+        for y in range(roi_y1, roi_y0 - 1, -1):
+            # 在 seed_x 附近搜索
+            search_start = max(roi_x0, seed_x - 4)
+            search_end = min(roi_x1, seed_x + 4)
+
+            for x in range(search_start, search_end + 1):
+                if binary_img[y, x] == 255:
+                    # 找到白点，记录最接近 seed_x 的点
+                    if x_seed is None or abs(x - seed_x) < abs(x_seed - seed_x):
+                        x_seed, y_seed = x, y
+
+            # 如果这一行找到了白点，选择最接近 seed_x 的作为种子点
+            if x_seed is not None:
+                break
+
+        if x_seed is None:
+            logging.debug("未在 ROI 内找到种子点")
+            return None
+
+        logging.debug(f"种子点: ({x_seed}, {y_seed})")
+
+        # TODO: 后续实现左右边界检测逻辑
+        return (x_seed, y_seed)
 
     def get_side_line_task_1(self, img, canvas, is_draw=False):
         """从图像的中线往两边搜索，获取赛道边线
