@@ -4,18 +4,24 @@
 左侧显示图像，右侧提供参数滑动条进行实时调参
 """
 
-import sys
 import logging
+import sys
 
 import cv2
 import numpy as np
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget,
-                              QHBoxLayout, QLabel, QSlider,
-                              QScrollArea, QVBoxLayout)
+from camera_capture import CameraCapture
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap
-
-from camera_capture import CameraCapture
+from PyQt5.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QScrollArea,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,7 +36,9 @@ class ParamSlider(QWidget):
     # 信号：参数值改变时发出 (参数名, 新值)
     valueChanged = pyqtSignal(str, int)
 
-    def __init__(self, param_name: str, min_val: int, max_val: int, default_val: int, parent=None):
+    def __init__(
+        self, param_name: str, min_val: int, max_val: int, default_val: int, parent=None
+    ):
         super().__init__(parent)
         self.param_name = param_name
 
@@ -70,12 +78,14 @@ class ParamSlider(QWidget):
 class ParamTunerWindow(QMainWindow):
     """参数调优主窗口"""
 
-    def __init__(self,
-                 param_names: list,
-                 param_ranges: list,
-                 param_defaults: list,
-                 process_callback,
-                 parent=None):
+    def __init__(
+        self,
+        param_names: list,
+        param_ranges: list,
+        param_defaults: list,
+        process_callback,
+        parent=None,
+    ):
         super().__init__(parent)
 
         self.param_names = param_names
@@ -107,7 +117,9 @@ class ParamTunerWindow(QMainWindow):
         # 左侧：图像显示区域
         self.image_label = QLabel()
         self.image_label.setFixedSize(320, 240)
-        self.image_label.setStyleSheet("border: 2px solid gray; background-color: black;")
+        self.image_label.setStyleSheet(
+            "border: 2px solid gray; background-color: black;"
+        )
         self.image_label.setScaledContents(True)
         self.image_label.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(self.image_label)
@@ -122,7 +134,9 @@ class ParamTunerWindow(QMainWindow):
 
         # 创建参数滑块
         self.param_sliders = []
-        for name, (min_val, max_val), default in zip(self.param_names, self.param_ranges, self.param_defaults):
+        for name, (min_val, max_val), default in zip(
+            self.param_names, self.param_ranges, self.param_defaults
+        ):
             slider = ParamSlider(name, min_val, max_val, default)
             slider.valueChanged.connect(self._on_param_changed)
             param_layout.addWidget(slider)
@@ -185,7 +199,9 @@ def cv2_to_qimage(img: np.ndarray) -> QImage:
         return QImage(img.data, width, height, bytes_per_line, QImage.Format_Grayscale8)
     else:  # BGR 彩色图
         bytes_per_line = 3 * width
-        return QImage(img.data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
+        return QImage(
+            img.data, width, height, bytes_per_line, QImage.Format_RGB888
+        ).rgbSwapped()
 
 
 def test_process_callback(img: np.ndarray, params: dict) -> np.ndarray:
@@ -225,13 +241,13 @@ def main():
         param_names=PARAM_NAMES,
         param_ranges=PARAM_RANGES,
         param_defaults=PARAM_DEFAULTS,
-        process_callback=test_process_callback
+        process_callback=test_process_callback,
     )
     tuner.show()
 
     # 打开摄像头
     try:
-        cap = CameraCapture(index=0, width=320, height=240)
+        cap = CameraCapture(index=1, width=320, height=240)
         logging.info("摄像头已打开")
 
         # 主循环

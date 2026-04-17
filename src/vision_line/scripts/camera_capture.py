@@ -3,6 +3,7 @@ import os
 import time
 
 import cv2
+import numpy as np
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +30,9 @@ class CameraCapture:
         if not self.cap.isOpened():
             logging.error("Cannot open camera.")
             raise RuntimeError(f"Failed to open camera at index {index}")
+
+        self.mtx = None
+        self.dist = None
 
     def get_picture(self):
         """获取一帧图片并做预处理"""
@@ -72,6 +76,95 @@ class CameraCapture:
         """析构函数，对象销毁时自动释放资源"""
         self.close()
 
+    def calibration(self, sample_dir):
+        # 设置寻找亚像素角点的参数，采用的停止准则是最大循环次数30和最大误差容限0.001
+        criteria = (
+            cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
+            30,
+            0.001,
+        )  # 阈值
+        # 棋盘格模板规格
+        w = 9  # 10 - 1
+        h = 9  # 10  - 1
+
+        # 世界坐标系中的棋盘格点,例如(0,0,0), (1,0,0), (2,0,0) ....,(8,5,0)，去掉Z坐标，记为二维矩阵
+        objp = np.zeros((w * h, 3), np.float32)
+        objp[:, :2] = np.mgrid[0:w, 0:h].T.reshape(-1, 2)
+        objp = objp * 18.1  # 18.1 mm
+
+        objpoints = []  # 在世界坐标系中的三维点
+        imgpoints = []  # 在图像平面的二维点
+
+        images = [
+            os.path.join(sample_dir, f)
+            for f in os.listdir(sample_dir)
+            if f.endswith(".png")
+        ]
+
+        i = 0
+
+        for image in images:
+            try:
+                img = cv2.imread(image)
+                if img is None:
+                    raise ValueError("Failed to read image")  # TODO 什么类型呢
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+                ih, iw = img.shape[:2]
+                # 找到棋盘格角点
+                ret, corners = cv2.findChessboardCorners(gray, (w, h), None)
+                # 如果找到足够点对，将其存储起来
+                if ret is True:
+                    logging.info(f"calibrating:{i}")
+                    i = i + 1
+                    # 在原角点的基础上寻找亚像素角点
+                    cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+                    # 追加进入世界三维点和平面二维点中
+                    objpoints.append(objp)
+                    imgpoints.append(corners)
+                    # 将角点在图像上显示
+                    cv2.drawChessboardCorners(img, (w, h), corners, ret)
+                    cv2.namedWindow("findCorners", cv2.WINDOW_NORMAL)
+                    cv2.resizeWindow("findCorners", 640, 480)
+                    cv2.imshow("findCorners", img)
+                    cv2.waitKey(200)
+            except Exception as e:
+                logging.error(f"error when calibrating:{e}")
+        cv2.destroyAllWindows()
+
+        # 标定
+        ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
+            objpoints, imgpoints, gray.shape[::-1], None, None
+        )
+
+        logging.info(f"ret:{ret}")  # 重投影误差，越小说明标定越准
+        logging.info(f"mtx:\n{mtx}")  # 内参数矩阵，包括焦距和光心
+        logging.info(f"dist畸变值:\n{dist}")  # 畸变系数，包括径向畸变和切向畸变
+
+        # 根据畸变参数，计算一个去畸变后的最优内参矩阵
+        # roi： 去畸变后可剪掉黑边
+        newcameramtx, roi = cv2.getOptimalNewCameraMatrix(
+            mtx, dist, (ih, iw), 0, (ih, iw)
+        )
+
+    def correct_img(self, img):
+        h, w = img.shape[:2]
+        try:
+            if self.mtx is not None and self.dist is not None:
+                newcameramtx, roi = cv2.getOptimalNewCameraMatrix(
+                    self.mtx, self.dist, (h, w), 0, (h, w)
+                )
+
+            # 生成去畸变映射表，并应用映射表将像素重新映射
+            mapx, mapy = cv2.initUndistortRectifyMap(
+                self.mtx, self.dist, None, newcameramtx, (w, h), 5
+            )
+            dst = cv2.remap(img, mapx, mapy, cv2.INTER_LINEAR)
+            return dst
+        except Exception as e:
+            logging.error(f"error when correct img with mtx:{e}")
+            return img
+
 
 if __name__ == "__main__":
     # 获取脚本所在目录的上级目录的pictures子目录
@@ -82,8 +175,8 @@ if __name__ == "__main__":
     i = 0
     j = 0
     curr_t, prev_t, dt = None, None, 0.0
+    cap = CameraCapture(0)
     try:
-        cap = CameraCapture(0)
         while True:
             curr_t = time.time()
             if prev_t is not None:
@@ -105,7 +198,10 @@ if __name__ == "__main__":
                 i += 1
 
     except KeyboardInterrupt:
-        logging.warning("interrupt bu user, exiting...")
+        logging.warning("interrupted by user, exiting...")
+
+    except Exception as e:
+        logging.error(f"error in main loop: {e}")
 
     finally:
         cap.close()
