@@ -1120,7 +1120,8 @@ def main():
     # FPS 计算：使用高精度计时器，逐帧更新 imgprocess.fps
     prev_t = None  # 上一帧时间戳（time.perf_counter）
     fps = 0.0
-
+    dt = 0.0
+    j = 0.0
     # 状态机参数
     command_received = True  # TODO: 替换为ROS订阅回调，动态更新
     corner_delay_s = 1.5  # 延时秒数，超过后启用拐点检测
@@ -1138,12 +1139,15 @@ def main():
                     logging.info("Video processing completed")
                     break
 
-                # --- 实时 FPS 计算（逐帧更新）---
+                # 实时 FPS 计算
                 now_t = time.perf_counter()
                 if prev_t is not None:
-                    dt = now_t - prev_t
-                    if dt > 1e-6:
-                        fps = 1.0 / dt
+                    dt += now_t - prev_t
+                    j += 1
+                    if j % 10 == 0 and dt > 1e-6:
+                        fps = 1.0 / dt * 10
+                        logging.info(f"Current FPS: {fps:.2f}")
+                        dt = 0.0
                 prev_t = now_t
 
                 # --- 状态机：状态转移 ---
