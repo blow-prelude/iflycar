@@ -503,8 +503,91 @@ class ImageProcess:
 
         logging.debug(f"种子点: ({x_seed}, {y_seed})")
 
-        # TODO: 后续实现左右边界检测逻辑
-        return (x_seed, y_seed)
+        # 左侧追踪
+        left_points = []
+        cur_x, cur_y = x_seed, y_seed
+
+        while True:
+            found_next = False
+            best_x, best_y = None, None
+            best_dy = float('inf')
+
+            # 在候选窗口内找下一个点
+            for next_x in range(max(roi_x0, cur_x - 4), cur_x):
+                for next_y in range(max(0, cur_y - 2), min(h, cur_y + 3)):
+                    if binary_img[next_y, next_x] == 255:
+                        dy = abs(next_y - cur_y)
+                        # 选择 |Δy| 最小的点；若相同，选择 x 最小的
+                        if dy < best_dy or (dy == best_dy and (best_x is None or next_x < best_x)):
+                            best_dy = dy
+                            best_x, best_y = next_x, next_y
+                            found_next = True
+
+            if found_next:
+                left_points.append((best_x, best_y))
+                cur_x, cur_y = best_x, best_y
+            else:
+                break
+
+        # 右侧追踪
+        right_points = []
+        cur_x, cur_y = x_seed, y_seed
+
+        while True:
+            found_next = False
+            best_x, best_y = None, None
+            best_dy = float('inf')
+
+            # 在候选窗口内找下一个点
+            for next_x in range(cur_x + 1, min(roi_x1, cur_x + 5)):
+                for next_y in range(max(0, cur_y - 2), min(h, cur_y + 3)):
+                    if binary_img[next_y, next_x] == 255:
+                        dy = abs(next_y - cur_y)
+                        # 选择 |Δy| 最小的点；若相同，选择 x 最小的
+                        if dy < best_dy or (dy == best_dy and (best_x is None or next_x < best_x)):
+                            best_dy = dy
+                            best_x, best_y = next_x, next_y
+                            found_next = True
+
+            if found_next:
+                right_points.append((best_x, best_y))
+                cur_x, cur_y = best_x, best_y
+            else:
+                break
+
+        # 合并所有点并计算中点
+        all_points = list(reversed(left_points)) + [(x_seed, y_seed)] + right_points
+
+        if len(all_points) == 0:
+            return None
+
+        # 计算线段跨度
+        min_x = min(p[0] for p in all_points)
+        max_x = max(p[0] for p in all_points)
+        x_span = max_x - min_x
+
+        # 有效性判定：x 跨度必须 > 20
+        if x_span <= 20:
+            logging.debug(f"线段过短: x_span={x_span} <= 20")
+            return None
+
+        # 计算中点
+        mid_x = (min_x + max_x) // 2
+
+        # 找到 x 最接近 mid_x 的点的 y 坐标
+        mid_y = min(all_points, key=lambda p: abs(p[0] - mid_x))[1]
+
+        logging.debug(f"检测到停止线: 中点=({mid_x}, {mid_y}), x_span={x_span}, 点数={len(all_points)}")
+
+        # 绘制（如果需要）
+        if is_draw and canvas is not None:
+            # 画线段点（黄色）
+            for point in all_points:
+                cv2.circle(canvas, point, 2, (0, 255, 255), -1)
+            # 画中点（红色）
+            cv2.circle(canvas, (mid_x, mid_y), 4, (0, 0, 255), -1)
+
+        return (mid_x, mid_y)
 
     def get_side_line_task_1(self, img, canvas, is_draw=False):
         """从图像的中线往两边搜索，获取赛道边线
