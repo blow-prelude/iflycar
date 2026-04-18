@@ -723,8 +723,8 @@ class ImageProcess:
             self.left_c = None
             self.right_c = None
 
-            diff = np.diff(img == 0, axis=1)  # 计算行内黑白跳变
-            cv2.imshow("diff", (diff != 0).astype(np.uint8) * 255)
+            diff = np.diff(img == 0, axis=1)  # 计算行内黑白跳变  右-左
+            # cv2.imshow("diff", (diff != 0).astype(np.uint8) * 255)    # 显示发生跳变的地方
 
             # 从图像下方（靠近车辆）开始搜索
             for y in range(
