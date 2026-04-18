@@ -325,33 +325,33 @@ class ImageProcess:
         if len(line_points) < 2:
             return line_points.copy()
 
-        supple_line = line_points.copy()
-        i = 0
-        while i < len(supple_line) - 1:
-            x1, y1 = supple_line[i]
-            x2, y2 = supple_line[i + 1]
+        new_line = []
+
+        for i in range(len(line_points) - 1):
+            x1, y1 = line_points[i]
+            x2, y2 = line_points[i + 1]
+
+            new_line.append((x1, y1))
+
             dx = abs(x2 - x1)
             dy = abs(y2 - y1)
 
-            # 如果两点间距离过大，进行线性插值
             if dx > 6 or dy > 3:
-                # 计算需要插入的点数量（每隔3-5个像素填充一个点）
                 num_points = max(dx // 3, dy // 2, 2)
 
-                # 在两点之间进行线性插值
-                for t in range(1, num_points + 1):
-                    ratio = t / (num_points + 1)
-                    new_x = int(x1 + (x2 - x1) * ratio)
-                    new_y = int(y1 + (y2 - y1) * ratio)
-                    # 确保新点在两点之间
-                    if min(y1, y2) < new_y < max(y1, y2):
-                        supple_line.insert(i + t, (new_x, new_y))
+                # 用 linspace 替代循环（更快 + 更稳定）
+                xs = np.linspace(x1, x2, num_points + 2)[1:-1]
+                ys = np.linspace(y1, y2, num_points + 2)[1:-1]
 
-                i += num_points + 1
-            else:
-                i += 1
+                for x, y in zip(xs, ys):
+                    xi, yi = int(x), int(y)
+                    if min(y1, y2) < yi < max(y1, y2):
+                        new_line.append((xi, yi))
 
-        return supple_line
+        # 加最后一个点
+        new_line.append(line_points[-1])
+
+        return new_line
 
     def _fill_boundary(self, left_line, right_line, img_shape):
         """将边线延伸到图像边界，防止计算中线时越界
@@ -368,24 +368,21 @@ class ImageProcess:
 
         # 左边线边界填充
         if len(left_line) > 0:
-            bottom_point = left_line[0]
-            bottom_y = bottom_point[1]
-            # 从图像底部向上延伸到第一个点
-            temp_left_line = []
-            for j1 in range(img_height - 1, bottom_y, -2):
-                # 左边线延伸到图像左边界 (x=0)
-                temp_left_line.append((0, j1))
+            bottom_y = left_line[0][1]
+            ys = np.arange(img_height - 1, bottom_y, -2)
+            xs = np.zeros_like(ys)
+
+            temp_left_line = list(zip(xs.tolist(), ys.tolist()))
             left_line = temp_left_line + left_line
 
         # 右边线边界填充
         if len(right_line) > 0:
-            bottom_point = right_line[0]
-            bottom_y = bottom_point[1]
-            # 从图像底部向上延伸到第一个点
-            temp_right_line = []
-            for j1 in range(img_height - 1, bottom_y, -2):
-                # 右边线延伸到图像右边界
-                temp_right_line.append((img_width - 1, j1))
+            bottom_y = right_line[0][1]
+
+            ys = np.arange(img_height - 1, bottom_y, -2)
+            xs = np.full_like(ys, img_width - 1)
+
+            temp_right_line = list(zip(xs.tolist(), ys.tolist()))
             right_line = temp_right_line + right_line
 
         return left_line, right_line
@@ -504,7 +501,7 @@ class ImageProcess:
         mid_x = x + w // 2
         mid_y = y + h // 2
 
-        logging.info(f"find stop line ,mid:({mid_x}, {mid_y}),")
+        logging.debug(f"find stop line ,mid:({mid_x}, {mid_y}),")
 
         # 显示ROI区域（如果需要）
         if is_draw:
