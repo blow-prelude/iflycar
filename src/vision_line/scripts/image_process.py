@@ -434,7 +434,7 @@ class ImageProcess:
         img_h = img_shape[0]
         return self.left_c[1] >= img_h * y_ratio or self.right_c[1] >= img_h * y_ratio
 
-    def should_enter_turning(self, stop_mid, img_shape, y_thresh=0.78):
+    def judge_enter_turning(self, stop_mid, img_shape, y_thresh=0.78):
         """判断是否应该进入 TURNING 状态
 
         Args:
@@ -510,7 +510,7 @@ class ImageProcess:
         while True:
             found_next = False
             best_x, best_y = None, None
-            best_dy = float('inf')
+            best_dy = float("inf")
 
             # 在候选窗口内找下一个点
             for next_x in range(max(roi_x0, cur_x - 4), cur_x):
@@ -518,7 +518,9 @@ class ImageProcess:
                     if binary_img[next_y, next_x] == 255:
                         dy = abs(next_y - cur_y)
                         # 选择 |Δy| 最小的点；若相同，选择 x 最小的
-                        if dy < best_dy or (dy == best_dy and (best_x is None or next_x < best_x)):
+                        if dy < best_dy or (
+                            dy == best_dy and (best_x is None or next_x < best_x)
+                        ):
                             best_dy = dy
                             best_x, best_y = next_x, next_y
                             found_next = True
@@ -536,7 +538,7 @@ class ImageProcess:
         while True:
             found_next = False
             best_x, best_y = None, None
-            best_dy = float('inf')
+            best_dy = float("inf")
 
             # 在候选窗口内找下一个点
             for next_x in range(cur_x + 1, min(roi_x1, cur_x + 5)):
@@ -544,7 +546,9 @@ class ImageProcess:
                     if binary_img[next_y, next_x] == 255:
                         dy = abs(next_y - cur_y)
                         # 选择 |Δy| 最小的点；若相同，选择 x 最小的
-                        if dy < best_dy or (dy == best_dy and (best_x is None or next_x < best_x)):
+                        if dy < best_dy or (
+                            dy == best_dy and (best_x is None or next_x < best_x)
+                        ):
                             best_dy = dy
                             best_x, best_y = next_x, next_y
                             found_next = True
@@ -577,7 +581,9 @@ class ImageProcess:
         # 找到 x 最接近 mid_x 的点的 y 坐标
         mid_y = min(all_points, key=lambda p: abs(p[0] - mid_x))[1]
 
-        logging.debug(f"检测到停止线: 中点=({mid_x}, {mid_y}), x_span={x_span}, 点数={len(all_points)}")
+        logging.debug(
+            f"检测到停止线: 中点=({mid_x}, {mid_y}), x_span={x_span}, 点数={len(all_points)}"
+        )
 
         # 绘制（如果需要）
         if is_draw and canvas is not None:
@@ -1317,13 +1323,19 @@ def main():
                             # CROSS 状态：检测停止线
                             if state == ProcessState.CROSS:
                                 # 获取停止线
-                                stop_mid = imgprocess.get_stop_line(binary_img, is_draw=True, canvas=canvas)
+                                stop_mid = imgprocess.get_stop_line(
+                                    binary_img, is_draw=True, canvas=canvas
+                                )
 
                                 # 检查是否进入 TURNING
-                                if imgprocess.should_enter_turning(stop_mid, binary_img.shape):
+                                if imgprocess.judge_enter_turning(
+                                    stop_mid, binary_img.shape
+                                ):
                                     state = ProcessState.TURNING
                                     y_norm = stop_mid[1] / binary_img.shape[0]
-                                    logging.info(f"State: CROSS -> TURNING (stop line at y={stop_mid[1]}, y_norm={y_norm:.2f})")
+                                    logging.info(
+                                        f"State: CROSS -> TURNING (stop line at y={stop_mid[1]}, y_norm={y_norm:.2f})"
+                                    )
 
                             # 多项式拟合
                             imgprocess.fit_polynomial()
