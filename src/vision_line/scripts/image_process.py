@@ -1423,4 +1423,4 @@ def main_pic():
 
 
 if __name__ == "__main__":
-    main_test()
+    main()
