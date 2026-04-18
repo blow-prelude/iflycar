@@ -504,7 +504,7 @@ class ImageProcess:
         mid_x = x + w // 2
         mid_y = y + h // 2
 
-        logging.info(f"检测到停止线: 中点=({mid_x}, {mid_y}),")
+        logging.info(f"find stop line ,mid:({mid_x}, {mid_y}),")
 
         # 显示ROI区域（如果需要）
         if is_draw:
@@ -723,80 +723,75 @@ class ImageProcess:
             self.left_c = None
             self.right_c = None
 
+            diff = np.diff(img == 0, axis=1)  # 计算行内黑白跳变
+            cv2.imshow("diff", (diff != 0).astype(np.uint8) * 255)
+
             # 从图像下方（靠近车辆）开始搜索
             for y in range(
                 int(img.shape[0] * down_ratio), int(img.shape[0] * up_ratio), -1
             ):
-                for x in range(mid_x, 0, -1):
-                    # 找打黑白跳变点
-                    if img[y, x] == 0 and img[y, x - 1] != 0:
-                        logging.debug(
-                            f"find left line at {x}, {y} , value : {img[y, x]}"
-                        )
+                row_diff = diff[y]
+                # 左边：从白到黑，跳变为1
+                candidates = np.where(row_diff[:mid_x] == 1)[0]
 
-                        # 需要根据传入参数判断是否寻找拐点
-                        # 根据夹角判断是否遇到拐点
-                        # 选择两个点为一个点蔟，增加稳定性
-                        if find_corner and not find_left_corner:
-                            left_nxt_p = (x, y)
-                            if left_cur_p is not None and left_pre_p is not None:
-                                angle = self.get_angle_p(
-                                    left_nxt_p, left_cur_p, left_pre_p
-                                )
+                if len(candidates) > 0:
+                    x = candidates[-1]
+
+                    # 需要根据传入参数判断是否寻找拐点
+                    # 根据夹角判断是否遇到拐点
+                    if find_corner and not find_left_corner:
+                        left_nxt_p = (x, y)
+                        if left_cur_p is not None and left_pre_p is not None:
+                            angle = self.get_angle_p(left_nxt_p, left_cur_p, left_pre_p)
+                            logging.debug(
+                                f"left line angle: {angle} , pre_p: {left_pre_p},  cur_p: {left_cur_p} , nxt_p: {left_nxt_p}"
+                            )
+                            # 夹角在阈值之间，判定为拐点
+                            if angle_low_thresh < angle < angle_high_thresh:
+                                # 记录突变点
                                 logging.debug(
-                                    f"left line angle: {angle} , pre_p: {left_pre_p},  cur_p: {left_cur_p} , nxt_p: {left_nxt_p}"
+                                    f"slope mutation , angle: {angle} ,pre_p:{left_pre_p} , cur_p: {left_cur_p} , nxt_p: {left_nxt_p} "
                                 )
-                                # 夹角在阈值之间，判定为拐点
-                                if angle_low_thresh < angle < angle_high_thresh:
-                                    # 记录突变点
-                                    logging.debug(
-                                        f"slope mutation , angle: {angle} ,pre_p:{left_pre_p} , cur_p: {left_cur_p} , nxt_p: {left_nxt_p} "
-                                    )
-                                    # 找到拐点后就不再寻找
-                                    self.left_c = left_cur_p
-                                    find_left_corner = True
+                                # 找到拐点后就不再寻找
+                                self.left_c = left_cur_p
+                                find_left_corner = True
 
-                            # 更新点
-                            left_pre_p = left_cur_p
-                            left_cur_p = left_nxt_p
+                        # 更新点
+                        left_pre_p = left_cur_p
+                        left_cur_p = left_nxt_p
 
-                        # 如果不是拐点，正常添加到边线中
-                        self.left_line.append((x, y))
-                        break
+                    # 如果不是拐点，正常添加到边线中
+                    self.left_line.append((x, y))
 
                 # 右线
-                for x in range(mid_x, img.shape[1] - 1):
-                    # 找到黑白跳变点
-                    if img[y, x] == 0 and img[y, x + 1] != 0:
-                        logging.debug(
-                            f"find right line at {x}, {y} , value : {img[y, x]}"
-                        )
+                candidates = np.where(row_diff[mid_x:] == 1)[0]
+                if len(candidates) > 0:
+                    x = candidates[0] + mid_x
 
-                        # 通过夹角找拐点
-                        if find_corner and find_right_corner is False:
-                            right_nxt_p = (x, y)
-                            if right_cur_p is not None and right_pre_p is not None:
-                                angle = self.get_angle_p(
-                                    right_nxt_p, right_cur_p, right_pre_p
-                                )
+                    # 通过夹角找拐点
+                    if find_corner and find_right_corner is False:
+                        right_nxt_p = (x, y)
+                        if right_cur_p is not None and right_pre_p is not None:
+                            angle = self.get_angle_p(
+                                right_nxt_p, right_cur_p, right_pre_p
+                            )
+                            logging.debug(
+                                f"right line angle: {angle} , pre_p: {right_pre_p},  cur_p: {right_cur_p} , nxt_p: {right_nxt_p}"
+                            )
+                            if angle_low_thresh < angle < angle_high_thresh:
+                                # 记录突变点
                                 logging.debug(
-                                    f"right line angle: {angle} , pre_p: {right_pre_p},  cur_p: {right_cur_p} , nxt_p: {right_nxt_p}"
+                                    f"slope mutation , angle: {angle} ,pre_p:{right_pre_p} cur_p: {right_cur_p} , nxt_p: {right_nxt_p} "
                                 )
-                                if angle_low_thresh < angle < angle_high_thresh:
-                                    # 记录突变点
-                                    logging.debug(
-                                        f"slope mutation , angle: {angle} ,pre_p:{right_pre_p} cur_p: {right_cur_p} , nxt_p: {right_nxt_p} "
-                                    )
 
-                                    # 只寻找一个拐点
-                                    self.right_c = right_cur_p
-                                    find_right_corner = True
-                            # 更新点
-                            right_pre_p = right_cur_p
-                            right_cur_p = right_nxt_p
+                                # 只寻找一个拐点
+                                self.right_c = right_cur_p
+                                find_right_corner = True
+                        # 更新点
+                        right_pre_p = right_cur_p
+                        right_cur_p = right_nxt_p
 
-                        self.right_line.append((x, y))
-                        break
+                    self.right_line.append((x, y))
 
             # 线性补插，优化边线
             if len(self.left_line) > 0 and len(self.right_line) > 0:
