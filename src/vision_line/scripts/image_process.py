@@ -80,9 +80,22 @@ class ImageProcess:
                         self.frame, (new_w, new_h), interpolation=cv2.INTER_AREA
                     )
                 gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
-                med = cv2.medianBlur(gray, 3)  # 中值滤波平滑图像，减少噪点
-                gauss = cv2.GaussianBlur(med, (3, 3), 0)  # 用高斯模糊平滑图像，减少噪点
-                return gauss
+
+                # 大尺寸高斯模糊获取背景光照分布
+                # 核大小应根据图像尺寸调整，通常为图像宽度的1/5到1/3
+                kernel_size = (gray.shape[1] // 5 | 1, gray.shape[0] // 5 | 1)
+                background = cv2.GaussianBlur(gray, kernel_size, 0)
+
+                # 原图减去背景，得到滤除光照后的特征
+                diff = cv2.subtract(gray, background)
+
+                # 二值化（使用Otsu自适应阈值）
+                binary = cv2.threshold(
+                    diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+                )[1]
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+                close = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=3)
+                return close
             else:
                 logging.error("No image source available")
                 return None
@@ -758,7 +771,18 @@ class ImageProcess:
                         left_cur_p = left_nxt_p
 
                     # 如果不是拐点，正常添加到边线中
-                    self.left_line.append((x, y))
+                    if len(self.left_line) == 0:
+                        self.left_line.append((x, y))
+                    else:
+                        if (
+                            abs(self.left_line[len(self.left_line) - 1][0] - x) < 15
+                            and abs(self.left_line[len(self.left_line) - 1][1] - y) < 5
+                        ):
+                            self.left_line.append((x, y))
+                        else:
+                            logging.debug(
+                                f"jump too far at {x}, {y} , last point : {self.left_line[len(self.left_line) - 1]}"
+                            )
 
                 # 右线
                 candidates = np.where(row_diff[mid_x:] == 1)[0]
@@ -787,8 +811,19 @@ class ImageProcess:
                         # 更新点
                         right_pre_p = right_cur_p
                         right_cur_p = right_nxt_p
-
-                    self.right_line.append((x, y))
+                    if len(self.right_line) == 0:
+                        self.right_line.append((x, y))
+                    else:
+                        if (
+                            abs(self.right_line[len(self.right_line) - 1][0] - x) < 15
+                            and abs(self.right_line[len(self.right_line) - 1][1] - y)
+                            < 5
+                        ):
+                            self.right_line.append((x, y))
+                        else:
+                            logging.debug(
+                                f"jump too far at {x}, {y} , last point : {self.right_line[len(self.right_line) - 1]}"
+                            )
 
             # 线性补插，优化边线
             if len(self.left_line) > 0 and len(self.right_line) > 0:
@@ -1216,7 +1251,7 @@ def main():
                     imgprocess.frame = frame
 
                     # 预处理
-                    binary_img = imgprocess.preprocess()
+                    binary_img = imgprocess.preprocess_gray()
                     if binary_img is None:
                         logging.warning("Frame preprocessing failed")
                     else:
