@@ -1314,9 +1314,16 @@ def main():
                                         "State: CORNER -> CROSS (dual corner detected)"
                                     )
 
-                            # CROSS 状态：执行额外处理
+                            # CROSS 状态：检测停止线
                             if state == ProcessState.CROSS:
-                                pass
+                                # 获取停止线
+                                stop_mid = imgprocess.get_stop_line(binary_img, is_draw=True, canvas=canvas)
+
+                                # 检查是否进入 TURNING
+                                if imgprocess.should_enter_turning(stop_mid, binary_img.shape):
+                                    state = ProcessState.TURNING
+                                    y_norm = stop_mid[1] / binary_img.shape[0]
+                                    logging.info(f"State: CROSS -> TURNING (stop line at y={stop_mid[1]}, y_norm={y_norm:.2f})")
 
                             # 多项式拟合
                             imgprocess.fit_polynomial()
