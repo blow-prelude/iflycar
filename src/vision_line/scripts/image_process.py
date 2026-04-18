@@ -110,7 +110,9 @@ class ImageProcess:
                     )
 
                 gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
-                binary = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)[1]
+                binary = cv2.threshold(
+                    gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+                )[1]
                 # kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
                 # erode = cv2.erode(binary, kernel, iterations=2)  # 用腐消除图像中较亮的区域
                 kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
@@ -121,7 +123,7 @@ class ImageProcess:
                 gauss = cv2.GaussianBlur(
                     dila, (3, 3), 0
                 )  # 用高斯模糊平滑图像，减少噪点
-                return dila
+                return close
 
             else:
                 # 既没有摄像头也没有图片路径
@@ -474,124 +476,54 @@ class ImageProcess:
         roi_y1 = int(h * 0.80)
         roi_x0 = int(w * 0.30)
         roi_x1 = int(w * 0.70)
+        roi = binary_img[roi_y0 : roi_y1 + 1, roi_x0 : roi_x1 + 1]
 
         logging.debug(f"ROI: y=[{roi_y0}, {roi_y1}], x=[{roi_x0}, {roi_x1}]")
 
-        # 种子点选择：x 固定为 ROI 中点
-        seed_x = (roi_x0 + roi_x1) // 2
+        # 横向形态学削弱斜线
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1))
+        roi = cv2.morphologyEx(roi, cv2.MORPH_OPEN, kernel)
 
-        # 从下往上扫描，在 [seed_x-4, seed_x+4] 范围内找第一个白点
-        x_seed, y_seed = None, None
-        for y in range(roi_y1, roi_y0 - 1, -1):
-            # 在 seed_x 附近搜索
-            search_start = max(roi_x0, seed_x - 4)
-            search_end = min(roi_x1, seed_x + 4)
+        contours = cv2.findContours(roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
 
-            for x in range(search_start, search_end + 1):
-                if binary_img[y, x] == 255:
-                    # 找到白点，记录最接近 seed_x 的点
-                    if x_seed is None or abs(x - seed_x) < abs(x_seed - seed_x):
-                        x_seed, y_seed = x, y
-
-            # 如果这一行找到了白点，选择最接近 seed_x 的作为种子点
-            if x_seed is not None:
-                break
-
-        if x_seed is None:
-            logging.debug("未在 ROI 内找到种子点")
+        if len(contours) == 0:
+            logging.debug("No contours found in ROI")
             return None
 
-        logging.debug(f"种子点: ({x_seed}, {y_seed})")
+        # 找最像“横线”的轮廓
+        best = max(contours, key=lambda c: cv2.boundingRect(c)[2])  # 按宽度选
 
-        # 左侧追踪
-        left_points = []
-        cur_x, cur_y = x_seed, y_seed
+        x, y, w, h = cv2.boundingRect(best)
 
-        while True:
-            found_next = False
-            best_x, best_y = None, None
-            best_dy = float("inf")
-
-            # 在候选窗口内找下一个点
-            for next_x in range(max(roi_x0, cur_x - 4), cur_x):
-                for next_y in range(max(0, cur_y - 2), min(h, cur_y + 3)):
-                    if binary_img[next_y, next_x] == 255:
-                        dy = abs(next_y - cur_y)
-                        # 选择 |Δy| 最小的点；若相同，选择 x 最小的
-                        if dy < best_dy or (
-                            dy == best_dy and (best_x is None or next_x < best_x)
-                        ):
-                            best_dy = dy
-                            best_x, best_y = next_x, next_y
-                            found_next = True
-
-            if found_next:
-                left_points.append((best_x, best_y))
-                cur_x, cur_y = best_x, best_y
-            else:
-                break
-
-        # 右侧追踪
-        right_points = []
-        cur_x, cur_y = x_seed, y_seed
-
-        while True:
-            found_next = False
-            best_x, best_y = None, None
-            best_dy = float("inf")
-
-            # 在候选窗口内找下一个点
-            for next_x in range(cur_x + 1, min(roi_x1, cur_x + 5)):
-                for next_y in range(max(0, cur_y - 2), min(h, cur_y + 3)):
-                    if binary_img[next_y, next_x] == 255:
-                        dy = abs(next_y - cur_y)
-                        # 选择 |Δy| 最小的点；若相同，选择 x 最小的
-                        if dy < best_dy or (
-                            dy == best_dy and (best_x is None or next_x < best_x)
-                        ):
-                            best_dy = dy
-                            best_x, best_y = next_x, next_y
-                            found_next = True
-
-            if found_next:
-                right_points.append((best_x, best_y))
-                cur_x, cur_y = best_x, best_y
-            else:
-                break
-
-        # 合并所有点并计算中点
-        all_points = list(reversed(left_points)) + [(x_seed, y_seed)] + right_points
-
-        if len(all_points) == 0:
+        if w <= 20:
             return None
+        # 还原到原图像
+        x += roi_x0
+        y += roi_y0
 
-        # 计算线段跨度
-        min_x = min(p[0] for p in all_points)
-        max_x = max(p[0] for p in all_points)
-        x_span = max_x - min_x
+        mid_x = x + w // 2
+        mid_y = y + h // 2
 
-        # 有效性判定：x 跨度必须 > 20
-        if x_span <= 20:
-            logging.debug(f"线段过短: x_span={x_span} <= 20")
-            return None
+        logging.info(f"检测到停止线: 中点=({mid_x}, {mid_y}),")
 
-        # 计算中点
-        mid_x = (min_x + max_x) // 2
-
-        # 找到 x 最接近 mid_x 的点的 y 坐标
-        mid_y = min(all_points, key=lambda p: abs(p[0] - mid_x))[1]
-
-        logging.debug(
-            f"检测到停止线: 中点=({mid_x}, {mid_y}), x_span={x_span}, 点数={len(all_points)}"
-        )
+        # 显示ROI区域（如果需要）
+        if is_draw:
+            # 弹窗显示ROI区域（需要转成BGR格式才能正常显示）
+            # roi_display = cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR)
+            cv2.imshow("stop_line_roi", roi)
 
         # 绘制（如果需要）
         if is_draw and canvas is not None:
-            # 画线段点（黄色）
-            for point in all_points:
-                cv2.circle(canvas, point, 2, (0, 255, 255), -1)
-            # 画中点（红色）
-            cv2.circle(canvas, (mid_x, mid_y), 4, (0, 0, 255), -1)
+            # 画中点
+            cv2.circle(canvas, (mid_x, mid_y), 4, (255, 0, 255), -1)
+            # 绘制白线
+            cv2.rectangle(
+                canvas,
+                (x, y),
+                (x + w, y + h),
+                (0, 255, 0),
+                2,
+            )
 
         return (mid_x, mid_y)
 
