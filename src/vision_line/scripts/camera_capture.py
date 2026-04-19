@@ -31,11 +31,11 @@ class CameraCapture:
             logging.error("Cannot open camera.")
             raise RuntimeError(f"Failed to open camera at index {index}")
 
-        self.mtx = None
-        self.dist = None
+        self.mtx = np.array([])  # 内参数矩阵
+        self.dist = np.array([])  # 畸变系数
 
     def get_picture(self):
-        """获取一帧图片并做预处理"""
+        """获取一帧图片"""
         if self.cap is None or not self.cap.isOpened():
             logging.error("Camera is not opened.")
             return None
@@ -136,6 +136,8 @@ class CameraCapture:
         ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
             objpoints, imgpoints, gray.shape[::-1], None, None
         )
+        self.mtx = np.array(mtx, dtype=np.float32)
+        self.dist = np.array(dist, dtype=np.float32)
 
         logging.info(f"ret:{ret}")  # 重投影误差，越小说明标定越准
         logging.info(f"mtx:\n{mtx}")  # 内参数矩阵，包括焦距和光心
@@ -150,7 +152,7 @@ class CameraCapture:
     def correct_img(self, img):
         h, w = img.shape[:2]
         try:
-            if self.mtx is not None and self.dist is not None:
+            if len(self.mtx) > 0 and len(self.dist) > 0:
                 newcameramtx, roi = cv2.getOptimalNewCameraMatrix(
                     self.mtx, self.dist, (h, w), 0, (h, w)
                 )

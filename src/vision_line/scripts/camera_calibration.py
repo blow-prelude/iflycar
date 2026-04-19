@@ -14,12 +14,12 @@ cap.calibration(samples_dir)
 try:
     while True:
         frame = cap.get_picture()
-        # dst = cap.correct_img(frame)
+        dst = cap.correct_img(frame)
 
-        # cv2.imshow('frame',dst2)
-        # cv2.imshow('dst1',dst1)
-        cv2.imshow("dst", frame)
-        if cv2.waitKey(1) & 0xFF == ord("q"):  # 按q保存一张图片
+
+        cv2.imshow("frame", frame)
+        cv2.imshow('dst',dst)
+        if cv2.waitKey(1) & 0xFF == ord("q"): 
             break
 except KeyboardInterrupt:
     print("\nInterrupted by user, exiting...")

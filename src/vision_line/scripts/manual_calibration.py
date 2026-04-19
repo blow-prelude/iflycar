@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+
 """
 手动标定透视变换参数工具
 从斜视图变换到鸟瞰图（Bird's Eye View）

@@ -1,9 +1,12 @@
 import logging
+import os
 import time
 from enum import Enum
 
 import cv2
 import numpy as np
+from camera_capture import CameraCapture
+from picture_cli import ImageSender
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,7 +65,7 @@ class ImageProcess:
         self.search_range = 100  # 搜索范围（像素），向左/右搜索的最大距离
         self.search_offset = 30  # 搜索偏移量（像素）
 
-    def preprocess_gray(self):
+    def preprocess(self):
         try:
             if self.img_path is not None:
                 # 从图片文件读取
@@ -102,50 +105,6 @@ class ImageProcess:
         except Exception as e:
             logging.error(f"Error occurred during image preprocessing: {e}")
             return None
-
-    def preprocess(self):
-        """做预处理，得到二值化的图像"""
-        try:
-            if self.img_path is not None:
-                # 从图片文件读取
-                self.frame = cv2.imread(self.img_path)
-
-            elif self.frame is not None:
-                # 如果图片太大，按比例缩小
-                if self.frame.shape[0] >= 240 or self.frame.shape[1] >= 320:
-                    # 将图片按比例缩小，使宽和高都不超过640和480
-                    h, w = self.frame.shape[:2]
-                    scale = min(240 / h, 320 / w)
-                    new_h = int(h * scale)
-                    new_w = int(w * scale)
-                    self.frame = cv2.resize(
-                        self.frame, (new_w, new_h), interpolation=cv2.INTER_AREA
-                    )
-
-                gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
-                binary = cv2.threshold(
-                    gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-                )[1]
-                # kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
-                # erode = cv2.erode(binary, kernel, iterations=2)  # 用腐消除图像中较亮的区域
-                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-                dila = cv2.dilate(binary, kernel, iterations=1)  # 用膨胀连接断开的线段
-                close = cv2.morphologyEx(
-                    binary, cv2.MORPH_CLOSE, kernel, iterations=3
-                )  # 用闭运算消除图像中较暗的区域
-                gauss = cv2.GaussianBlur(
-                    dila, (3, 3), 0
-                )  # 用高斯模糊平滑图像，减少噪点
-                return close
-
-            else:
-                # 既没有摄像头也没有图片路径
-                raise ValueError("No image source available")
-        except ValueError as ve:
-            logging.error(f"Value error during image processing: {ve}")
-
-        except Exception as e:
-            logging.error(f"Error occurred during image processing: {e}")
 
     def return_frame(self):
         """获取用于绘制的画布（当前帧的副本）
@@ -1134,7 +1093,7 @@ class ImageProcess:
             return None, None
 
 
-def main_test():
+def main_video():
     # 视频文件路径
     video_path = r"D:\programs\ucar_ws\src\vision_line\videos\test2.avi"
 
@@ -1148,45 +1107,11 @@ def main_test():
     logging.info(f"Video opened: {video_path}")
 
     imgprocess = ImageProcess()
-    try:
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                logging.info("Video completed or cannot read frame")
-                break
 
-            imgprocess.frame = frame
-            # 预处理
-            gray = imgprocess.preprocess_gray()
-            if gray is not None:
-                cv2.imshow("gray", gray)
-                cv2.waitKey(1)
-
-    except KeyboardInterrupt:
-        logging.info("Video processing interrupted by user")
-
-    except Exception as e:
-        logging.error(f"Error occurred during video processing: {e}")
-
-    finally:
-        cap.release()
-        cv2.destroyAllWindows()
-
-
-def main():
-    # 视频文件路径
-    video_path = r"D:\programs\ucar_ws\src\vision_line\videos\test2.avi"
-
-    # 打开视频文件
-    cap = cv2.VideoCapture(video_path)
-
-    if not cap.isOpened():
-        logging.error(f"Cannot open video: {video_path}")
-        return
-
-    logging.info(f"Video opened: {video_path}")
-
-    imgprocess = ImageProcess()
+    # 设置保存图片的目录（当前文件的上一级路径下的pictures文件夹）
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    save_dir = os.path.join(os.path.dirname(current_dir), "pictures")
+    os.makedirs(save_dir, exist_ok=True)
 
     paused = False
 
@@ -1196,7 +1121,7 @@ def main():
     dt = 0.0
     j = 0.0
     # 状态机参数
-    command_received = True  # TODO: 替换为ROS订阅回调，动态更新
+    command_received = True
     corner_delay_s = 1.5  # 延时秒数，超过后启用拐点检测
 
     # 状态机变量
@@ -1229,29 +1154,20 @@ def main():
                         state = ProcessState.TRACKING
                         t0 = time.time()
                         logging.info("State: IDLE -> TRACKING (command received)")
-                elif state in (
-                    ProcessState.TRACKING,
-                    ProcessState.CORNER,
-                    ProcessState.CROSS,
-                ):
-                    if not command_received:
-                        state = ProcessState.IDLE
-                        t0 = None
-                        logging.info("State: -> IDLE (command revoked)")
-                    elif state == ProcessState.TRACKING and t0 is not None:
+
+                # --- 非 IDLE 状态才执行图像处理 ---
+                else:
+                    if state == ProcessState.TRACKING and t0 is not None:
                         if time.time() - t0 >= corner_delay_s:
                             state = ProcessState.CORNER
                             logging.info(
                                 f"State: TRACKING -> CORNER (after {corner_delay_s}s)"
                             )
-
-                # --- 非 IDLE 状态才执行图像处理 ---
-                if state != ProcessState.IDLE:
                     # 保存当前帧到imgprocess
                     imgprocess.frame = frame
 
                     # 预处理
-                    binary_img = imgprocess.preprocess_gray()
+                    binary_img = imgprocess.preprocess()
                     if binary_img is None:
                         logging.warning("Frame preprocessing failed")
                     else:
@@ -1357,6 +1273,11 @@ def main():
                     # 恢复播放时重置 prev_t，避免首帧 FPS 因暂停时间被拉低
                     prev_t = None
                     logging.info("Video resumed")
+            elif key == ord("s"):  # s键保存图片
+                timestamp = int(time.perf_counter() * 1000)
+                save_path = os.path.join(save_dir, f"captured_{timestamp}.jpg")
+                cv2.imwrite(save_path, frame)
+                logging.info(f"Captured image saved: {save_path}")
 
     except KeyboardInterrupt:
         logging.info("Interrupted by user , start exit...")
@@ -1367,29 +1288,156 @@ def main():
         cv2.destroyAllWindows()
 
 
-def main_pic():
-    # 图片文件路径
-    img_path = r"D:\programs\ucar_ws\src\vision_line\pictures\test5.png"
+def main():
+
+    # 设置保存图片的目录（当前文件的上一级路径下的pictures文件夹）
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    save_dir = os.path.join(os.path.dirname(current_dir), "pictures")
+    os.makedirs(save_dir, exist_ok=True)
+
+    imgprocess = ImageProcess()
+
+    ip = "127.0.0.1"
+    port = 12345
+    img_sender = ImageSender(ip, port)
+
+    # FPS 计算：使用高精度计时器，逐帧更新 imgprocess.fps
+    prev_t = None  # 上一帧时间戳（time.perf_counter）
+    fps = 0.0
+    dt = 0.0
+    j = 0.0
+    # 状态机参数
+    command_received = True
+    corner_delay_s = 1.5  # 延时秒数，超过后启用拐点检测
+
+    # 状态机变量
+    state = ProcessState.IDLE
+    t0 = None  # 指令开始时刻
+
     try:
-        # 创建ImageProcess对象
-        imgprocess = ImageProcess(img_path)
-        # 预处理
-        binary_img = imgprocess.preprocess()
-        # 获取用于绘制的画布
-        canvas = imgprocess.return_frame()
-        # 获取边线（传入canvas用于绘制调试信息）
-        imgprocess.get_side_line_task_2(binary_img, canvas, is_draw=True)
-        canvas = imgprocess.draw_line(canvas)
-        # 显示二值化图像
-        if binary_img is not None:
-            cv2.imshow("binary", binary_img)
-        # 显示处理结果
-        if canvas is not None:
-            cv2.imshow("processed_img", canvas)
-        cv2.waitKey(0)
+        # 连接服务器，开启发送线程
+        img_sender.connect()
+
+        img_sender.start_sending()
+
+        cap = CameraCapture(0)  # 0表示默认摄像头
+        if not cap.is_opened():
+            logging.error("Cannot open camera.")
+            return
+
+        while True:
+            frame = cap.get_picture()
+            img_sender.enqueue_image(frame)
+
+            # 实时 FPS 计算
+            now_t = time.perf_counter()
+            if prev_t is not None:
+                dt += now_t - prev_t
+                j += 1
+                if j % 10 == 0 and dt > 1e-6:
+                    fps = 1.0 / dt * 10
+                    logging.info(f"Current FPS: {fps:.2f}")
+                    dt = 0.0
+            prev_t = now_t
+
+            # --- 状态机：状态转移 ---
+            if state == ProcessState.IDLE:
+                if command_received:
+                    state = ProcessState.TRACKING
+                    t0 = time.time()
+                    logging.info("State: IDLE -> TRACKING (command received)")
+
+            # --- 非 IDLE 状态才执行图像处理 ---
+            else:
+                # TRACKING状态下等待一定时间后检测拐点
+                if state == ProcessState.TRACKING and t0 is not None:
+                    if time.time() - t0 >= corner_delay_s:
+                        state = ProcessState.CORNER
+                        logging.info(
+                            f"State: TRACKING -> CORNER (after {corner_delay_s}s)"
+                        )
+
+                # 保存当前帧到imgprocess
+                imgprocess.frame = frame
+
+                # 预处理
+                binary_img = imgprocess.preprocess()
+                if binary_img is None:
+                    logging.warning("Frame preprocessing failed")
+                else:
+                    # 获取用于绘制的画布
+                    canvas = imgprocess.return_frame()
+                    if canvas is not None:
+                        # 根据状态决定 find_corner 参数
+                        find_corner = state == ProcessState.CORNER
+
+                        # 获取边线（传入canvas用于绘制调试信息）
+                        imgprocess.get_side_line_task_2(
+                            binary_img,
+                            canvas,
+                            is_draw=True,
+                            find_corner=find_corner,
+                        )
+
+                        # CORNER 状态：处理完毕后检查是否进入 CROSS
+                        if state == ProcessState.CORNER:
+                            if imgprocess.judge_enter_cross_state(
+                                binary_img.shape, 0.75
+                            ):
+                                state = ProcessState.CROSS
+                                logging.info(
+                                    "State: CORNER -> CROSS (dual corner detected)"
+                                )
+
+                        # CROSS 状态：检测停止线
+                        if state == ProcessState.CROSS:
+                            # 获取停止线
+                            stop_mid = imgprocess.get_stop_line(
+                                binary_img, is_draw=True, canvas=canvas
+                            )
+
+                            # 检查是否进入 TURNING
+                            if imgprocess.judge_enter_turning(
+                                stop_mid, binary_img.shape
+                            ):
+                                state = ProcessState.TURNING
+                                y_norm = stop_mid[1] / binary_img.shape[0]
+                                logging.info(
+                                    f"State: CROSS -> TURNING (stop line at y={stop_mid[1]}, y_norm={y_norm:.2f})"
+                                )
+
+                        # 多项式拟合
+                        imgprocess.fit_polynomial()
+
+                        canvas = imgprocess.draw_line(canvas, fps, draw_fps=True)
+
+                        # 显示二值化图像
+                        cv2.imshow("binary", binary_img)
+
+                        # 显示处理结果
+                        # cv2.imshow("processed_img", canvas)
+                        # 发送处理结果
+                        # img_sender.enqueue_image(canvas)
+
+            # 按键控制
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):  # q键退出
+                logging.info("User quit")
+                break
+            elif key == ord("s"):  # 保存图像
+                timestamp = int(time.perf_counter() * 1000)
+                save_path = os.path.join(save_dir, f"captured_{timestamp}.png")
+                cv2.imwrite(save_path, frame)
+                logging.info(f"Captured image saved: {save_path}")
+
+    except KeyboardInterrupt:
+        logging.info("Interrupted by user , start exit...")
     except Exception as e:
-        logging.error(f"Error occurred in main_pic: {e}")
+        logging.error(f"Error occurred during image process: {e}")
+
     finally:
+        # 释放资源
+        cap.close()
         cv2.destroyAllWindows()
 
 
