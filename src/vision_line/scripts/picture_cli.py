@@ -2,15 +2,15 @@ import logging
 import socket
 import threading
 import time
-from queue import Queue
+from queue import Empty, Queue
 
 import cv2
 
 
 class CameraConfig:
     INDEX = 0
-    WIDTH = 640
-    HEIGHT = 480
+    WIDTH = 320
+    HEIGHT = 240
 
 
 logging.basicConfig(
@@ -27,53 +27,64 @@ class ImageSender:
         self.cli_socket = None
         self.send_thread = None
         self.running = None
-        self.img_queue = None
+        self.img_queues = None  # 改为队列列表
+        self.num_images = None  # 添加图片数量字段
         self._is_closed = False
 
         self.thread_t_log = 0
         self.thread_t_sum = 0
 
     def connect(self):
-        """连接到服务器"""
+        """创建UDP socket（无需连接）"""
         if self._is_closed:
             raise RuntimeError("Sender is already closed.")
 
-        self.cli_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            self.cli_socket.connect((self.host, self.port))
-            logging.info(f"Connected to server at {self.host}:{self.port}")
-        except Exception as e:
-            self.cli_socket.close()
-            self.cli_socket = None
-            raise RuntimeError(f"Connection failed: {e}") from e
+        self.cli_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        logging.info(f"UDP socket created for {self.host}:{self.port}")
 
-    def send_picture(self, img):
-        """发送单张图片"""
+    def send_picture(self, img: cv2.typing.MatLike, img_id: int = 0) -> None:
+        """通过UDP发送单张图片
+
+        Args:
+            img: OpenCV图像
+            img_id: 图片ID，用于区分不同的图像流
+
+        Raises:
+            ValueError: 如果 img_id 不在 0-255 范围内
+        """
+        if not (0 <= img_id <= 255):
+            raise ValueError(f"img_id must be in range 0-255, got {img_id}")
+
         if self.cli_socket is None:
-            raise RuntimeError("Socket is not connected.")
+            raise RuntimeError("Socket is not initialized.")
 
-        # 编码
-        res, buf = cv2.imencode(
-            ".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85]
-        )  # 按照jpeg格式编码图像，质量为原先的85
+        # 编码图片（320x240, JPEG质量70）
+        res, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 70])
         if not res:
             raise RuntimeError("Failed to encode picture")
 
+        # 新协议: [1字节ID][4字节大小][图片数据]
         data = (
-            len(buf).to_bytes(4, "big") + buf.tobytes()
-        )  # 二进制打包，前4个字节是图片大小，后面是图片内容
+            img_id.to_bytes(1, "big")  # 图片ID
+            + len(buf).to_bytes(4, "big")  # 图片大小
+            + buf.tobytes()  # 图片内容
+        )
 
-        # 发送图片
-        self.cli_socket.sendall(data)
-        logging.debug("Picture sent.")
+        # UDP发送
+        try:
+            self.cli_socket.sendto(data, (self.host, self.port))
+            logging.debug(f"Picture sent with ID={img_id}, size={len(buf)}")
+        except OSError as e:
+            logging.error(f"UDP send failed: {e}")
+            raise
 
-    def _send_worker(self, queue, running_flag):
-        """发送线程工作函数：从队列中取出图片并发送"""
+    def _send_worker(self, queues: list[Queue], running_flag: list[bool]) -> None:
+        """发送线程工作函数：轮询所有队列并发送"""
         thread_t_log = 0
         thread_cur_t, thread_pre_t, thread_t_sum = 0.0, 0.0, 0.0
         while running_flag[0]:
             try:
-                # 测速，每10轮计算一次发送频率
+                # 测速
                 thread_cur_t = time.perf_counter()
                 thread_t_log += 1
                 thread_t_sum += thread_cur_t - thread_pre_t
@@ -85,43 +96,74 @@ class ImageSender:
                     thread_t_sum = 0.0
                 thread_pre_t = thread_cur_t
 
-                img = queue.get(timeout=0.04)  # 从队列获取图片，超时0.04秒就会抛出异常
-                if img is not None:
-                    self.send_picture(img)
-                queue.task_done()  # 标记一个任务已经完成，减少一个引用记数(与之对应的，put()会增加一个引用记数)，当所有任务完成后，join()会阻塞直到引用记数为0
+                # 轮询所有队列
+                any_sent = False
+                for img_id, queue in enumerate(queues):
+                    if not queue.empty():
+                        try:
+                            img = queue.get_nowait()
+                            if img is not None:
+                                self.send_picture(img, img_id)
+                            queue.task_done()
+                            any_sent = True
+                        except Empty:
+                            pass  # 队列为空继续
 
-            except Exception:
-                continue  # 队列为空时继续循环
+                if not any_sent:
+                    time.sleep(0.001)  # 所有队列都为空时才休眠
 
-    def start_sending(self, queue_size=45):
-        """启动发送线程"""
+            except Exception as e:
+                logging.error(f"Error in send worker: {e}")
+                continue
+
+    def start_sending(self, num_images: int = 3, queue_size: int = 45) -> None:
+        """启动发送线程
+
+        Args:
+            num_images: 图片数量（同时发送的图像流数量）
+            queue_size: 每个队列的大小
+        """
         if self._is_closed:
             raise RuntimeError("Sender is already closed.")
 
         if self.cli_socket is None:
             raise RuntimeError("Not connected to server.")
 
-        # 创建图片队列和发送线程
-        self.img_queue = Queue(maxsize=queue_size)
-        self.running = [True]  # 使用列表以便在线程间共享
+        if not (1 <= num_images <= 255):
+            raise ValueError(f"num_images must be in range 1-255, got {num_images}")
+
+        # 创建多个图片队列
+        self.num_images = num_images
+        self.img_queues = [Queue(maxsize=queue_size) for _ in range(num_images)]
+        self.running = [True]
 
         # 启动发送线程
         self.send_thread = threading.Thread(
-            target=self._send_worker, args=(self.img_queue, self.running)
+            target=self._send_worker, args=(self.img_queues, self.running)
         )
         self.send_thread.daemon = True
         self.send_thread.start()
-        logging.info("Send thread started.")
+        logging.info(f"Send thread started for {num_images} images.")
 
-    def enqueue_image(self, img):
-        """将图片放入发送队列"""
-        if self.img_queue is None:
+    def enqueue_image(self, img: cv2.typing.MatLike, img_id: int = 0) -> None:
+        """将图片放入对应ID的发送队列
+
+        Args:
+            img: OpenCV图像
+            img_id: 图片队列ID (0 到 num_images-1)
+        """
+        if self.img_queues is None:
             raise RuntimeError("Sender is not started.")
 
-        if not self.img_queue.full():
-            self.img_queue.put(img)
+        if img_id < 0 or img_id >= self.num_images:
+            raise RuntimeError(
+                f"Invalid img_id: {img_id}, must be 0-{self.num_images - 1}"
+            )
+
+        if not self.img_queues[img_id].full():
+            self.img_queues[img_id].put(img)
         else:
-            logging.debug("Queue full, dropping frame.")
+            logging.debug(f"Queue {img_id} full, dropping frame.")
 
     def close(self):
         """关闭发送器，释放所有资源"""
@@ -216,23 +258,20 @@ class CameraCapture:
 if __name__ == "__main__":
     host = "127.0.0.1"
     port = 12345
-    main_t_log = 0  # 测速，每10轮计算一次
+    main_t_log = 0
     main_t_sum = 0
     main_pre_t = 0.0
 
-    # 方式1: 使用上下文管理器
-    # 自动管理摄像头和发送器的资源释放
     try:
         with CameraCapture(0) as camera, ImageSender(host, port) as sender:
-            # 连接到服务器
             sender.connect()
+            sender.start_sending(num_images=3)  # 启动3个图像流
 
-            # 启动发送线程
-            sender.start_sending(queue_size=45)
+            # cap = cv2.VideoCapture("test2.avi")
 
             try:
                 while True:
-                    main_cur_t = time.time()
+                    main_cur_t = time.perf_counter()
                     main_t_sum += main_cur_t - main_pre_t
                     main_t_log += 1
                     if main_t_log % 10 == 0:
@@ -243,18 +282,21 @@ if __name__ == "__main__":
                         main_t_sum = 0
                     main_pre_t = main_cur_t
 
-                    # 获取图片
+                    # 获取图片并复制模拟多张图片
                     img = camera.get_picture()
+                    # ret, img = cap.read()
                     if img is None:
                         break
 
-                    # 显示本地画面
-                    # cv2.imshow("raw_img", img)
+                    # 复制原图模拟3张图片（实际使用时替换为真实处理逻辑）
+                    img0 = img.copy()
+                    img1 = img.copy()
+                    img2 = img.copy()
 
-                    # 将图片放入发送队列
-                    sender.enqueue_image(img)
+                    sender.enqueue_image(img0, img_id=0)
+                    sender.enqueue_image(img1, img_id=1)
+                    sender.enqueue_image(img2, img_id=2)
 
-                    # 按 ESC 退出
                     if cv2.waitKey(20) & 0xFF == 27:
                         logging.info("User interrupted by ESC key.")
                         break

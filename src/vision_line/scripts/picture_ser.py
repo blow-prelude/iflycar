@@ -2,6 +2,7 @@ import logging
 import socket
 import threading
 import time
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -18,61 +19,56 @@ class ImageReceiver:
         self.port = port
         self.host = host
         self.ser_socket = None
-        self.cli_socket = None
+        self.cli_socket = None  # 保留但不使用
         self.connect_thread = None
         self.running = None
         self._is_closed = False
+        self.num_images = None  # 添加图片数量
+        self.windows = None  # 添加窗口名称列表
 
         self.receive_thread_t_sum = 0
         self.receive_thread_t_log = 0
 
-        # 创建监听套接字
-        self.ser_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # 创建UDP socket并绑定
+        self.ser_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.ser_socket.bind((self.host, self.port))
-        self.ser_socket.listen(1)
-        self.ser_socket.settimeout(1)  # 设置超时时间，避免一直阻塞在accept/recv
-        logging.info(f"server start , listening port {self.port}...")
+        # 设置socket超时，以便能够响应running_flag
+        self.ser_socket.settimeout(0.1)  # 100ms超时
+        logging.info(f"UDP server listening on {self.host}:{self.port}...")
 
-    def receive_picture(self):
-        """一对一接收图片，接收方为server"""
+    def receive_picture(self, num_images: int = 3) -> None:
+        """接收多张图片，无需连接
+
+        Args:
+            num_images: 同时显示的图片窗口数量
+
+        Raises:
+            RuntimeError: 如果接收器已关闭或套接字未初始化
+        """
         if self._is_closed:
             raise RuntimeError("Receiver is already closed.")
 
         if self.ser_socket is None:
             raise RuntimeError("Server socket is not initialized.")
 
-        self.cli_socket = None
-        self.connect_thread = None
-        self.running = [True]  # 使用列表以便在线程间共享
+        # 初始化窗口配置
+        self.num_images = num_images
+        self.windows = [f"receive_image_{i}" for i in range(num_images)]
+        logging.info(f"Initialized {num_images} display windows")
 
-        try:
-            while True:
-                try:
-                    self.cli_socket, addr = self.ser_socket.accept()
-                    logging.info(f"client {addr} connected, start receiving...")
-                    break
-                except socket.timeout:
-                    continue  # 超时后继续等待连接
-                except Exception as e:
-                    raise RuntimeError(f"Error connecting to client: {e}") from e
+        # 直接启动接收线程，无需accept
+        self.running = [True]
+        self.connect_thread = threading.Thread(
+            target=self.receive_worker,
+            args=(self.ser_socket, self.running),  # 传入socket而不是conn
+        )
+        self.connect_thread.daemon = True
+        self.connect_thread.start()
+        logging.info("Receive thread started.")
 
-            self.connect_thread = threading.Thread(
-                target=self.receive_worker, args=(self.cli_socket, self.running)
-            )
-            self.connect_thread.daemon = True
-            self.connect_thread.start()
-            logging.info("start receive thread.")
-
-            # 主线程等待，直到用户按下 ESC 或接收线程结束
-            while self.connect_thread.is_alive():
-                self.connect_thread.join(timeout=0.1)
-
-        except KeyboardInterrupt:
-            logging.info("\nshut down by user.")
-            if self.running:
-                self.running[0] = False  # 通知接收线程停止
-        finally:
-            self._cleanup_client()
+        # 主线程等待，直到用户按下 ESC 或接收线程结束
+        while self.connect_thread.is_alive():
+            self.connect_thread.join(timeout=0.1)
 
     def _cleanup_client(self):
         """清理客户端连接和线程资源"""
@@ -97,16 +93,14 @@ class ImageReceiver:
         # 清理客户端资源
         self._cleanup_client()
 
-        # 关闭服务器套接字
+        # 关闭服务器套接字（UDP不需要shutdown）
         if self.ser_socket is not None:
             try:
-                self.ser_socket.shutdown(socket.SHUT_RDWR)
-                logging.info("shut down connection...")
-            except Exception:
-                pass
-            self.ser_socket.close()
+                self.ser_socket.close()
+                logging.info("Server closed.")
+            except Exception as e:
+                logging.warning(f"Error closing socket: {e}")
             self.ser_socket = None
-            logging.info("Server closed.")
 
     def __enter__(self):
         """上下文管理器入口，支持 with 语句"""
@@ -121,62 +115,98 @@ class ImageReceiver:
         """析构函数，对象销毁时自动释放资源"""
         self.close()
 
-    def handle_connect(self, conn):
-        # 接收文件头，即图像大小
-        header = conn.recv(4)
-        if len(header) != 4:
-            raise RuntimeError(f"Invalid header with {len(header)} bytes.")
-        size = int.from_bytes(header, "big")  # 将4字节长的文件头转成整形数据
-        logging.debug(f"start to receive image with {size} bytes")
-        # 接收图像数据
-        data = bytearray()  # 可变字节数据对象
-        # 分多次接收图像数据
-        while len(data) < size:
-            packet = conn.recv(min(4096, size - len(data)))
-            if not packet:
-                raise RuntimeError("Connection closed during data transfer")
-            data.extend(packet)  # 使用 extend 追加多个字节
-        # 全部接收后检测实际接收长度是否和包头相同
-        if len(data) < size:
-            raise RuntimeError(
-                f"Incomplete data, expected {size} bytes but only {len(data)} bytes"
-            )
-        elif len(data) > size:
-            logging.warning(
-                f"Received more data than expected, expected {size} bytes but actually received {len(data)} bytes"
-            )
-        return data
+    def handle_connect(
+        self, sock: socket.socket
+    ) -> Tuple[Optional[int], Optional[bytes]]:
+        """接收UDP数据包
+
+        Args:
+            sock: UDP socket对象
+
+        Returns:
+            Tuple[img_id, img_data]: 图片ID和图片数据
+            如果接收失败返回 (None, None)
+        """
+        # recvfrom返回数据和发送方地址
+        try:
+            data, _ = sock.recvfrom(65535)  # UDP最大包
+        except socket.timeout:
+            return None, None
+
+        # 验证包头完整性
+        if len(data) < 5:
+            logging.warning("Packet too short, dropping")
+            return None, None
+
+        img_id = int.from_bytes(data[0:1], "big")
+        size = int.from_bytes(data[1:5], "big")
+
+        # 验证数据完整性
+        if len(data) < 5 + size:
+            logging.warning(f"Incomplete packet, expected {5 + size}, got {len(data)}")
+            return None, None
+
+        img_data = data[5 : 5 + size]
+
+        # 验证图片ID范围
+        if self.num_images is not None:
+            if img_id < 0 or img_id >= self.num_images:
+                logging.warning(
+                    f"Invalid img_id {img_id}, expected 0-{self.num_images - 1}, dropping"
+                )
+                return None, None
+
+        return img_id, img_data
 
     def process_image(self, data):
-        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)
         if img is None or len(img) == 0:
             raise RuntimeError("Failed to decode image")
         return img
 
-    def receive_worker(self, conn, running_flag):
-        """接收并显示图片的线程函数，持续接收直到被停止"""
-        t_sum = 0.0
+    def receive_worker(self, sock: socket.socket, running_flag: List[bool]) -> None:
+        """接收并显示图片的线程函数"""
+        cur_t, pre_t, t_sum = 0.0, 0.0, 0.0
         t_log = 0
         try:
             while running_flag[0]:
-                t1 = time.perf_counter()
-                img_byte = self.handle_connect(conn)
+                try:
+                    # 测速
+                    cur_t = time.perf_counter()
+                    t_sum += cur_t - pre_t
+                    pre_t = cur_t
+                    t_log += 1
+                    if t_log % 10 == 0:
+                        logging.info(
+                            f"receive thread frequence:{1 / (t_sum / 10):.6f}Hz"
+                        )
+                        t_sum = 0.0
+                        t_log = 0
 
-                # 诊断：检查时间差
-                elapsed = time.perf_counter() - t1
-                logging.debug(f"Received image, elapsed={elapsed:.9f}s")
-                t_sum += elapsed
-                t_log += 1
-                if t_log % 10 == 0:
-                    logging.info(f"receive thread frequence:{1 / (t_sum / 10):.6f}Hz")
-                    t_sum = 0.0
-                    t_log = 0
+                    img_id, img_byte = self.handle_connect(sock)
 
-                img = self.process_image(img_byte)
-                cv2.imshow("receive_image", img)
-                if cv2.waitKey(1) & 0xFF == 27:
-                    logging.info("interrupt by user.")
-                    break
+                    # 处理接收失败（包括超时）
+                    if img_id is None or img_byte is None:
+                        continue
+
+                    # 验证图片ID范围
+                    if self.num_images is None or self.windows is None:
+                        logging.error("Receiver not initialized")
+                        continue
+
+                    logging.debug(f"Received image {img_id}")
+
+                    img = self.process_image(img_byte)
+                    window_name = self.windows[img_id]
+                    cv2.imshow(window_name, img)
+
+                    if cv2.waitKey(1) & 0xFF == 27:
+                        logging.info("interrupt by user.")
+                        break
+
+                except socket.timeout:
+                    # 超时是正常的，继续循环检查running_flag
+                    continue
 
         except (ConnectionResetError, BrokenPipeError) as e:
             logging.error(f"Connection error: {e}")
@@ -186,30 +216,18 @@ class ImageReceiver:
             logging.error(f"Unexpected error in receive_worker: {e}")
         finally:
             cv2.destroyAllWindows()
-            conn.close()
 
 
 if __name__ == "__main__":
     host = "0.0.0.0"
     port = 12345
 
-    # 方式1: 使用上下文管理器（推荐）- 自动释放资源
     try:
         with ImageReceiver(host, port) as img_rec:
-            img_rec.receive_picture()
+            img_rec.receive_picture(num_images=3)  # 显示3个窗口
     except KeyboardInterrupt:
         logging.info("Interrupted by user.")
     except RuntimeError as e:
         logging.error(f"Runtime error: {e}")
     except Exception as e:
         logging.error(f"Unexpected error: {e}")
-    # 退出 with 块时自动调用 close() 释放资源
-
-    # 方式2: 手动管理 - 需要显式调用 close()
-    # img_rec = ImageReceiver(host, port)
-    # try:
-    #     img_rec.receive_picture()
-    # except Exception as e:
-    #     logging.error(f"Error: {e}")
-    # finally:
-    #     img_rec.close()

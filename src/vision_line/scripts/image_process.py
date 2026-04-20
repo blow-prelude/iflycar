@@ -476,10 +476,10 @@ class ImageProcess:
         logging.debug(f"find stop line ,mid:({mid_x}, {mid_y}),")
 
         # 显示ROI区域（如果需要）
-        if is_draw:
-            # 弹窗显示ROI区域（需要转成BGR格式才能正常显示）
-            # roi_display = cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR)
-            cv2.imshow("stop_line_roi", roi)
+        # if is_draw:
+        #     # 弹窗显示ROI区域（需要转成BGR格式才能正常显示）
+        #     # roi_display = cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR)
+        #     cv2.imshow("stop_line_roi", roi)
 
         # 绘制（如果需要）
         if is_draw and canvas is not None:
@@ -1318,7 +1318,7 @@ def main():
         # 连接服务器，开启发送线程
         img_sender.connect()
 
-        img_sender.start_sending()
+        img_sender.start_sending(2)
 
         cap = CameraCapture(0)  # 0表示默认摄像头
         if not cap.is_opened():
@@ -1327,7 +1327,7 @@ def main():
 
         while True:
             frame = cap.get_picture()
-            img_sender.enqueue_image(frame)
+            # img_sender.enqueue_image(frame)
 
             # 实时 FPS 计算
             now_t = time.perf_counter()
@@ -1412,12 +1412,13 @@ def main():
                         canvas = imgprocess.draw_line(canvas, fps, draw_fps=True)
 
                         # 显示二值化图像
-                        cv2.imshow("binary", binary_img)
+                        # cv2.imshow("binary", binary_img)
+                        img_sender.enqueue_image(binary_img, img_id=0)
 
                         # 显示处理结果
                         # cv2.imshow("processed_img", canvas)
                         # 发送处理结果
-                        # img_sender.enqueue_image(canvas)
+                        img_sender.enqueue_image(canvas, img_id=1)
 
             # 按键控制
             key = cv2.waitKey(1) & 0xFF
