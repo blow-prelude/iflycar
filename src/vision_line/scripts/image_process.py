@@ -17,10 +17,12 @@ logging.basicConfig(
 
 class ProcessState(Enum):
     IDLE = 0  # 未收到指令，不处理
-    TRACKING = 1  # 已收到指令，find_corner=False
+    STRAIGHT_TRACKING = 1  # 直行循迹，find_corner=False
+    RIGHT_TRACKING = 5  # 右转循迹（占位）
+    LEFT_TRACKING = 6  # 左转循迹（占位）
     CORNER = 2  # 延时已到，find_corner=True
     CROSS = 3  # 双拐点触发，find_corner=False，执行额外处理
-    TURNING = 4  # 新增：检测到停止线后的转弯状态
+    TURNING = 4  # 检测到停止线后的转弯状态
 
 
 transformation_matrix = np.array(
@@ -1151,13 +1153,13 @@ def main_video():
                 # --- 状态机：状态转移 ---
                 if state == ProcessState.IDLE:
                     if command_received:
-                        state = ProcessState.TRACKING
+                        state = ProcessState.STRAIGHT_TRACKING
                         t0 = time.time()
                         logging.info("State: IDLE -> TRACKING (command received)")
 
                 # --- 非 IDLE 状态才执行图像处理 ---
                 else:
-                    if state == ProcessState.TRACKING and t0 is not None:
+                    if state == ProcessState.STRAIGHT_TRACKING and t0 is not None:
                         if time.time() - t0 >= corner_delay_s:
                             state = ProcessState.CORNER
                             logging.info(
@@ -1343,14 +1345,14 @@ def main():
             # --- 状态机：状态转移 ---
             if state == ProcessState.IDLE:
                 if command_received:
-                    state = ProcessState.TRACKING
+                    state = ProcessState.STRAIGHT_TRACKING
                     t0 = time.time()
                     logging.info("State: IDLE -> TRACKING (command received)")
 
             # --- 非 IDLE 状态才执行图像处理 ---
             else:
                 # TRACKING状态下等待一定时间后检测拐点
-                if state == ProcessState.TRACKING and t0 is not None:
+                if state == ProcessState.STRAIGHT_TRACKING and t0 is not None:
                     if time.time() - t0 >= corner_delay_s:
                         state = ProcessState.CORNER
                         logging.info(
