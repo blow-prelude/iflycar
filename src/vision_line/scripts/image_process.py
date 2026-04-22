@@ -63,9 +63,13 @@ class ImageProcess:
         self.prev_supple_left_line = []  # 上一帧优化后的左边线
         self.prev_supple_right_line = []  # 上一帧优化后的右边线
 
+        self.x_continual = 15
+        self.y_continual = 5
+
         # 搜索配置参数
         self.search_range = 100  # 搜索范围（像素），向左/右搜索的最大距离
         self.search_offset = 30  # 搜索偏移量（像素）
+        self.init_stable_count = 5  # 初始连续点数阈值
 
     def preprocess(self):
         try:
@@ -102,11 +106,9 @@ class ImageProcess:
                 close = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=3)
                 return close
             else:
-                logging.error("No image source available")
-                return None
+                raise ValueError("Failed to load image for preprocessing")
         except Exception as e:
-            logging.error(f"Error occurred during image preprocessing: {e}")
-            return None
+            raise RuntimeError(f"Error during preprocessing: {e}")
 
     def return_frame(self):
         """获取用于绘制的画布（当前帧的副本）
@@ -115,8 +117,7 @@ class ImageProcess:
             画布图像（frame的副本），如果frame为None则返回None
         """
         if self.frame is None:
-            logging.warning("Frame is None, cannot create canvas")
-            return None
+            raise ValueError("Frame is None, cannot return canvas")
         return self.frame.copy()
 
     def perspective_transform(self, img, matrix, output_size=None):
@@ -274,6 +275,31 @@ class ImageProcess:
 
         # 如果没有找到匹配点，返回中线
         return img_width // 2
+
+    def _add_point_with_stable_start(self, line, point, stable_buf, x_thresh, y_thresh):
+        """初始稳定点检测：前 N 个点必须全部连续才加入列表
+
+        Args:
+            line: 正式边线列表
+            point: 候选点 (x, y)
+            stable_buf: 稳定期临时缓冲区（由调用方维护）
+            x_thresh: x 方向连续性阈值
+            y_thresh: y 方向连续性阈值
+        """
+        if len(line) >= self.init_stable_count:
+            if abs(line[-1][0] - point[0]) < x_thresh and abs(line[-1][1] - point[1]) < y_thresh:
+                line.append(point)
+        else:
+            if len(stable_buf) == 0:
+                stable_buf.append(point)
+            elif abs(stable_buf[-1][0] - point[0]) < x_thresh and abs(stable_buf[-1][1] - point[1]) < y_thresh:
+                stable_buf.append(point)
+                if len(stable_buf) >= self.init_stable_count:
+                    line.extend(stable_buf)
+                    stable_buf.clear()
+            else:
+                stable_buf.clear()
+                stable_buf.append(point)
 
     def _update_prev_frame_lines(self):
         """在每帧处理完成后，更新上一帧的边线信息"""
@@ -437,8 +463,7 @@ class ImageProcess:
         """
         # 输入验证
         if binary_img is None:
-            logging.warning("binary_img is None")
-            return None
+            raise ValueError("Input binary image is None")
 
         h, w = binary_img.shape[:2]
 
@@ -458,7 +483,7 @@ class ImageProcess:
         contours = cv2.findContours(roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
 
         if len(contours) == 0:
-            logging.debug("No contours found in ROI")
+            logging.debug("No contours found in stop line ROI")
             return None
 
         # 找最像“横线”的轮廓
@@ -578,7 +603,7 @@ class ImageProcess:
                                 found_left = True
                                 break  # 找到边线后break
                             else:
-                                logging.info(
+                                logging.debug(
                                     f"jump too far at {i}, {j} , last point : {self.left_line[len(self.left_line) - 1]}"
                                 )
 
@@ -625,7 +650,7 @@ class ImageProcess:
                                 found_right = True
                                 break
                             else:
-                                logging.info(
+                                logging.debug(
                                     f"jump too far at {i}, {j} , last point : {self.right_line[len(self.right_line) - 1]}"
                                 )
 
@@ -736,8 +761,10 @@ class ImageProcess:
                         self.left_line.append((x, y))
                     else:
                         if (
-                            abs(self.left_line[len(self.left_line) - 1][0] - x) < 15
-                            and abs(self.left_line[len(self.left_line) - 1][1] - y) < 5
+                            abs(self.left_line[len(self.left_line) - 1][0] - x)
+                            < self.x_continual
+                            and abs(self.left_line[len(self.left_line) - 1][1] - y)
+                            < self.y_continual
                         ):
                             self.left_line.append((x, y))
                         else:
@@ -776,9 +803,10 @@ class ImageProcess:
                         self.right_line.append((x, y))
                     else:
                         if (
-                            abs(self.right_line[len(self.right_line) - 1][0] - x) < 15
+                            abs(self.right_line[len(self.right_line) - 1][0] - x)
+                            < self.x_continual
                             and abs(self.right_line[len(self.right_line) - 1][1] - y)
-                            < 5
+                            < self.y_continual
                         ):
                             self.right_line.append((x, y))
                         else:
@@ -1097,7 +1125,7 @@ class ImageProcess:
 
 def main_video():
     # 视频文件路径
-    video_path = r"D:\programs\ucar_ws\src\vision_line\videos\test2.avi"
+    video_path = r"D:\programs\ucar_ws\src\vision_line\videos\test1.avi"
 
     # 打开视频文件
     cap = cv2.VideoCapture(video_path)
@@ -1123,8 +1151,8 @@ def main_video():
     dt = 0.0
     j = 0.0
     # 状态机参数
-    straight_received = True
-    right_received = False
+    straight_received = False
+    right_received = True
     left_received = False
     corner_delay_s = 1.5  # 延时秒数，超过后启用拐点检测
 
@@ -1134,143 +1162,129 @@ def main_video():
 
     try:
         while True:
-            # 如果暂停，只显示当前帧
-            if not paused:
-                ret, frame = cap.read()
-                if not ret:
-                    logging.info("Video processing completed")
-                    break
+            frame = cap.read()[1]
+            # img_sender.enqueue_image(frame)
 
-                # 实时 FPS 计算
-                now_t = time.perf_counter()
-                if prev_t is not None:
-                    dt += now_t - prev_t
-                    j += 1
-                    if j % 10 == 0 and dt > 1e-6:
-                        fps = 1.0 / dt * 10
-                        logging.info(f"Current FPS: {fps:.2f}")
-                        dt = 0.0
-                prev_t = now_t
+            # 实时 FPS 计算
+            now_t = time.perf_counter()
+            if prev_t is not None:
+                dt += now_t - prev_t
+                j += 1
+                if j % 10 == 0 and dt > 1e-6:
+                    fps = 1.0 / dt * 10
+                    logging.info(f"Current FPS: {fps:.2f}")
+                    dt = 0.0
+            prev_t = now_t
 
-                # --- 状态机：状态转移 ---
-                if state == ProcessState.IDLE:
-                    if straight_received:
-                        state = ProcessState.STRAIGHT_TRACKING
-                        t0 = time.time()
-                        logging.info("State: IDLE -> STRAIGHT_TRACKING (straight received)")
-                    elif right_received:
-                        state = ProcessState.RIGHT_TRACKING
-                        logging.info("State: IDLE -> RIGHT_TRACKING (right received)")
-                    elif left_received:
-                        state = ProcessState.LEFT_TRACKING
-                        logging.info("State: IDLE -> LEFT_TRACKING (left received)")
+            # --- 状态机：状态转移 ---
+            if state == ProcessState.IDLE:
+                if straight_received:
+                    state = ProcessState.STRAIGHT_TRACKING
+                    t0 = time.perf_counter()
+                    logging.info("State: IDLE -> STRAIGHT_TRACKING (straight received)")
+                elif right_received:
+                    state = ProcessState.RIGHT_TRACKING
+                    logging.info("State: IDLE -> RIGHT_TRACKING (right received)")
+                elif left_received:
+                    state = ProcessState.LEFT_TRACKING
+                    logging.info("State: IDLE -> LEFT_TRACKING (left received)")
 
-                # --- 非 IDLE 状态才执行图像处理 ---
-                else:
-                    if state not in (ProcessState.RIGHT_TRACKING, ProcessState.LEFT_TRACKING):
-                        # STRAIGHT_TRACKING 超时检查
-                        if state == ProcessState.STRAIGHT_TRACKING and t0 is not None:
-                            if time.time() - t0 >= corner_delay_s:
-                                state = ProcessState.CORNER
-                                logging.info(
-                                    f"State: STRAIGHT_TRACKING -> CORNER (after {corner_delay_s}s)"
-                                )
-                        # 保存当前帧到imgprocess
-                        imgprocess.frame = frame
+            # --- 非 IDLE 状态才执行图像处理 ---
+            else:
+                # 保存当前帧到imgprocess
+                imgprocess.frame = frame
 
-                        # 预处理
-                        binary_img = imgprocess.preprocess()
-                        if binary_img is None:
-                            logging.warning("Frame preprocessing failed")
-                        else:
-                            # 获取用于绘制的画布
-                            canvas = imgprocess.return_frame()
-                            if canvas is not None:
-                                # 根据状态决定 find_corner 参数
-                                find_corner = state == ProcessState.CORNER
+                # 预处理
+                binary_img = imgprocess.preprocess()
 
-                                # 获取边线（传入canvas用于绘制调试信息）
-                                imgprocess.get_side_line_task_2(
-                                    binary_img,
-                                    canvas,
-                                    is_draw=True,
-                                    find_corner=find_corner,
-                                )
+                if state not in (
+                    ProcessState.RIGHT_TRACKING,
+                    ProcessState.LEFT_TRACKING,
+                ):
+                    # STRAIGHT_TRACKING 超时检查
+                    if state == ProcessState.STRAIGHT_TRACKING and t0 is not None:
+                        if time.perf_counter() - t0 >= corner_delay_s:
+                            state = ProcessState.CORNER
+                            logging.info(
+                                f"State: STRAIGHT_TRACKING -> CORNER (after {corner_delay_s}s)"
+                            )
 
-                                # CORNER 状态：处理完毕后检查是否进入 CROSS
-                                if state == ProcessState.CORNER:
-                                    if imgprocess.judge_enter_cross_state(
-                                        binary_img.shape, 0.75
-                                    ):
-                                        state = ProcessState.CROSS
-                                        logging.info(
-                                            "State: CORNER -> CROSS (dual corner detected)"
-                                        )
+                    # 获取用于绘制的画布
+                    canvas = imgprocess.return_frame()
+                    # 根据状态决定 find_corner 参数
+                    find_corner = state == ProcessState.CORNER
 
-                                # CROSS 状态：检测停止线
-                                if state == ProcessState.CROSS:
-                                    # 获取停止线
-                                    stop_mid = imgprocess.get_stop_line(
-                                        binary_img, is_draw=True, canvas=canvas
-                                    )
+                    # 获取边线（传入canvas用于绘制调试信息）
+                    imgprocess.get_side_line_task_2(
+                        binary_img,
+                        canvas,
+                        is_draw=True,
+                        find_corner=find_corner,
+                    )
 
-                                    # 检查是否进入 TURNING
-                                    if imgprocess.judge_enter_turning(
-                                        stop_mid, binary_img.shape
-                                    ):
-                                        state = ProcessState.TURNING
-                                        y_norm = stop_mid[1] / binary_img.shape[0]
-                                        logging.info(
-                                            f"State: CROSS -> TURNING (stop line at y={stop_mid[1]}, y_norm={y_norm:.2f})"
-                                        )
+                    # CORNER 状态：处理完毕后检查是否进入 CROSS
+                    if state == ProcessState.CORNER:
+                        if imgprocess.judge_enter_cross_state(binary_img.shape, 0.75):
+                            state = ProcessState.CROSS
+                            logging.info(
+                                "State: CORNER -> CROSS (dual corner detected)"
+                            )
 
-                                # 多项式拟合
-                                imgprocess.fit_polynomial()
+                    # CROSS 状态：检测停止线
+                    if state == ProcessState.CROSS:
+                        # 获取停止线
+                        stop_mid = imgprocess.get_stop_line(
+                            binary_img, is_draw=True, canvas=canvas
+                        )
 
-                                canvas = imgprocess.draw_line(canvas, fps, draw_fps=True)
+                        # 检查是否进入 TURNING
+                        if stop_mid is not None and imgprocess.judge_enter_turning(
+                            stop_mid, binary_img.shape
+                        ):
+                            state = ProcessState.TURNING
+                            y_norm = stop_mid[1] / binary_img.shape[0]
+                            logging.info(
+                                f"State: CROSS -> TURNING (stop line at y={stop_mid[1]}, y_norm={y_norm:.2f})"
+                            )
 
-                                # 显示二值化图像
-                                cv2.imshow("binary", binary_img)
+                    # 多项式拟合
+                    imgprocess.fit_polynomial()
 
-                                # 显示处理结果
-                                cv2.imshow("processed_img", canvas)
+                    canvas = imgprocess.draw_line(canvas, fps, draw_fps=True)
 
-                # # 做透视变换
-                # perspective_img = imgprocess.perspective_transform(
-                #     binary_img, transformation_matrix
-                # )
+                    # 显示二值化图像
+                    cv2.imshow("binary", binary_img)
+                    # img_sender.enqueue_image(binary_img, img_id=0)
 
-                # # 获取用于绘制的画布
-                # canvas = imgprocess.get_canvas()
-                # if canvas is None:
-                #     logging.warning(f"Frame {frame_count} failed to get canvas")
-                #     continue
+                    # 显示处理结果
+                    cv2.imshow("processed_img", canvas)
+                    # 发送处理结果
+                    # img_sender.enqueue_image(canvas, img_id=1)
 
-                # # 获取边线（传入canvas用于绘制调试信息）
-                # imgprocess.get_side_line(perspective_img, canvas, is_draw=False)
+                elif state in (ProcessState.RIGHT_TRACKING, ProcessState.LEFT_TRACKING):
+                    canvas = imgprocess.return_frame()
+                    # 如果是左转，就翻转一次得到正常视角，右转则不翻转，保持原视角
+                    if state == ProcessState.LEFT_TRACKING:
+                        binary_img = cv2.flip(binary_img, 1)
+                        canvas = cv2.flip(canvas, 1)
 
-                # # 多项式拟合
-                # imgprocess.fit_polynomial()
+                    imgprocess.get_side_line_task_1(
+                        binary_img,
+                        canvas,
+                        is_draw=True,
+                    )
+                    # 多项式拟合
+                    imgprocess.fit_polynomial()
 
-                # # 绘制结果
-                # perspective_copy = perspective_img.copy()
-                # perspective_copy = imgprocess.draw_line(perspective_copy)
+                    canvas = imgprocess.draw_line(canvas, fps, draw_fps=True)
 
-                # original = imgprocess.get_canvas()
-                # if original is not None:
-                #     cv2.imshow("original", original)
+                    # 可视化
+                    cv2.imshow("binary", binary_img)
+                    cv2.imshow("processed_img", canvas)
 
-                # # 显示二值化图像
-                # if binary_img is not None:
-                #     cv2.imshow("binary", binary_img)
-
-                # # 显示透视变换图像
-                # if perspective_img is not None:
-                #     cv2.imshow("perspective", perspective_img)
-
-                # # 显示处理结果
-                # if perspective_copy is not None:
-                #     cv2.imshow("processed_img", perspective_copy)
+                    # 发送图像
+                    # img_sender.enqueue_image(binary_img, img_id=0)
+                    # img_sender.enqueue_image(canvas, img_id=1)
 
             # 按键控制
             key = cv2.waitKey(1) & 0xFF
@@ -1319,8 +1333,8 @@ def main():
     dt = 0.0
     j = 0.0
     # 状态机参数
-    straight_received = True
-    right_received = False
+    straight_received = False
+    right_received = True
     left_received = False
     corner_delay_s = 1.5  # 延时秒数，超过后启用拐点检测
 
@@ -1358,7 +1372,7 @@ def main():
             if state == ProcessState.IDLE:
                 if straight_received:
                     state = ProcessState.STRAIGHT_TRACKING
-                    t0 = time.time()
+                    t0 = time.perf_counter()
                     logging.info("State: IDLE -> STRAIGHT_TRACKING (straight received)")
                 elif right_received:
                     state = ProcessState.RIGHT_TRACKING
@@ -1369,77 +1383,99 @@ def main():
 
             # --- 非 IDLE 状态才执行图像处理 ---
             else:
-                if state not in (ProcessState.RIGHT_TRACKING, ProcessState.LEFT_TRACKING):
+                # 保存当前帧到imgprocess
+                imgprocess.frame = frame
+
+                # 预处理
+                binary_img = imgprocess.preprocess()
+                if state not in (
+                    ProcessState.RIGHT_TRACKING,
+                    ProcessState.LEFT_TRACKING,
+                ):
                     # STRAIGHT_TRACKING 超时检查
                     if state == ProcessState.STRAIGHT_TRACKING and t0 is not None:
-                        if time.time() - t0 >= corner_delay_s:
+                        if time.perf_counter() - t0 >= corner_delay_s:
                             state = ProcessState.CORNER
                             logging.info(
                                 f"State: STRAIGHT_TRACKING -> CORNER (after {corner_delay_s}s)"
                             )
 
-                    # 保存当前帧到imgprocess
-                    imgprocess.frame = frame
+                    # 获取用于绘制的画布
+                    canvas = imgprocess.return_frame()
+                    # 根据状态决定 find_corner 参数
+                    find_corner = state == ProcessState.CORNER
 
-                    # 预处理
-                    binary_img = imgprocess.preprocess()
-                    if binary_img is None:
-                        logging.warning("Frame preprocessing failed")
-                    else:
-                        # 获取用于绘制的画布
-                        canvas = imgprocess.return_frame()
-                        if canvas is not None:
-                            # 根据状态决定 find_corner 参数
-                            find_corner = state == ProcessState.CORNER
+                    # 获取边线（传入canvas用于绘制调试信息）
+                    imgprocess.get_side_line_task_2(
+                        binary_img,
+                        canvas,
+                        is_draw=True,
+                        find_corner=find_corner,
+                    )
 
-                            # 获取边线（传入canvas用于绘制调试信息）
-                            imgprocess.get_side_line_task_2(
-                                binary_img,
-                                canvas,
-                                is_draw=True,
-                                find_corner=find_corner,
+                    # CORNER 状态：处理完毕后检查是否进入 CROSS
+                    if state == ProcessState.CORNER:
+                        if imgprocess.judge_enter_cross_state(binary_img.shape, 0.75):
+                            state = ProcessState.CROSS
+                            logging.info(
+                                "State: CORNER -> CROSS (dual corner detected)"
                             )
 
-                            # CORNER 状态：处理完毕后检查是否进入 CROSS
-                            if state == ProcessState.CORNER:
-                                if imgprocess.judge_enter_cross_state(
-                                    binary_img.shape, 0.75
-                                ):
-                                    state = ProcessState.CROSS
-                                    logging.info(
-                                        "State: CORNER -> CROSS (dual corner detected)"
-                                    )
+                    # CROSS 状态：检测停止线
+                    if state == ProcessState.CROSS:
+                        # 获取停止线
+                        stop_mid = imgprocess.get_stop_line(
+                            binary_img, is_draw=True, canvas=canvas
+                        )
 
-                            # CROSS 状态：检测停止线
-                            if state == ProcessState.CROSS:
-                                # 获取停止线
-                                stop_mid = imgprocess.get_stop_line(
-                                    binary_img, is_draw=True, canvas=canvas
-                                )
+                        # 检查是否进入 TURNING
+                        if stop_mid is not None and imgprocess.judge_enter_turning(
+                            stop_mid, binary_img.shape
+                        ):
+                            state = ProcessState.TURNING
+                            y_norm = stop_mid[1] / binary_img.shape[0]
+                            logging.info(
+                                f"State: CROSS -> TURNING (stop line at y={stop_mid[1]}, y_norm={y_norm:.2f})"
+                            )
 
-                                # 检查是否进入 TURNING
-                                if imgprocess.judge_enter_turning(
-                                    stop_mid, binary_img.shape
-                                ):
-                                    state = ProcessState.TURNING
-                                    y_norm = stop_mid[1] / binary_img.shape[0]
-                                    logging.info(
-                                        f"State: CROSS -> TURNING (stop line at y={stop_mid[1]}, y_norm={y_norm:.2f})"
-                                    )
+                    # 多项式拟合
+                    imgprocess.fit_polynomial()
 
-                            # 多项式拟合
-                            imgprocess.fit_polynomial()
+                    canvas = imgprocess.draw_line(canvas, fps, draw_fps=True)
 
-                            canvas = imgprocess.draw_line(canvas, fps, draw_fps=True)
+                    # 显示二值化图像
+                    # cv2.imshow("binary", binary_img)
+                    img_sender.enqueue_image(binary_img, img_id=0)
 
-                            # 显示二值化图像
-                            # cv2.imshow("binary", binary_img)
-                            img_sender.enqueue_image(binary_img, img_id=0)
+                    # 显示处理结果
+                    # cv2.imshow("processed_img", canvas)
+                    # 发送处理结果
+                    img_sender.enqueue_image(canvas, img_id=1)
 
-                            # 显示处理结果
-                            # cv2.imshow("processed_img", canvas)
-                            # 发送处理结果
-                            img_sender.enqueue_image(canvas, img_id=1)
+                elif state in (ProcessState.RIGHT_TRACKING, ProcessState.LEFT_TRACKING):
+                    canvas = imgprocess.return_frame()
+                    # 如果是左转，就翻转一次得到正常视角，右转则不翻转，保持原视角
+                    # if state == ProcessState.LEFT_TRACKING:
+                    #     binary_img = cv2.flip(binary_img, 1)
+                    #     canvas = cv2.flip(canvas, 1)
+
+                    imgprocess.get_side_line_task_1(
+                        binary_img,
+                        canvas,
+                        is_draw=True,
+                    )
+                    # 多项式拟合
+                    imgprocess.fit_polynomial()
+
+                    canvas = imgprocess.draw_line(canvas, fps, draw_fps=True)
+
+                    # 可视化
+                    cv2.imshow("binary", binary_img)
+                    cv2.imshow("processed_img", canvas)
+
+                    # 发送图像
+                    # img_sender.enqueue_image(binary_img, img_id=0)
+                    # img_sender.enqueue_image(canvas, img_id=1)
 
             # 按键控制
             key = cv2.waitKey(1) & 0xFF
