@@ -564,6 +564,10 @@ class ImageProcess:
                     "First frame or no previous frame data, using center line search"
                 )
 
+            # 稳定点缓冲区
+            left_stable_buf = []
+            right_stable_buf = []
+
             for j in range(
                 int(img.shape[0] * down_ratio), int(img.shape[0] * up_ratio), -1
             ):
@@ -582,7 +586,6 @@ class ImageProcess:
                 # 计算搜索终点（避免搜索超出范围）
                 search_end_left = max(0, search_start - self.search_range)
 
-                found_left = False
                 for i in range(search_start, search_end_left, -1):
                     if i <= 1:
                         break
@@ -590,25 +593,10 @@ class ImageProcess:
                         logging.debug(
                             f"find left line at {i}, {j} , value : {img[j, i]}"
                         )
-                        # 如果列表为空，则直接添加从黑到白的跳变点；否则要判断是否和上一个边界点连续
-                        if len(self.left_line) == 0:
-                            self.left_line.append((i, j))
-                        else:
-                            if (
-                                abs(self.left_line[len(self.left_line) - 1][0] - i) < 50
-                                and abs(self.left_line[len(self.left_line) - 1][1] - j)
-                                < 50
-                            ):
-                                self.left_line.append((i, j))
-                                found_left = True
-                                break  # 找到边线后break
-                            else:
-                                logging.debug(
-                                    f"jump too far at {i}, {j} , last point : {self.left_line[len(self.left_line) - 1]}"
-                                )
-
-                if not found_left and not is_first_frame:
-                    logging.debug(f"Left line not found at row {j} within search range")
+                        self._add_point_with_stable_start(
+                            self.left_line, (i, j), left_stable_buf, 50, 50
+                        )
+                        break
 
                 # 右侧赛道线
                 # 获取搜索起点
@@ -627,7 +615,6 @@ class ImageProcess:
                     img.shape[1] - 1, search_start + self.search_range
                 )
 
-                found_right = False
                 for i in range(search_start, search_end_right, 1):
                     if i >= img.shape[1] - 1:
                         break
@@ -635,29 +622,10 @@ class ImageProcess:
                         logging.debug(
                             f"find right line at {i}, {j} , value : {img[j, i]}"
                         )
-                        if len(self.right_line) == 0:
-                            self.right_line.append((i, j))
-                        else:
-                            if (
-                                abs(self.right_line[len(self.right_line) - 1][0] - i)
-                                < 50
-                                and abs(
-                                    self.right_line[len(self.right_line) - 1][1] - j
-                                )
-                                < 50
-                            ):
-                                self.right_line.append((i, j))
-                                found_right = True
-                                break
-                            else:
-                                logging.debug(
-                                    f"jump too far at {i}, {j} , last point : {self.right_line[len(self.right_line) - 1]}"
-                                )
-
-                if not found_right and not is_first_frame:
-                    logging.debug(
-                        f"Right line not found at row {j} within search range"
-                    )
+                        self._add_point_with_stable_start(
+                            self.right_line, (i, j), right_stable_buf, 50, 50
+                        )
+                        break
 
                 if len(self.left_line) > 0 and len(self.right_line) > 0:
                     # 线性插值
