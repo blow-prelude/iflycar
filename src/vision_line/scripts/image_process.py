@@ -687,6 +687,10 @@ class ImageProcess:
             self.left_c = None
             self.right_c = None
 
+            # 稳定点缓冲区
+            left_stable_buf = []
+            right_stable_buf = []
+
             diff = np.diff(img == 0, axis=1)  # 计算行内黑白跳变  右-左
             # cv2.imshow("diff", (diff != 0).astype(np.uint8) * 255)    # 显示发生跳变的地方
 
@@ -724,21 +728,11 @@ class ImageProcess:
                         left_pre_p = left_cur_p
                         left_cur_p = left_nxt_p
 
-                    # 如果不是拐点，正常添加到边线中
-                    if len(self.left_line) == 0:
-                        self.left_line.append((x, y))
-                    else:
-                        if (
-                            abs(self.left_line[len(self.left_line) - 1][0] - x)
-                            < self.x_continual
-                            and abs(self.left_line[len(self.left_line) - 1][1] - y)
-                            < self.y_continual
-                        ):
-                            self.left_line.append((x, y))
-                        else:
-                            logging.debug(
-                                f"jump too far at {x}, {y} , last point : {self.left_line[len(self.left_line) - 1]}"
-                            )
+                    # 添加到边线（稳定点检测）
+                    self._add_point_with_stable_start(
+                        self.left_line, (x, y), left_stable_buf,
+                        self.x_continual, self.y_continual
+                    )
 
                 # 右线
                 candidates = np.where(row_diff[mid_x:] == 1)[0]
@@ -767,20 +761,11 @@ class ImageProcess:
                         # 更新点
                         right_pre_p = right_cur_p
                         right_cur_p = right_nxt_p
-                    if len(self.right_line) == 0:
-                        self.right_line.append((x, y))
-                    else:
-                        if (
-                            abs(self.right_line[len(self.right_line) - 1][0] - x)
-                            < self.x_continual
-                            and abs(self.right_line[len(self.right_line) - 1][1] - y)
-                            < self.y_continual
-                        ):
-                            self.right_line.append((x, y))
-                        else:
-                            logging.debug(
-                                f"jump too far at {x}, {y} , last point : {self.right_line[len(self.right_line) - 1]}"
-                            )
+                    # 添加到边线（稳定点检测）
+                    self._add_point_with_stable_start(
+                        self.right_line, (x, y), right_stable_buf,
+                        self.x_continual, self.y_continual
+                    )
 
             # 线性补插，优化边线
             if len(self.left_line) > 0 and len(self.right_line) > 0:
