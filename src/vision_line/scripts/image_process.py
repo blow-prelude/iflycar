@@ -614,11 +614,11 @@ class ImageProcess:
                 # 计算搜索终点（避免搜索超出范围）
                 search_end_left = max(0, search_start - self.search_range)
 
-                # 左边：从白到黑，跳变为1
-                candidates = np.where(row_diff[search_start:search_end_left] == 1)[0]
+                # 左边：从白到黑，跳变为1（搜索范围从小到大切片，取最右侧候选）
+                candidates = np.where(row_diff[search_end_left:search_start] == 1)[0]
 
                 if len(candidates) > 0:
-                    x = candidates[-1]
+                    x = search_end_left + candidates[-1]
 
                     _ = self._add_point_with_stable_start(
                         self.left_line,
@@ -646,10 +646,11 @@ class ImageProcess:
                     img.shape[1] - 1, search_start + self.search_range
                 )
 
-                candidates = np.where(row_diff[search_start:search_end_right] == 1)[0]
+                # 右边：从黑到白，跳变为-1（取最左侧候选）
+                candidates = np.where(row_diff[search_start:search_end_right] == -1)[0]
 
                 if len(candidates) > 0:
-                    x = candidates[0]
+                    x = search_start + candidates[0]
 
                     self._add_point_with_stable_start(
                         self.right_line,
