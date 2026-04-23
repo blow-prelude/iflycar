@@ -1,3 +1,4 @@
+# picture_ser_pyqt5.py
 import logging
 import socket
 import threading
@@ -6,6 +7,16 @@ from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
+from PyQt5.QtCore import QObject, Qt, pyqtSignal
+from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtWidgets import (
+    QApplication,
+    QGridLayout,
+    QLabel,
+    QMainWindow,
+    QStatusBar,
+    QWidget,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -14,106 +25,123 @@ logging.basicConfig(
 )
 
 
-class ImageReceiver:
-    def __init__(self, host, port) -> None:
-        self.port = port
+class UDPImageReceiver(QObject):
+    """负责UDP接收和图片解码，通过信号通知"""
+
+    # 信号定义
+    image_received = pyqtSignal(int, QImage)  # img_id, 图片数据
+    stats_updated = pyqtSignal(float, int)  # fps, 包数
+
+    def __init__(self, host: str, port: int, parent=None):
+        super().__init__(parent)
         self.host = host
-        self.ser_socket = None
-        self.cli_socket = None  # 保留但不使用
-        self.connect_thread = None
-        self.running = None
-        self._is_closed = False
-        self.num_images = None  # 添加图片数量
-        self.windows = None  # 添加窗口名称列表
+        self.port = port
+        self.socket = None
+        self.receive_thread = None
+        self.running = [False]
+        self.num_images = 0
+        self._packet_count = 0
+        self._fps = 0.0
 
-        self.receive_thread_t_sum = 0
-        self.receive_thread_t_log = 0
+        self._init_socket()
 
-        # 创建UDP socket并绑定
-        self.ser_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.ser_socket.bind((self.host, self.port))
-        # 设置socket超时，以便能够响应running_flag
-        self.ser_socket.settimeout(0.1)  # 100ms超时
-        logging.info(f"UDP server listening on {self.host}:{self.port}...")
-
-    def receive_picture(self, num_images: int = 3) -> None:
-        """接收多张图片，无需连接
+    def start(self, num_images: int):
+        """启动接收线程
 
         Args:
-            num_images: 同时显示的图片窗口数量
+            num_images: 预期接收的图片数量
 
         Raises:
-            RuntimeError: 如果接收器已关闭或套接字未初始化
+            RuntimeError: 如果socket未初始化
         """
-        if self._is_closed:
-            raise RuntimeError("Receiver is already closed.")
+        if self.socket is None:
+            raise RuntimeError("Socket is not initialized.")
 
-        if self.ser_socket is None:
-            raise RuntimeError("Server socket is not initialized.")
+        if self.receive_thread is not None and self.receive_thread.is_alive():
+            raise RuntimeError("Receive thread is already running.")
 
-        # 初始化窗口配置
         self.num_images = num_images
-        self.windows = [f"receive_image_{i}" for i in range(num_images)]
-        logging.info(f"Initialized {num_images} display windows")
-
-        # 直接启动接收线程，无需accept
         self.running = [True]
-        self.connect_thread = threading.Thread(
-            target=self.receive_worker,
-            args=(self.ser_socket, self.running),  # 传入socket而不是conn
+        self._packet_count = 0
+        self._fps = 0.0
+
+        self.receive_thread = threading.Thread(
+            target=self._receive_worker,
+            args=(self.socket, self.running),
         )
-        self.connect_thread.daemon = True
-        self.connect_thread.start()
+        self.receive_thread.daemon = True
+        self.receive_thread.start()
         logging.info("Receive thread started.")
 
-        # 主线程等待，直到用户按下 ESC 或接收线程结束
-        while self.connect_thread.is_alive():
-            self.connect_thread.join(timeout=0.1)
+    def _init_socket(self):
+        """初始化UDP socket并绑定到指定地址"""
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.bind((self.host, self.port))
+        self.socket.settimeout(0.1)
+        logging.info(f"UDP server listening on {self.host}:{self.port}...")
 
-    def _cleanup_client(self):
-        """清理客户端连接和线程资源"""
-        if self.connect_thread is not None:
-            self.connect_thread.join(timeout=2)
-            self.connect_thread = None
-        if self.cli_socket is not None:
-            self.cli_socket.close()
-            self.cli_socket = None
+    def _receive_worker(self, sock: socket.socket, running_flag: List[bool]) -> None:
+        """接收并处理图片的工作线程
+
+        Args:
+            sock: UDP socket对象
+            running_flag: 运行标志列表，running_flag[0]为True时继续运行
+        """
+        cur_t, pre_t, t_sum = 0.0, time.perf_counter(), 0.0
+        t_log = 0
+        try:
+            while running_flag[0]:
+                try:
+                    img_id, img_byte = self.handle_connect(sock)
+
+                    # 处理接收失败（包括超时）
+                    if img_id is None or img_byte is None:
+                        continue
+
+                    self._packet_count += 1
+                    logging.debug(f"Received image {img_id}")
+
+                    # 测速：仅在实际收到图片时计数
+                    cur_t = time.perf_counter()
+                    t_sum += cur_t - pre_t
+                    pre_t = cur_t
+                    t_log += 1
+                    if t_log % 10 == 0:
+                        fps = 1 / (t_sum / 10) if t_sum > 0 else 0.0
+                        self._fps = fps
+                        self.stats_updated.emit(fps, self._packet_count)
+                        t_sum = 0.0
+                        t_log = 0
+
+                    img = self.process_image(img_byte)
+                    qimage = self._array_to_qimage(img)
+                    self.image_received.emit(img_id, qimage)
+
+                except socket.timeout:
+                    # 超时是正常的，继续循环检查running_flag
+                    continue
+                except RuntimeError as e:
+                    logging.error(f"Runtime error in receive_worker: {e}")
+                    continue
+        except Exception as e:
+            logging.error(f"Unexpected error in receive_worker: {e}")
+
+    def stop(self):
+        """停止接收"""
+        self.running[0] = False
+        if self.receive_thread is not None:
+            self.receive_thread.join(timeout=2)
+            self.receive_thread = None
 
     def close(self):
-        """显式关闭服务器，释放所有资源"""
-        if self._is_closed:
-            return
-
-        self._is_closed = True
-
-        # 停止接收线程
-        if self.running is not None:
-            self.running[0] = False
-
-        # 清理客户端资源
-        self._cleanup_client()
-
-        # 关闭服务器套接字（UDP不需要shutdown）
-        if self.ser_socket is not None:
-            try:
-                self.ser_socket.close()
-                logging.info("Server closed.")
-            except Exception as e:
-                logging.warning(f"Error closing socket: {e}")
-            self.ser_socket = None
-
-    def __enter__(self):
-        """上下文管理器入口，支持 with 语句"""
-        return self
-
-    def __exit__(self, _exc_type, _exc_val, _exc_tb):
-        """上下文管理器出口，自动释放资源"""
-        self.close()
-        return False  # 不抑制异常
-
-    def __del__(self):
-        """析构函数，对象销毁时自动释放资源"""
-        self.close()
+        """关闭socket"""
+        self.stop()
+        if self.socket is not None:
+            self.socket.close()
+            self.socket = None
+            logging.info("Socket closed successfully.")
+        else:
+            logging.warning("Socket already closed or not initialized.")
 
     def handle_connect(
         self, sock: socket.socket
@@ -127,7 +155,6 @@ class ImageReceiver:
             Tuple[img_id, img_data]: 图片ID和图片数据
             如果接收失败返回 (None, None)
         """
-        # recvfrom返回数据和发送方地址
         try:
             data, _ = sock.recvfrom(65535)  # UDP最大包
         except socket.timeout:
@@ -149,7 +176,7 @@ class ImageReceiver:
         img_data = data[5 : 5 + size]
 
         # 验证图片ID范围
-        if self.num_images is not None:
+        if self.num_images > 0:
             if img_id < 0 or img_id >= self.num_images:
                 logging.warning(
                     f"Invalid img_id {img_id}, expected 0-{self.num_images - 1}, dropping"
@@ -158,64 +185,224 @@ class ImageReceiver:
 
         return img_id, img_data
 
-    def process_image(self, data):
+    def process_image(self, data: bytes) -> np.ndarray:
+        """解码图片数据
+
+        Args:
+            data: JPEG编码的图片数据
+
+        Returns:
+            解码后的图像 (numpy array)
+
+        Raises:
+            RuntimeError: 解码失败
+        """
         img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)
         if img is None or len(img) == 0:
             raise RuntimeError("Failed to decode image")
         return img
 
-    def receive_worker(self, sock: socket.socket, running_flag: List[bool]) -> None:
-        """接收并显示图片的线程函数"""
-        cur_t, pre_t, t_sum = 0.0, 0.0, 0.0
-        t_log = 0
-        try:
-            while running_flag[0]:
-                try:
-                    # 测速
-                    cur_t = time.perf_counter()
-                    t_sum += cur_t - pre_t
-                    pre_t = cur_t
-                    t_log += 1
-                    if t_log % 10 == 0:
-                        logging.info(
-                            f"receive thread frequence:{1 / (t_sum / 10):.6f}Hz"
-                        )
-                        t_sum = 0.0
-                        t_log = 0
+    @staticmethod
+    def _array_to_qimage(img: np.ndarray) -> QImage:
+        """将numpy数组转换为QImage
 
-                    img_id, img_byte = self.handle_connect(sock)
+        Args:
+            img: OpenCV图像 (BGR格式)
 
-                    # 处理接收失败（包括超时）
-                    if img_id is None or img_byte is None:
-                        continue
+        Returns:
+            QImage对象
+        """
+        # 处理不同通道数的图像
+        if len(img.shape) == 2:  # 灰度图
+            height, width = img.shape
+            bytes_per_line = width
+            qimage = QImage(
+                img.data, width, height, bytes_per_line, QImage.Format_Grayscale8
+            )
+        elif len(img.shape) == 3:  # 彩色图
+            height, width, channel = img.shape
+            bytes_per_line = 3 * width
+            # BGR转RGB
+            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            qimage = QImage(
+                rgb_img.data, width, height, bytes_per_line, QImage.Format_RGB888
+            )
+        else:
+            raise ValueError(f"Unsupported image shape: {img.shape}")
 
-                    # 验证图片ID范围
-                    if self.num_images is None or self.windows is None:
-                        logging.error("Receiver not initialized")
-                        continue
+        return qimage.copy()  # 复制数据避免numpy数组被释放
 
-                    logging.debug(f"Received image {img_id}")
 
-                    img = self.process_image(img_byte)
-                    window_name = self.windows[img_id]
-                    cv2.imshow(window_name, img)
+class ImageDisplayWidget(QMainWindow):
+    """图片显示窗口，使用网格布局显示多张图片"""
 
-                    if cv2.waitKey(1) & 0xFF == 27:
-                        logging.info("interrupt by user.")
-                        break
+    def __init__(self, rows: int, cols: int, host: str, port: int, parent=None):
+        super().__init__(parent)
+        self.rows = rows
+        self.cols = cols
+        self.host = host
+        self.port = port
+        self.labels: list = []
+        self._fps = 0.0
+        self._packet_count = 0
+        self._closed = False
 
-                except socket.timeout:
-                    # 超时是正常的，继续循环检查running_flag
-                    continue
+        self._setup_ui()
 
-        except (ConnectionResetError, BrokenPipeError) as e:
-            logging.error(f"Connection error: {e}")
-        except RuntimeError as e:
-            logging.error(f"Runtime error in receive_worker: {e}")
-        except Exception as e:
-            logging.error(f"Unexpected error in receive_worker: {e}")
-        finally:
-            cv2.destroyAllWindows()
+    def _setup_ui(self):
+        """创建网格布局的图片显示区域"""
+        self.setWindowTitle(f"Image Display - {self.host}:{self.port}")
+
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        layout = QGridLayout(central_widget)
+        layout.setSpacing(2)
+
+        self.labels = []
+        for r in range(self.rows):
+            row_labels = []
+            for c in range(self.cols):
+                label = QLabel()
+                label.setMinimumSize(320, 240)
+                label.setAlignment(Qt.AlignCenter)
+                label.setStyleSheet("QLabel { background-color: #1e1e1e; }")
+                layout.addWidget(label, r, c)
+                row_labels.append(label)
+            self.labels.append(row_labels)
+
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("Waiting for images...")
+
+    def set_image(self, img_id: int, qimage: QImage):
+        """将图片设置到网格中指定位置
+
+        Args:
+            img_id: 图片索引，用于计算网格位置
+            qimage: 要显示的QImage对象
+        """
+        row = img_id // self.cols
+        col = img_id % self.cols
+
+        if row < 0 or row >= self.rows or col < 0 or col >= self.cols:
+            logging.warning(
+                f"Image index {img_id} out of grid bounds ({self.rows}x{self.cols})"
+            )
+            return
+
+        pixmap = QPixmap.fromImage(qimage)
+        label = self.labels[row][col]
+        scaled = pixmap.scaled(
+            label.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+        label.setPixmap(scaled)
+
+    def update_stats(self, fps: float, packet_count: int):
+        """更新状态栏统计信息
+
+        Args:
+            fps: 当前帧率
+            packet_count: 已接收的包数
+        """
+        self._fps = fps
+        self._packet_count = packet_count
+        self.status_bar.showMessage(
+            f"FPS: {fps:.1f} | Packets: {packet_count} | Grid: {self.rows}x{self.cols}"
+        )
+
+    def closeEvent(self, event):
+        """处理窗口关闭事件"""
+        self._closed = True
+        logging.info("ImageDisplayWidget closed.")
+        event.accept()
+
+
+class PyQt5ImageReceiver:
+    """组合器：组合UDPImageReceiver和ImageDisplayWidget，提供简单的接收显示API"""
+
+    def __init__(
+        self, host: str = "0.0.0.0", port: int = 12345, rows: int = 1, cols: int = 3
+    ):
+        """初始化接收器
+
+        Args:
+            host: 监听地址
+            port: 监听端口
+            rows: 显示网格行数
+            cols: 显示网格列数
+        """
+        self.host = host
+        self.port = port
+        self.rows = rows
+        self.cols = cols
+        self._is_closed = False
+
+        # 创建QApplication（如果尚未存在）
+        self.app = QApplication.instance()
+        if self.app is None:
+            self.app = QApplication([])
+
+        # 创建UDP接收器
+        self.receiver = UDPImageReceiver(host, port)
+
+        # 创建显示窗口
+        self.widget = ImageDisplayWidget(rows, cols, host, port)
+
+        # 连接信号
+        self.receiver.image_received.connect(self.widget.set_image)
+        self.receiver.stats_updated.connect(self.widget.update_stats)
+
+    def receive_picture(self, num_images: int = 6) -> None:
+        """启动UDP接收器，显示窗口并运行Qt事件循环
+
+        Args:
+            num_images: 预期接收的图片数量
+        """
+        if self._is_closed:
+            raise RuntimeError("Receiver is already closed.")
+
+        # 启动UDP接收器
+        self.receiver.start(num_images)
+
+        # 显示窗口
+        self.widget.show()
+
+        logging.info(
+            f"PyQt5ImageReceiver started, waiting for {num_images} images on {self.host}:{self.port}"
+        )
+
+        # 运行Qt事件循环
+        self.app.exec_()
+
+    def close(self) -> None:
+        """停止接收器并关闭UI"""
+        if self._is_closed:
+            return
+
+        self._is_closed = True
+
+        # 停止UDP接收器
+        self.receiver.close()
+
+        # 关闭UI
+        self.widget.close()
+
+        logging.info("PyQt5ImageReceiver closed.")
+
+    def __enter__(self):
+        """上下文管理器入口，支持 with 语句"""
+        return self
+
+    def __exit__(self, _exc_type, _exc_val, _exc_tb):
+        """上下文管理器出口，自动释放资源"""
+        self.close()
+        return False  # 不抑制异常
+
+    def __del__(self):
+        """析构函数，对象销毁时自动释放资源"""
+        self.close()
 
 
 if __name__ == "__main__":
@@ -223,8 +410,8 @@ if __name__ == "__main__":
     port = 12345
 
     try:
-        with ImageReceiver(host, port) as img_rec:
-            img_rec.receive_picture(num_images=3)  # 显示3个窗口
+        with PyQt5ImageReceiver(host, port, rows=2, cols=3) as img_rec:
+            img_rec.receive_picture(num_images=6)
     except KeyboardInterrupt:
         logging.info("Interrupted by user.")
     except RuntimeError as e:
