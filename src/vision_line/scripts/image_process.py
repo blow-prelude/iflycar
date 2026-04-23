@@ -586,72 +586,79 @@ class ImageProcess:
             left_stable = [False]
             right_stable = [False]
 
-            # diff = np.diff(img == 0, axis=1)  # 计算行内黑白跳变  右-左
+            diff = np.diff(img == 0, axis=1)  # 计算行内黑白跳变  右-左
             # cv2.imshow("diff", (diff != 0).astype(np.uint8) * 255)    # 显示发生跳变的地方
 
-            for j in range(
+            for y in range(
                 int(img.shape[0] * down_ratio), int(img.shape[0] * up_ratio), -1
             ):
+                # 获取当前行内的跳变点
+                row_diff = diff[y]
+                # cv2.imshow(
+                #     "diff", (diff != 0).astype(np.uint8) * 255
+                # )  # 显示发生跳变的地方
+                # logging.info(f"len(row_diff): {len(row_diff)}")
+
                 # 左侧赛道线
                 # 获取搜索起点
                 left_start_x = self._get_search_start_point(
-                    j, prev_left, img.shape[1], is_left=True
+                    y, prev_left, img.shape[1], is_left=True
                 )
                 # 如果是第一帧，从中线开始搜索；否则从上一帧边线点右侧开始搜索
                 search_start = mid_x if is_first_frame else left_start_x
 
                 # 绘制左边线搜索起点（紫色）
                 if is_draw:
-                    cv2.circle(canvas, (search_start, j), 3, (255, 0, 255), -1)
+                    cv2.circle(canvas, (search_start, y), 3, (255, 0, 255), -1)
 
                 # 计算搜索终点（避免搜索超出范围）
                 search_end_left = max(0, search_start - self.search_range)
 
-                for i in range(search_start, search_end_left, -1):
-                    if i <= 1:
-                        break
-                    if img[j, i] == 0 and img[j, i - 1] != 0:
-                        logging.debug(
-                            f"find left line at {i}, {j} , value : {img[j, i]}"
-                        )
-                        self._add_point_with_stable_start(
-                            self.left_line, (i, j), left_stable_buf, left_stable, 50, 50
-                        )
-                        break
+                # 左边：从白到黑，跳变为1
+                candidates = np.where(row_diff[search_start:search_end_left] == 1)[0]
+
+                if len(candidates) > 0:
+                    x = candidates[-1]
+
+                    _ = self._add_point_with_stable_start(
+                        self.left_line,
+                        (x, y),
+                        left_stable_buf,
+                        left_stable,
+                        self.x_continual,
+                        self.y_continual,
+                    )
 
                 # 右侧赛道线
                 # 获取搜索起点
                 right_start_x = self._get_search_start_point(
-                    j, prev_right, img.shape[1], is_left=False
+                    y, prev_right, img.shape[1], is_left=False
                 )
                 # 如果是第一帧，从中线开始搜索；否则从上一帧边线点左侧开始搜索
                 search_start = mid_x if is_first_frame else right_start_x
 
                 # 绘制右边线搜索起点（青色）
                 if is_draw:
-                    cv2.circle(canvas, (search_start, j), 3, (255, 255, 0), -1)
+                    cv2.circle(canvas, (search_start, y), 3, (255, 255, 0), -1)
 
                 # 计算搜索终点（避免搜索超出范围）
                 search_end_right = min(
                     img.shape[1] - 1, search_start + self.search_range
                 )
 
-                for i in range(search_start, search_end_right, 1):
-                    if i >= img.shape[1] - 1:
-                        break
-                    if img[j, i] == 0 and img[j, i + 1] != 0:
-                        logging.debug(
-                            f"find right line at {i}, {j} , value : {img[j, i]}"
-                        )
-                        self._add_point_with_stable_start(
-                            self.right_line,
-                            (i, j),
-                            right_stable_buf,
-                            right_stable,
-                            50,
-                            50,
-                        )
-                        break
+                candidates = np.where(row_diff[search_start:search_end_right] == 1)[0]
+
+                if len(candidates) > 0:
+                    x = candidates[0]
+
+                    self._add_point_with_stable_start(
+                        self.right_line,
+                        (x, y),
+                        right_stable_buf,
+                        right_stable,
+                        self.x_continual,
+                        self.y_continual,
+                    )
 
                 if len(self.left_line) > 0 and len(self.right_line) > 0:
                     # 线性插值
@@ -664,14 +671,14 @@ class ImageProcess:
                     )
 
             # 使用优化后的边线计算中线
-            for j in range(
+            for y in range(
                 min(len(self.supple_left_line), len(self.supple_right_line))
             ):
                 mid_x = (
-                    self.supple_left_line[j][0] + self.supple_right_line[j][0]
+                    self.supple_left_line[y][0] + self.supple_right_line[y][0]
                 ) // 2
                 # 使用边线点的实际y坐标，而不是循环索引
-                mid_y = self.supple_left_line[j][1]
+                mid_y = self.supple_left_line[y][1]
                 self.mid_line.append((mid_x, mid_y))
 
         except Exception as e:
