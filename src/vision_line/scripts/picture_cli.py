@@ -28,7 +28,7 @@ class ImageSender:
         self.send_thread = None
         self.running = None
         self.img_queues = None  # 改为队列列表
-        self.num_images = None  # 添加图片数量字段
+        self.num_images = 10000  # 添加图片数量字段
         self._is_closed = False
 
         self.thread_t_log = 0
@@ -85,16 +85,16 @@ class ImageSender:
         while running_flag[0]:
             try:
                 # 测速
-                thread_cur_t = time.perf_counter()
-                thread_t_log += 1
-                thread_t_sum += thread_cur_t - thread_pre_t
-                if thread_t_log % 10 == 0:
-                    thread_t_log = 0
-                    logging.info(
-                        f"send thread frequence:{1 / (thread_t_sum / 10):.6f} Hz"
-                    )
-                    thread_t_sum = 0.0
-                thread_pre_t = thread_cur_t
+                # thread_cur_t = time.perf_counter()
+                # thread_t_log += 1
+                # thread_t_sum += thread_cur_t - thread_pre_t
+                # if thread_t_log % 10 == 0:
+                #     thread_t_log = 0
+                #     logging.info(
+                #         f"send thread frequence:{1 / (thread_t_sum / 10):.6f} Hz"
+                #     )
+                #     thread_t_sum = 0.0
+                # thread_pre_t = thread_cur_t
 
                 # 轮询所有队列
                 any_sent = False
