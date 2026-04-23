@@ -229,6 +229,40 @@ class ImageProcess:
         # 返回角度（度）
         return np.degrees(np.arccos(cos_theta))
 
+<<<<<<< HEAD
+=======
+    def _add_point_with_stable_start(self, line, point, stable_buf, x_thresh, y_thresh):
+        """初始稳定点检测：前 N 个点必须全部连续才加入列表
+
+        Args:
+            line: 正式边线列表
+            point: 候选点 (x, y)
+            stable_buf: 稳定期临时缓冲区（由调用方维护）
+            x_thresh: x 方向连续性阈值
+            y_thresh: y 方向连续性阈值
+        """
+        if len(line) >= self.init_stable_count:
+            if (
+                abs(line[-1][0] - point[0]) < x_thresh
+                and abs(line[-1][1] - point[1]) < y_thresh
+            ):
+                line.append(point)
+        else:
+            if len(stable_buf) == 0:
+                stable_buf.append(point)
+            elif (
+                abs(stable_buf[-1][0] - point[0]) < x_thresh
+                and abs(stable_buf[-1][1] - point[1]) < y_thresh
+            ):
+                stable_buf.append(point)
+                if len(stable_buf) >= self.init_stable_count:
+                    line.extend(stable_buf)
+                    stable_buf.clear()
+            else:
+                stable_buf.clear()
+                stable_buf.append(point)
+
+>>>>>>> c2eb1665136f911b35da78b2fe9fa897ba750639
     def _get_search_start_point(self, y_coord, prev_line, img_width, is_left=True):
         """根据上一帧边线位置获取当前帧的搜索起点
 
@@ -576,6 +610,7 @@ class ImageProcess:
                     "First frame or no previous frame data, using center line search"
                 )
 
+<<<<<<< HEAD
             # 稳定点缓冲区及标志
             left_stable_buf = []
             right_stable_buf = []
@@ -586,6 +621,13 @@ class ImageProcess:
             # cv2.imshow("diff", (diff != 0).astype(np.uint8) * 255)    # 显示发生跳变的地方
 
             for y in range(
+=======
+            # 稳定点缓冲区
+            left_stable_buf = []
+            right_stable_buf = []
+
+            for j in range(
+>>>>>>> c2eb1665136f911b35da78b2fe9fa897ba750639
                 int(img.shape[0] * down_ratio), int(img.shape[0] * up_ratio), -1
             ):
                 # 获取当前行内的跳变点
@@ -610,6 +652,7 @@ class ImageProcess:
                 # 计算搜索终点（避免搜索超出范围）
                 search_end_left = max(0, search_start - self.search_range)
 
+<<<<<<< HEAD
                 # 左边：从白到黑，跳变为1（搜索范围从小到大切片，取最右侧候选）
                 candidates = np.where(row_diff[search_end_left:search_start] == 1)[0]
 
@@ -624,6 +667,19 @@ class ImageProcess:
                         self.x_continual,
                         self.y_continual,
                     )
+=======
+                for i in range(search_start, search_end_left, -1):
+                    if i <= 1:
+                        break
+                    if img[j, i] == 0 and img[j, i - 1] != 0:
+                        logging.debug(
+                            f"find left line at {i}, {j} , value : {img[j, i]}"
+                        )
+                        self._add_point_with_stable_start(
+                            self.left_line, (i, j), left_stable_buf, 50, 50
+                        )
+                        break
+>>>>>>> c2eb1665136f911b35da78b2fe9fa897ba750639
 
                 # 右侧赛道线
                 # 获取搜索起点
@@ -642,6 +698,7 @@ class ImageProcess:
                     img.shape[1] - 1, search_start + self.search_range
                 )
 
+<<<<<<< HEAD
                 # 右边：从黑到白，跳变为-1（取最左侧候选）
                 candidates = np.where(row_diff[search_start:search_end_right] == 1)[0]
 
@@ -656,6 +713,19 @@ class ImageProcess:
                         self.x_continual,
                         self.y_continual,
                     )
+=======
+                for i in range(search_start, search_end_right, 1):
+                    if i >= img.shape[1] - 1:
+                        break
+                    if img[j, i] == 0 and img[j, i + 1] != 0:
+                        logging.debug(
+                            f"find right line at {i}, {j} , value : {img[j, i]}"
+                        )
+                        self._add_point_with_stable_start(
+                            self.right_line, (i, j), right_stable_buf, 50, 50
+                        )
+                        break
+>>>>>>> c2eb1665136f911b35da78b2fe9fa897ba750639
 
                 if len(self.left_line) > 0 and len(self.right_line) > 0:
                     # 线性插值
@@ -718,6 +788,7 @@ class ImageProcess:
             self.left_c = None
             self.right_c = None
 
+<<<<<<< HEAD
             # 稳定点缓冲区及标志
             left_stable_buf = []
             right_stable_buf = []
@@ -726,6 +797,14 @@ class ImageProcess:
 
             diff = np.diff(img == 0, axis=1)  # 计算行内黑白跳变  右-左
             cv2.imshow("diff", (diff != 0).astype(np.uint8) * 255)  # 显示发生跳变的地方
+=======
+            # 稳定点缓冲区
+            left_stable_buf = []
+            right_stable_buf = []
+
+            diff = np.diff(img == 0, axis=1)  # 计算行内黑白跳变  右-左
+            # cv2.imshow("diff", (diff != 0).astype(np.uint8) * 255)    # 显示发生跳变的地方
+>>>>>>> c2eb1665136f911b35da78b2fe9fa897ba750639
 
             # 从图像下方（靠近车辆）开始搜索
             for y in range(
@@ -738,6 +817,7 @@ class ImageProcess:
                 if len(candidates) > 0:
                     x = candidates[-1]
 
+<<<<<<< HEAD
                     # 先进行稳定点检测
                     added = self._add_point_with_stable_start(
                         self.left_line,
@@ -765,12 +845,46 @@ class ImageProcess:
                         # 更新点
                         left_pre_p = left_cur_p
                         left_cur_p = left_nxt_p
+=======
+                    # 需要根据传入参数判断是否寻找拐点
+                    # 根据夹角判断是否遇到拐点
+                    if find_corner and not find_left_corner:
+                        left_nxt_p = (x, y)
+                        if left_cur_p is not None and left_pre_p is not None:
+                            angle = self.get_angle_p(left_nxt_p, left_cur_p, left_pre_p)
+                            logging.debug(
+                                f"left line angle: {angle} , pre_p: {left_pre_p},  cur_p: {left_cur_p} , nxt_p: {left_nxt_p}"
+                            )
+                            # 夹角在阈值之间，判定为拐点
+                            if angle_low_thresh < angle < angle_high_thresh:
+                                # 记录突变点
+                                logging.debug(
+                                    f"slope mutation , angle: {angle} ,pre_p:{left_pre_p} , cur_p: {left_cur_p} , nxt_p: {left_nxt_p} "
+                                )
+                                # 找到拐点后就不再寻找
+                                self.left_c = left_cur_p
+                                find_left_corner = True
+
+                        # 更新点
+                        left_pre_p = left_cur_p
+                        left_cur_p = left_nxt_p
+
+                    # 添加到边线（稳定点检测）
+                    self._add_point_with_stable_start(
+                        self.left_line,
+                        (x, y),
+                        left_stable_buf,
+                        self.x_continual,
+                        self.y_continual,
+                    )
+>>>>>>> c2eb1665136f911b35da78b2fe9fa897ba750639
 
                 # 右线
                 candidates = np.where(row_diff[mid_x:] == 1)[0]
                 if len(candidates) > 0:
                     x = candidates[0] + mid_x
 
+<<<<<<< HEAD
                     # 先进行稳定点检测
                     added = self._add_point_with_stable_start(
                         self.right_line,
@@ -795,11 +909,41 @@ class ImageProcess:
                                 rospy.logdebug(
                                     f"slope mutation , angle: {angle} ,pre_p:{right_pre_p} cur_p: {right_cur_p} , nxt_p: {right_nxt_p} "
                                 )
+=======
+                    # 通过夹角找拐点
+                    if find_corner and find_right_corner is False:
+                        right_nxt_p = (x, y)
+                        if right_cur_p is not None and right_pre_p is not None:
+                            angle = self.get_angle_p(
+                                right_nxt_p, right_cur_p, right_pre_p
+                            )
+                            logging.debug(
+                                f"right line angle: {angle} , pre_p: {right_pre_p},  cur_p: {right_cur_p} , nxt_p: {right_nxt_p}"
+                            )
+                            if angle_low_thresh < angle < angle_high_thresh:
+                                # 记录突变点
+                                logging.debug(
+                                    f"slope mutation , angle: {angle} ,pre_p:{right_pre_p} cur_p: {right_cur_p} , nxt_p: {right_nxt_p} "
+                                )
+
+                                # 只寻找一个拐点
+>>>>>>> c2eb1665136f911b35da78b2fe9fa897ba750639
                                 self.right_c = right_cur_p
                                 find_right_corner = True
                         # 更新点
                         right_pre_p = right_cur_p
                         right_cur_p = right_nxt_p
+<<<<<<< HEAD
+=======
+                    # 添加到边线（稳定点检测）
+                    self._add_point_with_stable_start(
+                        self.right_line,
+                        (x, y),
+                        right_stable_buf,
+                        self.x_continual,
+                        self.y_continual,
+                    )
+>>>>>>> c2eb1665136f911b35da78b2fe9fa897ba750639
 
             # 线性补插，优化边线
             if len(self.left_line) > 0 and len(self.right_line) > 0:

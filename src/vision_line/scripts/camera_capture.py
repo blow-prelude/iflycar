@@ -37,13 +37,14 @@ class CameraCapture:
     def get_picture(self):
         """获取一帧图片"""
         if self.cap is None or not self.cap.isOpened():
-            logging.error("Camera is not opened.")
-            return None
+            raise RuntimeError("Camera is not opened.")
+
         ret, frame = self.cap.read()
         if not ret:
             logging.error("Failed to grab frame")
-            return None
-        return frame
+            raise RuntimeError("Failed to grab frame")
+        frame_1 = cv2.flip(frame, 1)  # 水平翻转
+        return frame_1
 
     def save_picture(self, frame, filename):
         """保存图片到指定文件"""
