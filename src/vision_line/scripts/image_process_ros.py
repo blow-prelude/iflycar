@@ -1,16 +1,25 @@
-import logging
+#!/home/ucar/venv3.9/bin/python3
+import threading
+import time
+from enum import Enum
 
 import cv2
 import numpy as np
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from sensor_msgs.msg import Image
+from std_msgs.msg import Float32MultiArray
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+
+class ProcessState(Enum):
+    IDLE = 0  # 未收到指令，不处理
+    STRAIGHT_TRACKING = 1  # 直行循迹，find_corner=False
+    RIGHT_TRACKING = 5  # 右转循迹（占位）
+    LEFT_TRACKING = 6  # 左转循迹（占位）
+    CORNER = 2  # 延时已到，find_corner=True
+    CROSS = 3  # 双拐点触发，find_corner=False，执行额外处理
+    TURNING = 4  # 检测到停止线后的转弯状态
+
 
 transformation_matrix = np.array(
     [
@@ -22,18 +31,17 @@ transformation_matrix = np.array(
 
 
 class ImageProcess:
-    def __init__(self, img_path=None):
+    def __init__(self, img_path=None, img=None):
         """
         初始化图像处理对象
 
         Args:
             img_path: 图片路径，如果提供则从图片读取
-
+            use_camera: 是否使用摄像头，默认False
         """
 
         self.img_path = img_path
-
-        self.frame = None
+        self.frame = img
         self.canvas = None
         self.left_line = []
         self.right_line = []
@@ -41,6 +49,9 @@ class ImageProcess:
         self.supple_right_line = []
         self.mid_line = []
         self.fit_mid_line = []
+
+        self.left_c = None  # 本帧左边线拐点 (x, y)，未检测到时为 None
+        self.right_c = None  # 本帧右边线拐点 (x, y)，未检测到时为 None
 
         # 上一帧的边线信息（用于指导当前帧搜索）
         self.prev_left_line = []  # 上一帧的左边线点列表
@@ -57,49 +68,43 @@ class ImageProcess:
         self.init_stable_count = 5  # 初始连续点数阈值
 
     def preprocess(self):
-        """做预处理，得到二值化的图像"""
         try:
-            # 如果frame已经设置好（视频处理模式），直接使用
-            if self.frame is None:
-                if self.img_path is not None:
-                    # 从图片文件读取
-                    self.frame = cv2.imread(self.img_path)
-                else:
-                    # 既没有摄像头也没有图片路径
-                    logging.error("No image source available")
-                    return None
+            if self.img_path is not None:
+                # 从图片文件读取
+                self.frame = cv2.imread(self.img_path)
 
-            # 检查frame是否有效
-            if self.frame is None:
-                logging.error("Failed to get frame")
-                return None
+            if self.frame is not None:
+                # 如果图片太大，按比例缩小
+                if self.frame.shape[0] >= 240 or self.frame.shape[1] >= 320:
+                    # 将图片按比例缩小，使宽和高都不超过640和480
+                    h, w = self.frame.shape[:2]
+                    scale = min(240 / h, 320 / w)
+                    new_h = int(h * scale)
+                    new_w = int(w * scale)
+                    self.frame = cv2.resize(
+                        self.frame, (new_w, new_h), interpolation=cv2.INTER_AREA
+                    )
+                gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
 
-            # 如果图片太大，按比例缩小
-            if self.frame.shape[0] >= 240 or self.frame.shape[1] >= 320:
-                # 将图片按比例缩小，使宽和高都不超过640和480
-                h, w = self.frame.shape[:2]
-                scale = min(240 / h, 320 / w)
-                new_h = int(h * scale)
-                new_w = int(w * scale)
-                self.frame = cv2.resize(
-                    self.frame, (new_w, new_h), interpolation=cv2.INTER_AREA
-                )
-                self.canvas = self.frame.copy()
+                # 大尺寸高斯模糊获取背景光照分布
+                # 核大小应根据图像尺寸调整，通常为图像宽度的1/5到1/3
+                kernel_size = (gray.shape[1] // 5 | 1, gray.shape[0] // 5 | 1)
+                background = cv2.GaussianBlur(gray, kernel_size, 0)
 
-            grey = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
-            binary = cv2.threshold(grey, 180, 255, cv2.THRESH_BINARY)[1]
-            # kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
-            # erode = cv2.erode(binary, kernel, iterations=2)  # 用腐消除图像中较亮的区域
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-            dila = cv2.dilate(binary, kernel, iterations=1)  # 用膨胀连接断开的线段
-            close = cv2.morphologyEx(
-                binary, cv2.MORPH_CLOSE, kernel, iterations=3
-            )  # 用闭运算消除图像中较暗的区域
-            gauss = cv2.GaussianBlur(dila, (3, 3), 0)  # 用高斯模糊平滑图像，减少噪点
-            return dila
+                # 原图减去背景，得到滤除光照后的特征
+                diff = cv2.subtract(gray, background)
+
+                # 二值化（使用Otsu自适应阈值）
+                binary = cv2.threshold(
+                    diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+                )[1]
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+                close = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=3)
+                return close
+            else:
+                raise ValueError("Failed to load image for preprocessing")
         except Exception as e:
-            logging.error(f"Error occurred during image processing: {e}")
-            return None
+            raise RuntimeError(f"Error during preprocessing: {e}")
 
     def return_frame(self):
         """获取用于绘制的画布（当前帧的副本）
@@ -108,8 +113,7 @@ class ImageProcess:
             画布图像（frame的副本），如果frame为None则返回None
         """
         if self.frame is None:
-            logging.warning("Frame is None, cannot create canvas")
-            return None
+            raise ValueError("Frame is None, cannot return canvas")
         return self.frame.copy()
 
     def perspective_transform(self, img, matrix, output_size=None):
@@ -125,11 +129,11 @@ class ImageProcess:
         """
         try:
             if matrix is None:
-                logging.error("Perspective transform matrix is None")
+                rospy.logerr("Perspective transform matrix is None")
                 return None
 
             if img is None:
-                logging.error("Input image is None")
+                rospy.logerr("Input image is None")
                 return None
 
             # 如果没有指定输出尺寸，使用原图像尺寸
@@ -145,13 +149,13 @@ class ImageProcess:
                 borderMode=cv2.BORDER_REPLICATE,
             )
 
-            logging.debug(
+            rospy.logdebug(
                 f"Perspective transform completed, output size: {output_size}"
             )
             return transformed_img
 
         except Exception as e:
-            logging.error(f"Error occurred during perspective transform: {e}")
+            rospy.logerr(f"Error occurred during perspective transform: {e}")
             return None
 
     def get_perspective_matrix(self, src_points, dst_points):
@@ -166,7 +170,7 @@ class ImageProcess:
         """
         try:
             if len(src_points) != 4 or len(dst_points) != 4:
-                logging.error(
+                rospy.logerr(
                     "Source and destination points must contain exactly 4 points"
                 )
                 return None
@@ -178,11 +182,11 @@ class ImageProcess:
             # 计算透视变换矩阵
             matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
 
-            logging.debug("Perspective matrix computed successfully")
+            rospy.logdebug("Perspective matrix computed successfully")
             return matrix
 
         except Exception as e:
-            logging.error(f"Error occurred while computing perspective matrix: {e}")
+            rospy.logerr(f"Error occurred while computing perspective matrix: {e}")
             return None
 
     def get_angle_k(self, k1, k2):
@@ -224,37 +228,6 @@ class ImageProcess:
 
         # 返回角度（度）
         return np.degrees(np.arccos(cos_theta))
-
-    def _add_point_with_stable_start(self, line, point, stable_buf, x_thresh, y_thresh):
-        """初始稳定点检测：前 N 个点必须全部连续才加入列表
-
-        Args:
-            line: 正式边线列表
-            point: 候选点 (x, y)
-            stable_buf: 稳定期临时缓冲区（由调用方维护）
-            x_thresh: x 方向连续性阈值
-            y_thresh: y 方向连续性阈值
-        """
-        if len(line) >= self.init_stable_count:
-            if (
-                abs(line[-1][0] - point[0]) < x_thresh
-                and abs(line[-1][1] - point[1]) < y_thresh
-            ):
-                line.append(point)
-        else:
-            if len(stable_buf) == 0:
-                stable_buf.append(point)
-            elif (
-                abs(stable_buf[-1][0] - point[0]) < x_thresh
-                and abs(stable_buf[-1][1] - point[1]) < y_thresh
-            ):
-                stable_buf.append(point)
-                if len(stable_buf) >= self.init_stable_count:
-                    line.extend(stable_buf)
-                    stable_buf.clear()
-            else:
-                stable_buf.clear()
-                stable_buf.append(point)
 
     def _get_search_start_point(self, y_coord, prev_line, img_width, is_left=True):
         """根据上一帧边线位置获取当前帧的搜索起点
@@ -299,6 +272,47 @@ class ImageProcess:
         # 如果没有找到匹配点，返回中线
         return img_width // 2
 
+    def _add_point_with_stable_start(
+        self, line, point, stable_buf, stable, x_thresh, y_thresh
+    ):
+        """初始稳定点检测：前 N 个点必须全部连续才加入列表
+
+        Args:
+            line: 正式边线列表
+            point: 候选点 (x, y)
+            stable_buf: 稳定期临时缓冲区（由调用方维护）
+            stable: 稳定标志列表 [bool]，首次达到稳定点数后置为 True
+            x_thresh: x 方向连续性阈值
+            y_thresh: y 方向连续性阈值
+
+        Returns:
+            bool: 该点是否已确认加入正式边线
+        """
+        if stable[0]:
+            if (
+                abs(line[-1][0] - point[0]) < x_thresh
+                and abs(line[-1][1] - point[1]) < y_thresh
+            ):
+                line.append(point)
+                return True
+        else:
+            if len(stable_buf) == 0:
+                stable_buf.append(point)
+            elif (
+                abs(stable_buf[-1][0] - point[0]) < x_thresh
+                and abs(stable_buf[-1][1] - point[1]) < y_thresh
+            ):
+                stable_buf.append(point)
+                if len(stable_buf) >= self.init_stable_count:
+                    line.extend(stable_buf)
+                    stable_buf.clear()
+                    stable[0] = True
+                    return True
+            else:
+                stable_buf.clear()
+                stable_buf.append(point)
+        return False
+
     def _update_prev_frame_lines(self):
         """在每帧处理完成后，更新上一帧的边线信息"""
         # 只有当当前帧成功检测到边线时才更新
@@ -323,33 +337,33 @@ class ImageProcess:
         if len(line_points) < 2:
             return line_points.copy()
 
-        supple_line = line_points.copy()
-        i = 0
-        while i < len(supple_line) - 1:
-            x1, y1 = supple_line[i]
-            x2, y2 = supple_line[i + 1]
+        new_line = []
+
+        for i in range(len(line_points) - 1):
+            x1, y1 = line_points[i]
+            x2, y2 = line_points[i + 1]
+
+            new_line.append((x1, y1))
+
             dx = abs(x2 - x1)
             dy = abs(y2 - y1)
 
-            # 如果两点间距离过大，进行线性插值
             if dx > 6 or dy > 3:
-                # 计算需要插入的点数量（每隔3-5个像素填充一个点）
                 num_points = max(dx // 3, dy // 2, 2)
 
-                # 在两点之间进行线性插值
-                for t in range(1, num_points + 1):
-                    ratio = t / (num_points + 1)
-                    new_x = int(x1 + (x2 - x1) * ratio)
-                    new_y = int(y1 + (y2 - y1) * ratio)
-                    # 确保新点在两点之间
-                    if min(y1, y2) < new_y < max(y1, y2):
-                        supple_line.insert(i + t, (new_x, new_y))
+                # 用 linspace 替代循环（更快 + 更稳定）
+                xs = np.linspace(x1, x2, num_points + 2)[1:-1]
+                ys = np.linspace(y1, y2, num_points + 2)[1:-1]
 
-                i += num_points + 1
-            else:
-                i += 1
+                for x, y in zip(xs, ys):
+                    xi, yi = int(x), int(y)
+                    if min(y1, y2) < yi < max(y1, y2):
+                        new_line.append((xi, yi))
 
-        return supple_line
+        # 加最后一个点
+        new_line.append(line_points[-1])
+
+        return new_line
 
     def _fill_boundary(self, left_line, right_line, img_shape):
         """将边线延伸到图像边界，防止计算中线时越界
@@ -366,24 +380,21 @@ class ImageProcess:
 
         # 左边线边界填充
         if len(left_line) > 0:
-            bottom_point = left_line[0]
-            bottom_y = bottom_point[1]
-            # 从图像底部向上延伸到第一个点
-            temp_left_line = []
-            for j1 in range(img_height - 1, bottom_y, -2):
-                # 左边线延伸到图像左边界 (x=0)
-                temp_left_line.append((0, j1))
+            bottom_y = left_line[0][1]
+            ys = np.arange(img_height - 1, bottom_y, -2)
+            xs = np.zeros_like(ys)
+
+            temp_left_line = list(zip(xs.tolist(), ys.tolist()))
             left_line = temp_left_line + left_line
 
         # 右边线边界填充
         if len(right_line) > 0:
-            bottom_point = right_line[0]
-            bottom_y = bottom_point[1]
-            # 从图像底部向上延伸到第一个点
-            temp_right_line = []
-            for j1 in range(img_height - 1, bottom_y, -2):
-                # 右边线延伸到图像右边界
-                temp_right_line.append((img_width - 1, j1))
+            bottom_y = right_line[0][1]
+
+            ys = np.arange(img_height - 1, bottom_y, -2)
+            xs = np.full_like(ys, img_width - 1)
+
+            temp_right_line = list(zip(xs.tolist(), ys.tolist()))
             right_line = temp_right_line + right_line
 
         return left_line, right_line
@@ -392,7 +403,7 @@ class ImageProcess:
         """根据self.mid_line的原始值，用二次函数拟合曲线，返回曲线上的点的列表 self.fit_mid_line"""
         self.fit_mid_line = []
         if len(self.mid_line) < 3:
-            logging.warning("Not enough points for polynomial fitting")
+            rospy.logwarn("Not enough points for polynomial fitting")
             return
 
         try:
@@ -412,12 +423,117 @@ class ImageProcess:
                 x = int(np.polyval(coefficients, y))
                 self.fit_mid_line.append((x, y))
 
-            logging.debug(
+            rospy.logdebug(
                 f"Polynomial fitting completed: {len(self.fit_mid_line)} points, "
                 f"coefficients: {coefficients}"
             )
         except Exception as e:
-            logging.error(f"Error occurred during polynomial fitting: {e}")
+            rospy.logerr(f"Error occurred during polynomial fitting: {e}")
+
+    def judge_enter_cross_state(self, img_shape, y_ratio=0.75):
+        """判断是否满足进入 CROSS 状态的条件
+
+        Args:
+            img_shape: 图像形状 (height, width)
+            y_ratio: y 坐标阈值比例，默认 0.75
+
+        Returns:
+            bool: 满足条件返回 True，否则 False
+        """
+        if self.left_c is None or self.right_c is None:
+            return False
+        img_h = img_shape[0]
+        return self.left_c[1] >= img_h * y_ratio or self.right_c[1] >= img_h * y_ratio
+
+    def judge_enter_turning(self, stop_mid, img_shape, y_thresh=0.78):
+        """判断是否应该进入 TURNING 状态
+
+        Args:
+            stop_mid: 停止线中点坐标 (x, y) 或 None
+            img_shape: 图像形状 (h, w, ...)
+            y_thresh: y 坐标阈值（归一化），默认 0.78
+
+        Returns:
+            bool: True 表示应该进入 TURNING 状态
+        """
+        if stop_mid is None:
+            return False
+
+        y_norm = stop_mid[1] / img_shape[0]
+        return y_norm > y_thresh
+
+    def get_stop_line(self, binary_img, is_draw=False, canvas=None):
+        """在 ROI 内检测水平白线并返回其中点
+
+        Args:
+            binary_img: 二值化图像 (numpy array)
+            is_draw: 是否绘制调试信息
+            canvas: 绘制画布 (BGR 格式)
+
+        Returns:
+            Optional[Tuple[int, int]]: 成功返回 (mid_x, mid_y)，失败返回 None
+        """
+        # 输入验证
+        if binary_img is None:
+            raise ValueError("Input binary image is None")
+
+        h, w = binary_img.shape[:2]
+
+        # 计算 ROI 边界
+        roi_y0 = int(h * 0.55)
+        roi_y1 = int(h * 0.80)
+        roi_x0 = int(w * 0.30)
+        roi_x1 = int(w * 0.70)
+        roi = binary_img[roi_y0 : roi_y1 + 1, roi_x0 : roi_x1 + 1]
+
+        rospy.logdebug(f"ROI: y=[{roi_y0}, {roi_y1}], x=[{roi_x0}, {roi_x1}]")
+
+        # 横向形态学削弱斜线
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1))
+        roi = cv2.morphologyEx(roi, cv2.MORPH_OPEN, kernel)
+
+        contours = cv2.findContours(roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
+
+        if len(contours) == 0:
+            rospy.logdebug("No contours found in stop line ROI")
+            return None
+
+        # 找最像“横线”的轮廓
+        best = max(contours, key=lambda c: cv2.boundingRect(c)[2])  # 按宽度选
+
+        x, y, w, h = cv2.boundingRect(best)
+
+        if w <= 20:
+            return None
+        # 还原到原图像
+        x += roi_x0
+        y += roi_y0
+
+        mid_x = x + w // 2
+        mid_y = y + h // 2
+
+        rospy.logdebug(f"find stop line ,mid:({mid_x}, {mid_y}),")
+
+        # 显示ROI区域（如果需要）
+        # if is_draw:
+        #     # 弹窗显示ROI区域（需要转成BGR格式才能正常显示）
+        #     # roi_display = cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR)
+        #     cv2.imshow("stop_line_roi", roi)
+
+        # 绘制（如果需要）
+        if is_draw and canvas is not None:
+            # 画中点
+            cv2.circle(canvas, (mid_x, mid_y), 4, (255, 0, 255), -1)
+            # 绘制白线
+            cv2.rectangle(
+                canvas,
+                (x, y),
+                (x + w, y + h),
+                (0, 255, 0),
+                2,
+            )
+
+        return (mid_x, mid_y)
 
     def get_side_line_task_1(self, img, canvas, is_draw=False):
         """从图像的中线往两边搜索，获取赛道边线
@@ -456,72 +572,90 @@ class ImageProcess:
             is_first_frame = len(prev_left) == 0 or len(prev_right) == 0
 
             if is_first_frame:
-                logging.info(
+                rospy.loginfo(
                     "First frame or no previous frame data, using center line search"
                 )
 
-            # 稳定点缓冲区
+            # 稳定点缓冲区及标志
             left_stable_buf = []
             right_stable_buf = []
+            left_stable = [False]
+            right_stable = [False]
 
-            for j in range(
+            diff = np.diff(img == 0, axis=1)  # 计算行内黑白跳变  右-左
+            # cv2.imshow("diff", (diff != 0).astype(np.uint8) * 255)    # 显示发生跳变的地方
+
+            for y in range(
                 int(img.shape[0] * down_ratio), int(img.shape[0] * up_ratio), -1
             ):
+                # 获取当前行内的跳变点
+                row_diff = diff[y]
+                # cv2.imshow(
+                #     "diff", (diff != 0).astype(np.uint8) * 255
+                # )  # 显示发生跳变的地方
+                # rospy.loginfo(f"len(row_diff): {len(row_diff)}")
+
                 # 左侧赛道线
                 # 获取搜索起点
                 left_start_x = self._get_search_start_point(
-                    j, prev_left, img.shape[1], is_left=True
+                    y, prev_left, img.shape[1], is_left=True
                 )
                 # 如果是第一帧，从中线开始搜索；否则从上一帧边线点右侧开始搜索
                 search_start = mid_x if is_first_frame else left_start_x
 
                 # 绘制左边线搜索起点（紫色）
                 if is_draw:
-                    cv2.circle(canvas, (search_start, j), 3, (255, 0, 255), -1)
+                    cv2.circle(canvas, (search_start, y), 3, (255, 0, 255), -1)
 
                 # 计算搜索终点（避免搜索超出范围）
                 search_end_left = max(0, search_start - self.search_range)
 
-                for i in range(search_start, search_end_left, -1):
-                    if i <= 1:
-                        break
-                    if img[j, i] == 0 and img[j, i - 1] != 0:
-                        logging.debug(
-                            f"find left line at {i}, {j} , value : {img[j, i]}"
-                        )
-                        self._add_point_with_stable_start(
-                            self.left_line, (i, j), left_stable_buf, 50, 50
-                        )
-                        break
+                # 左边：从白到黑，跳变为1（搜索范围从小到大切片，取最右侧候选）
+                candidates = np.where(row_diff[search_end_left:search_start] == 1)[0]
+
+                if len(candidates) > 0:
+                    x = search_end_left + candidates[-1]
+
+                    _ = self._add_point_with_stable_start(
+                        self.left_line,
+                        (x, y),
+                        left_stable_buf,
+                        left_stable,
+                        self.x_continual,
+                        self.y_continual,
+                    )
 
                 # 右侧赛道线
                 # 获取搜索起点
                 right_start_x = self._get_search_start_point(
-                    j, prev_right, img.shape[1], is_left=False
+                    y, prev_right, img.shape[1], is_left=False
                 )
                 # 如果是第一帧，从中线开始搜索；否则从上一帧边线点左侧开始搜索
                 search_start = mid_x if is_first_frame else right_start_x
 
                 # 绘制右边线搜索起点（青色）
                 if is_draw:
-                    cv2.circle(canvas, (search_start, j), 3, (255, 255, 0), -1)
+                    cv2.circle(canvas, (search_start, y), 3, (255, 255, 0), -1)
 
                 # 计算搜索终点（避免搜索超出范围）
                 search_end_right = min(
                     img.shape[1] - 1, search_start + self.search_range
                 )
 
-                for i in range(search_start, search_end_right, 1):
-                    if i >= img.shape[1] - 1:
-                        break
-                    if img[j, i] == 0 and img[j, i + 1] != 0:
-                        logging.debug(
-                            f"find right line at {i}, {j} , value : {img[j, i]}"
-                        )
-                        self._add_point_with_stable_start(
-                            self.right_line, (i, j), right_stable_buf, 50, 50
-                        )
-                        break
+                # 右边：从黑到白，跳变为-1（取最左侧候选）
+                candidates = np.where(row_diff[search_start:search_end_right] == 1)[0]
+
+                if len(candidates) > 0:
+                    x = search_start + candidates[0]
+
+                    self._add_point_with_stable_start(
+                        self.right_line,
+                        (x, y),
+                        right_stable_buf,
+                        right_stable,
+                        self.x_continual,
+                        self.y_continual,
+                    )
 
                 if len(self.left_line) > 0 and len(self.right_line) > 0:
                     # 线性插值
@@ -534,18 +668,19 @@ class ImageProcess:
                     )
 
             # 使用优化后的边线计算中线
-            for j in range(
+            for y in range(
                 min(len(self.supple_left_line), len(self.supple_right_line))
             ):
-                mid_x = (
-                    self.supple_left_line[j][0] + self.supple_right_line[j][0]
-                ) // 2
+                mid_x = int(
+                    0.55 * self.supple_left_line[y][0]
+                    + 0.45 * self.supple_right_line[y][0]
+                )
                 # 使用边线点的实际y坐标，而不是循环索引
-                mid_y = self.supple_left_line[j][1]
+                mid_y = self.supple_left_line[y][1]
                 self.mid_line.append((mid_x, mid_y))
 
         except Exception as e:
-            logging.error(f"Error occurred during getting side lines : {e}")
+            rospy.logerr(f"Error occurred during getting side lines : {e}")
         finally:
             # 更新上一帧的边线信息
             self._update_prev_frame_lines()
@@ -583,12 +718,14 @@ class ImageProcess:
             self.left_c = None
             self.right_c = None
 
-            # 稳定点缓冲区
+            # 稳定点缓冲区及标志
             left_stable_buf = []
             right_stable_buf = []
+            left_stable = [False]
+            right_stable = [False]
 
             diff = np.diff(img == 0, axis=1)  # 计算行内黑白跳变  右-左
-            # cv2.imshow("diff", (diff != 0).astype(np.uint8) * 255)    # 显示发生跳变的地方
+            cv2.imshow("diff", (diff != 0).astype(np.uint8) * 255)  # 显示发生跳变的地方
 
             # 从图像下方（靠近车辆）开始搜索
             for y in range(
@@ -601,73 +738,68 @@ class ImageProcess:
                 if len(candidates) > 0:
                     x = candidates[-1]
 
-                    # 需要根据传入参数判断是否寻找拐点
-                    # 根据夹角判断是否遇到拐点
-                    if find_corner and not find_left_corner:
-                        left_nxt_p = (x, y)
-                        if left_cur_p is not None and left_pre_p is not None:
-                            angle = self.get_angle_p(left_nxt_p, left_cur_p, left_pre_p)
-                            logging.debug(
-                                f"left line angle: {angle} , pre_p: {left_pre_p},  cur_p: {left_cur_p} , nxt_p: {left_nxt_p}"
-                            )
-                            # 夹角在阈值之间，判定为拐点
-                            if angle_low_thresh < angle < angle_high_thresh:
-                                # 记录突变点
-                                logging.debug(
-                                    f"slope mutation , angle: {angle} ,pre_p:{left_pre_p} , cur_p: {left_cur_p} , nxt_p: {left_nxt_p} "
-                                )
-                                # 找到拐点后就不再寻找
-                                self.left_c = left_cur_p
-                                find_left_corner = True
-
-                        # 更新点
-                        left_pre_p = left_cur_p
-                        left_cur_p = left_nxt_p
-
-                    # 添加到边线（稳定点检测）
-                    self._add_point_with_stable_start(
+                    # 先进行稳定点检测
+                    added = self._add_point_with_stable_start(
                         self.left_line,
                         (x, y),
                         left_stable_buf,
+                        left_stable,
                         self.x_continual,
                         self.y_continual,
                     )
+
+                    # 只有稳定点才参与拐点检测
+                    if added and find_corner and not find_left_corner:
+                        left_nxt_p = (x, y)
+                        if left_cur_p is not None and left_pre_p is not None:
+                            angle = self.get_angle_p(left_nxt_p, left_cur_p, left_pre_p)
+                            rospy.logdebug(
+                                f"left line angle: {angle} , pre_p: {left_pre_p},  cur_p: {left_cur_p} , nxt_p: {left_nxt_p}"
+                            )
+                            if angle_low_thresh < angle < angle_high_thresh:
+                                rospy.logdebug(
+                                    f"slope mutation , angle: {angle} ,pre_p:{left_pre_p} , cur_p: {left_cur_p} , nxt_p: {left_nxt_p} "
+                                )
+                                self.left_c = left_cur_p
+                                find_left_corner = True
+                        # 更新点
+                        left_pre_p = left_cur_p
+                        left_cur_p = left_nxt_p
 
                 # 右线
                 candidates = np.where(row_diff[mid_x:] == 1)[0]
                 if len(candidates) > 0:
                     x = candidates[0] + mid_x
 
-                    # 通过夹角找拐点
-                    if find_corner and find_right_corner is False:
+                    # 先进行稳定点检测
+                    added = self._add_point_with_stable_start(
+                        self.right_line,
+                        (x, y),
+                        right_stable_buf,
+                        right_stable,
+                        self.x_continual,
+                        self.y_continual,
+                    )
+
+                    # 只有稳定点才参与拐点检测
+                    if added and find_corner and find_right_corner is False:
                         right_nxt_p = (x, y)
                         if right_cur_p is not None and right_pre_p is not None:
                             angle = self.get_angle_p(
                                 right_nxt_p, right_cur_p, right_pre_p
                             )
-                            logging.debug(
+                            rospy.logdebug(
                                 f"right line angle: {angle} , pre_p: {right_pre_p},  cur_p: {right_cur_p} , nxt_p: {right_nxt_p}"
                             )
                             if angle_low_thresh < angle < angle_high_thresh:
-                                # 记录突变点
-                                logging.debug(
+                                rospy.logdebug(
                                     f"slope mutation , angle: {angle} ,pre_p:{right_pre_p} cur_p: {right_cur_p} , nxt_p: {right_nxt_p} "
                                 )
-
-                                # 只寻找一个拐点
                                 self.right_c = right_cur_p
                                 find_right_corner = True
                         # 更新点
                         right_pre_p = right_cur_p
                         right_cur_p = right_nxt_p
-                    # 添加到边线（稳定点检测）
-                    self._add_point_with_stable_start(
-                        self.right_line,
-                        (x, y),
-                        right_stable_buf,
-                        self.x_continual,
-                        self.y_continual,
-                    )
 
             # 线性补插，优化边线
             if len(self.left_line) > 0 and len(self.right_line) > 0:
@@ -685,7 +817,8 @@ class ImageProcess:
                 min(len(self.supple_left_line), len(self.supple_right_line))
             ):
                 line_mid_x = (
-                    self.supple_left_line[j][0] + self.supple_right_line[j][0]
+                     self.supple_left_line[j][0]
+                    + self.supple_right_line[j][0]
                 ) // 2
                 line_mid_y = self.supple_left_line[j][1]
                 self.mid_line.append((line_mid_x, line_mid_y))
@@ -699,38 +832,54 @@ class ImageProcess:
                 cv2.circle(canvas, self.right_c, 4, (0, 255, 0), -1)
 
         except Exception as e:
-            logging.error(f"Error occurred during getting side lines : {e}")
+            rospy.logerr(f"Error occurred during getting side lines : {e}")
 
-    def draw_line(self, canvas):
+    def draw_line(self, canvas, fps=None, draw_fps=True):
         """绘制边线、中线
 
         Args:
             canvas: 用于绘制的画布图像
+            fps: 实时FPS值
+            draw_fps: 是否绘制实时FPS，默认为True
 
         Returns:
             绘制后的画布图像，如果出错则返回None
         """
         try:
             if canvas is None:
-                logging.error("Canvas is None")
+                rospy.logerr("Canvas is None")
                 return None
 
             # 检查并转换为3通道BGR格式
             if len(canvas.shape) == 2:
                 # 单通道图像（灰度图），转换为BGR
                 canvas = cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGR)
-                logging.debug("Canvas converted from grayscale to BGR")
+                rospy.logdebug("Canvas converted from grayscale to BGR")
             elif canvas.shape[2] != 3:
                 # 非3通道图像，转换为BGR
                 canvas = cv2.cvtColor(
                     canvas,
                     cv2.COLOR_BGRA2BGR if canvas.shape[2] == 4 else cv2.COLOR_GRAY2BGR,
                 )
-                logging.debug(
+                rospy.logdebug(
                     f"Canvas converted to BGR (original channels: {canvas.shape[2]})"
                 )
 
-            logging.debug(
+            # 绘制实时FPS（左上角）
+            if draw_fps:
+                fps_text = f"FPS: {fps:.2f}" if fps is not None else "FPS: 0.00"
+                cv2.putText(
+                    canvas,
+                    fps_text,
+                    (10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 0),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+            rospy.logdebug(
                 f"length of left_line: {len(self.supple_left_line)} , lenth of right_line: {len(self.supple_right_line)}"
             )
             # 绘制优化后的左边线（红色）
@@ -745,7 +894,7 @@ class ImageProcess:
                 cv2.circle(canvas, self.fit_mid_line[i], 2, (255, 255, 255), -1)
             return canvas
         except Exception as e:
-            logging.error(f"Error occurred during drawing lines: {e}")
+            rospy.logerr(f"Error occurred during drawing lines: {e}")
             return None
 
     def plot_column_histogram(
@@ -845,7 +994,7 @@ class ImageProcess:
                 2,
             )
 
-            logging.info(
+            rospy.loginfo(
                 f"Column histogram generated: row range [{start_row}:{end_row}] "
                 f"({start_row_ratio * 100:.1f}%-{end_row_ratio * 100:.1f}%), "
                 f"max white pixels = {white_counts.max()}, "
@@ -854,7 +1003,7 @@ class ImageProcess:
             return hist_img, white_counts, peaks
 
         except Exception as e:
-            logging.error(f"Error occurred during plotting column histogram: {e}")
+            rospy.logerr(f"Error occurred during plotting column histogram: {e}")
             return None, None, []
 
     def _find_peaks(self, data, min_distance=20, min_height=None):
@@ -958,73 +1107,249 @@ class ImageProcess:
 
             # 如果窗口中的非零像素点数量大于阈值，则更新窗口
         except Exception as e:
-            logging.error(f"Error occurred during sliding window: {e}")
+            rospy.logerr(f"Error occurred during sliding window: {e}")
             return None, None
 
 
-class ImageProcessRosNode:
-    def __init__(self):
-        rospy.init_node("image_process", anonymous=True)
+class ROSImageReceiver:
+    def __init__(self, topic_name):
+        self.topic_name = topic_name
         self.bridge = CvBridge()
-        self.imgprocess = ImageProcess()
-        self.frame_count = 0
-
-        image_topic = rospy.get_param("~image_topic", "ucar_camera/image_raw")
+        self.latest_frame = None
+        self.lock = threading.Lock()
         self.image_sub = rospy.Subscriber(
-            image_topic,
+            self.topic_name,
             Image,
             self.image_callback,
             queue_size=1,
             buff_size=2**24,
         )
-        logging.info("Subscribed image topic: %s", image_topic)
 
     def image_callback(self, msg):
         try:
             frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+            with self.lock:
+                self.latest_frame = frame
         except CvBridgeError as e:
-            logging.error("CvBridge conversion failed: %s", e)
-            return
-        try:
-            self.frame_count += 1
-            self.imgprocess.frame = frame
+            rospy.logerr(f"CvBridge conversion failed: {e}")
 
-            binary_img = self.imgprocess.preprocess()
-            if binary_img is None:
-                logging.warning("Frame %d preprocessing failed", self.frame_count)
-                return
+    def get_latest_frame(self):
+        with self.lock:
+            if self.latest_frame is None:
+                return None
+            return self.latest_frame.copy()
 
-            canvas = self.imgprocess.return_frame()
-            if canvas is None:
-                logging.warning("Frame %d failed to get canvas", self.frame_count)
-                return
-            # 识别边线和中线
-            self.imgprocess.get_side_line_task_1(binary_img, canvas, is_draw=True)
-            # 用多项式曲线拟合中线
-            self.imgprocess.fit_polynomial()
-            canvas = self.imgprocess.draw_line(canvas)
 
-            cv2.imshow("binary", binary_img)
-            if canvas is not None:
-                cv2.imshow("processed_img", canvas)
+def build_vision_line_msg(line_points, processed_shape, original_shape, target_y=340.0):
+    """构造 /vision_line 消息，格式为 [x_error, y_pixel]。"""
+    msg = Float32MultiArray()
 
-            if (cv2.waitKey(1) & 0xFF) == ord("q"):
-                rospy.signal_shutdown("User requested exit")
-        except Exception as e:
-            logging.error("Error in image_callback: %s", e)
-        finally:
-            cv2.destroyAllWindows()
+    if (
+        not line_points
+        or processed_shape is None
+        or original_shape is None
+        or len(processed_shape) < 2
+        or len(original_shape) < 2
+    ):
+        msg.data = [0.0, -1.0]
+        return msg
 
-    def spin(self):
-        try:
-            rospy.spin()
-        finally:
-            cv2.destroyAllWindows()
+    proc_h, proc_w = processed_shape[:2]
+    orig_h, orig_w = original_shape[:2]
+
+    if proc_h <= 0 or proc_w <= 0 or orig_h <= 0 or orig_w <= 0:
+        msg.data = [0.0, -1.0]
+        return msg
+
+    scale_x = float(orig_w) / float(proc_w)
+    scale_y = float(orig_h) / float(proc_h)
+    target_y_proc = float(target_y) / scale_y
+    best_x, best_y = min(line_points, key=lambda p: abs(p[1] - target_y_proc))
+
+    x_raw = best_x * scale_x
+    y_raw = best_y * scale_y
+    x_error = x_raw - (orig_w / 2.0)
+
+    msg.data = [float(x_error), float(y_raw)]
+    return msg
+
+
+def run_ros_topic_mode():
+    rospy.init_node("image_process", anonymous=True)
+    image_topic = rospy.get_param("~image_topic", "ucar_camera/image_raw")
+    vision_line_topic = rospy.get_param("~vision_line_topic", "/vision_line")
+    vision_target_y = rospy.get_param("~vision_target_y", 340.0)
+
+    image_receiver = ROSImageReceiver(image_topic)
+    vision_line_pub = rospy.Publisher(
+        vision_line_topic, Float32MultiArray, queue_size=10
+    )
+    rospy.loginfo(f"Subscribed image topic: {image_topic}")
+    rospy.loginfo(f"Publishing vision line topic: {vision_line_topic}")
+
+    imgprocess = ImageProcess()
+
+    prev_t = None
+    fps = 0.0
+    dt = 0.0
+    j = 0.0
+
+    straight_received = True
+    right_received = False
+    left_received = False
+    corner_delay_s = 1.5
+
+    state = ProcessState.IDLE
+    t0 = None
+    wait_log_t = 0.0
+    loop_rate = rospy.Rate(60)
+
+    try:
+        while not rospy.is_shutdown():
+            frame = image_receiver.get_latest_frame()
+            if frame is None:
+                now_t = time.time()
+                if now_t - wait_log_t > 2.0:
+                    rospy.loginfo(f"Waiting for image on topic: {image_topic}")
+                    wait_log_t = now_t
+                loop_rate.sleep()
+                continue
+
+            original_shape = frame.shape
+
+            now_t = time.perf_counter()
+            if prev_t is not None:
+                dt += now_t - prev_t
+                j += 1
+                if j % 10 == 0 and dt > 1e-6:
+                    fps = 1.0 / dt * 10
+                    rospy.loginfo(f"Current FPS: {fps:.2f}")
+                    dt = 0.0
+            prev_t = now_t
+
+            if state == ProcessState.IDLE:
+                if straight_received:
+                    state = ProcessState.STRAIGHT_TRACKING
+                    t0 = time.perf_counter()
+                    rospy.loginfo(
+                        "State: IDLE -> STRAIGHT_TRACKING (straight received)"
+                    )
+                elif right_received:
+                    state = ProcessState.RIGHT_TRACKING
+                    rospy.loginfo("State: IDLE -> RIGHT_TRACKING (right received)")
+                elif left_received:
+                    state = ProcessState.LEFT_TRACKING
+                    rospy.loginfo("State: IDLE -> LEFT_TRACKING (left received)")
+            else:
+                imgprocess.frame = frame
+                try:
+                    binary_img = imgprocess.preprocess()
+                except Exception as e:
+                    rospy.logwarn(f"Frame preprocess failed: {e}")
+                    loop_rate.sleep()
+                    continue
+
+                if state not in (
+                    ProcessState.RIGHT_TRACKING,
+                    ProcessState.LEFT_TRACKING,
+                ):
+                    if state == ProcessState.STRAIGHT_TRACKING and t0 is not None:
+                        if time.perf_counter() - t0 >= corner_delay_s:
+                            state = ProcessState.CORNER
+                            rospy.loginfo(
+                                f"State: STRAIGHT_TRACKING -> CORNER (after {corner_delay_s}s)"
+                            )
+
+                    try:
+                        canvas = imgprocess.return_frame()
+                    except Exception as e:
+                        rospy.logwarn(f"Cannot get canvas: {e}")
+                        loop_rate.sleep()
+                        continue
+
+                    find_corner = state == ProcessState.CORNER
+                    imgprocess.get_side_line_task_2(
+                        binary_img,
+                        canvas,
+                        is_draw=True,
+                        find_corner=find_corner,
+                    )
+
+                    if state == ProcessState.CORNER:
+                        if imgprocess.judge_enter_cross_state(binary_img.shape, 0.75):
+                            state = ProcessState.CROSS
+                            rospy.loginfo(
+                                "State: CORNER -> CROSS (dual corner detected)"
+                            )
+
+                    if state == ProcessState.CROSS:
+                        stop_mid = imgprocess.get_stop_line(
+                            binary_img, is_draw=True, canvas=canvas
+                        )
+                        if stop_mid is not None and imgprocess.judge_enter_turning(
+                            stop_mid, binary_img.shape
+                        ):
+                            state = ProcessState.TURNING
+                            y_norm = stop_mid[1] / binary_img.shape[0]
+                            rospy.loginfo(
+                                f"State: CROSS -> TURNING (stop line at y={stop_mid[1]}, y_norm={y_norm:.2f})"
+                            )
+
+                    imgprocess.fit_polynomial()
+                    vision_msg = build_vision_line_msg(
+                        imgprocess.fit_mid_line,
+                        binary_img.shape,
+                        original_shape,
+                        target_y=vision_target_y,
+                    )
+                    vision_line_pub.publish(vision_msg)
+
+                    canvas = imgprocess.draw_line(canvas, fps, draw_fps=True)
+                    cv2.imshow("binary", binary_img)
+                    cv2.imshow("processed_img", canvas)
+                else:
+                    try:
+                        canvas = imgprocess.return_frame()
+                    except Exception as e:
+                        rospy.logwarn(f"Cannot get canvas: {e}")
+                        loop_rate.sleep()
+                        continue
+
+                    imgprocess.get_side_line_task_1(binary_img, canvas, is_draw=True)
+                    imgprocess.fit_polynomial()
+
+                    vision_msg = build_vision_line_msg(
+                        imgprocess.fit_mid_line,
+                        binary_img.shape,
+                        original_shape,
+                        target_y=vision_target_y,
+                    )
+                    vision_line_pub.publish(vision_msg)
+
+                    canvas = imgprocess.draw_line(canvas, fps, draw_fps=True)
+                    cv2.imshow("binary", binary_img)
+                    cv2.imshow("processed_img", canvas)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                rospy.loginfo("User quit")
+                break
+
+            loop_rate.sleep()
+    except KeyboardInterrupt:
+        rospy.loginfo("Interrupted by user , start exit...")
+    except Exception as e:
+        rospy.logerr(f"Error occurred during image process: {e}")
+    finally:
+        cv2.destroyAllWindows()
+
+
+def main_video():
+    run_ros_topic_mode()
 
 
 def main():
-    node = ImageProcessRosNode()
-    node.spin()
+    run_ros_topic_mode()
 
 
 if __name__ == "__main__":
