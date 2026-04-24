@@ -403,6 +403,52 @@ class ImageProcess:
 
         return left_line, right_line
 
+    def _fill_missing_line(self, img_shape):
+        """当左线或右线缺失时，用图像边界替代缺失边线
+
+        已存在的那条线会经过插值和底部边界填充，确保与边界线 y 对齐。
+        边界线使用已存在线的完整 y 列表（而非固定步长），保证一一对应。
+
+        Args:
+            img_shape: 图像形状 (height, width, ...)
+
+        Returns:
+            bool: 是否填充了缺失线
+        """
+        img_h, img_w = img_shape[0], img_shape[1]
+
+        # 左线缺失，右线存在
+        if len(self.left_line) == 0 and len(self.right_line) > 0:
+            supple_right = self._linear_interpolation(self.right_line)
+            bottom_y = supple_right[0][1]
+            if bottom_y < img_h - 1:
+                ys = np.arange(img_h - 1, bottom_y, -2)
+                xs = np.full_like(ys, img_w - 1)
+                bottom_pts = list(zip(xs.tolist(), ys.tolist()))
+                supple_right = bottom_pts + supple_right
+            ys_all = [p[1] for p in supple_right]
+            boundary_left = [(0, int(y)) for y in ys_all]
+            self.supple_left_line = boundary_left
+            self.supple_right_line = supple_right
+            return True
+
+        # 右线缺失，左线存在
+        if len(self.right_line) == 0 and len(self.left_line) > 0:
+            supple_left = self._linear_interpolation(self.left_line)
+            bottom_y = supple_left[0][1]
+            if bottom_y < img_h - 1:
+                ys = np.arange(img_h - 1, bottom_y, -2)
+                xs = np.zeros_like(ys)
+                bottom_pts = list(zip(xs.tolist(), ys.tolist()))
+                supple_left = bottom_pts + supple_left
+            ys_all = [p[1] for p in supple_left]
+            boundary_right = [(img_w - 1, int(y)) for y in ys_all]
+            self.supple_right_line = boundary_right
+            self.supple_left_line = supple_left
+            return True
+
+        return False
+
     def fit_polynomial(self):
         """根据self.mid_line的原始值，用二次函数拟合曲线，返回曲线上的点的列表 self.fit_mid_line"""
         self.fit_mid_line = []
