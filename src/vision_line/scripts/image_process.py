@@ -707,15 +707,17 @@ class ImageProcess:
                         self.y_continual,
                     )
 
-            if len(self.left_line) > 0 and len(self.right_line) > 0:
-                # 线性插值
-                self.supple_left_line = self._linear_interpolation(self.left_line)
-                self.supple_right_line = self._linear_interpolation(self.right_line)
+            filled = self._fill_missing_line(img.shape)
+            if not filled:
+                if len(self.left_line) > 0 and len(self.right_line) > 0:
+                    # 线性插值
+                    self.supple_left_line = self._linear_interpolation(self.left_line)
+                    self.supple_right_line = self._linear_interpolation(self.right_line)
 
-                # 填充边界，使线段一直延伸到左右下角
-                self.supple_left_line, self.supple_right_line = self._fill_boundary(
-                    self.supple_left_line, self.supple_right_line, img.shape
-                )
+                    # 填充边界，使线段一直延伸到左右下角
+                    self.supple_left_line, self.supple_right_line = self._fill_boundary(
+                        self.supple_left_line, self.supple_right_line, img.shape
+                    )
 
             # 使用优化后的边线计算中线
             for y in range(
