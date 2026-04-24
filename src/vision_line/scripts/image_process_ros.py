@@ -326,44 +326,55 @@ class ImageProcess:
                 self.prev_supple_right_line = self.supple_right_line.copy()
 
     def _linear_interpolation(self, line_points):
-        """对边线点进行线性插值，填充间隔过大的点
+        """
+        对边线点进行线性插值，填充点之间的空隙
+        Args:  line_points: 边线点列表 [(x, y), ...]
+        Returns: 插值后的边线点列表 [(x, y), ...]
 
-        Args:
-            line_points: 原始边线点列表
-
-        Returns:
-            插值后的边线点列表
+        使用np向量化，加快效率
         """
         if len(line_points) < 2:
             return line_points.copy()
 
-        new_line = []
+        pts = np.array(line_points, dtype=np.int32)
 
-        for i in range(len(line_points) - 1):
-            x1, y1 = line_points[i]
-            x2, y2 = line_points[i + 1]
+        p1 = pts[:-1]
+        p2 = pts[1:]
 
-            new_line.append((x1, y1))
+        dx = np.abs(p2[:, 0] - p1[:, 0])
+        dy = np.abs(p2[:, 1] - p1[:, 1])
 
-            dx = abs(x2 - x1)
-            dy = abs(y2 - y1)
+        need_interp = (dx > 6) | (dy > 3)
 
-            if dx > 6 or dy > 3:
-                num_points = max(dx // 3, dy // 2, 2)
+        result = []
 
-                # 用 linspace 替代循环（更快 + 更稳定）
-                xs = np.linspace(x1, x2, num_points + 2)[1:-1]
-                ys = np.linspace(y1, y2, num_points + 2)[1:-1]
+        for i in range(len(p1)):
+            x1, y1 = p1[i]
+            x2, y2 = p2[i]
 
-                for x, y in zip(xs, ys):
-                    xi, yi = int(x), int(y)
-                    if min(y1, y2) < yi < max(y1, y2):
-                        new_line.append((xi, yi))
+            result.append((x1, y1))
 
-        # 加最后一个点
-        new_line.append(line_points[-1])
+            if not need_interp[i]:
+                continue
 
-        return new_line
+            num_points = max(dx[i] // 3, dy[i] // 2, 2)
+
+            t = np.linspace(0, 1, num_points + 2)[1:-1]
+
+            xs = (x1 + (x2 - x1) * t).astype(np.int32)
+            ys = (y1 + (y2 - y1) * t).astype(np.int32)
+
+            # 向量化过滤
+            mask = (ys > min(y1, y2)) & (ys < max(y1, y2))
+
+            interp_pts = np.stack([xs[mask], ys[mask]], axis=1)
+
+            if len(interp_pts) > 0:
+                result.extend(map(tuple, interp_pts))
+
+        result.append(tuple(pts[-1]))
+
+        return result
 
     def _fill_boundary(self, left_line, right_line, img_shape):
         """将边线延伸到图像边界，防止计算中线时越界
@@ -429,6 +440,61 @@ class ImageProcess:
             )
         except Exception as e:
             rospy.logerr(f"Error occurred during polynomial fitting: {e}")
+
+    def _fill_missing_line(self, img_shape):
+        """当左线或右线缺失时，用图像边界替代缺失边线
+
+        已存在的那条线会经过插值和底部边界填充，确保与边界线 y 对齐。
+        边界线使用已存在线的完整 y 列表（而非固定步长），保证一一对应。
+
+        Args:
+            img_shape: 图像形状 (height, width, ...)
+
+        Returns:
+            bool: 是否填充了缺失线
+        """
+        img_h, img_w = img_shape[0], img_shape[1]
+
+        # 左线缺失，右线存在
+        if len(self.left_line) == 0 and len(self.right_line) > 0:
+            supple_right = self._linear_interpolation(self.right_line)
+            supple_right = np.array(supple_right, dtype=np.int32)
+            bottom_y = supple_right[0][1]
+            if bottom_y < img_h - 1:
+                ys = np.arange(
+                    img_h - 1, bottom_y, -2, dtype=np.int32
+                )  # 使用np生成y坐标列表
+                xs = np.full_like(ys, img_w - 1)
+                bottom_pts = np.stack([xs, ys], axis=1)
+                supple_right = np.vstack([bottom_pts, supple_right])
+
+            ys_all = supple_right[:, 1]
+            boundary_left = np.stack([np.zeros_like(ys_all), ys_all], axis=1)
+
+            self.supple_left_line = list(map(tuple, boundary_left))
+            self.supple_right_line = list(map(tuple, supple_right))
+            return True
+
+        if len(self.right_line) == 0 and len(self.left_line) > 0:
+            supple_left = self._linear_interpolation(self.left_line)
+            supple_left = np.array(supple_left, dtype=np.int32)
+
+            bottom_y = supple_left[0, 1]
+
+            if bottom_y < img_h - 1:
+                ys = np.arange(img_h - 1, bottom_y, -2, dtype=np.int32)
+                xs = np.zeros_like(ys)
+                bottom_pts = np.stack([xs, ys], axis=1)
+                supple_left = np.vstack([bottom_pts, supple_left])
+
+            ys_all = supple_left[:, 1]
+            boundary_right = np.stack([np.full_like(ys_all, img_w - 1), ys_all], axis=1)
+
+            self.supple_right_line = list(map(tuple, boundary_right))
+            self.supple_left_line = list(map(tuple, supple_left))
+            return True
+
+        return False
 
     def judge_enter_cross_state(self, img_shape, y_ratio=0.75):
         """判断是否满足进入 CROSS 状态的条件
@@ -657,6 +723,9 @@ class ImageProcess:
                         self.y_continual,
                     )
 
+            # 如果没有丢线，就直接补线；反之要补线
+            filled = self._fill_missing_line(img.shape)
+            if not filled:
                 if len(self.left_line) > 0 and len(self.right_line) > 0:
                     # 线性插值
                     self.supple_left_line = self._linear_interpolation(self.left_line)
@@ -817,8 +886,7 @@ class ImageProcess:
                 min(len(self.supple_left_line), len(self.supple_right_line))
             ):
                 line_mid_x = (
-                     self.supple_left_line[j][0]
-                    + self.supple_right_line[j][0]
+                    self.supple_left_line[j][0] + self.supple_right_line[j][0]
                 ) // 2
                 line_mid_y = self.supple_left_line[j][1]
                 self.mid_line.append((line_mid_x, line_mid_y))
@@ -834,13 +902,13 @@ class ImageProcess:
         except Exception as e:
             rospy.logerr(f"Error occurred during getting side lines : {e}")
 
-    def draw_line(self, canvas, fps=None, draw_fps=True):
+    def draw_line(self, canvas, fps=float("inf"), state=None):
         """绘制边线、中线
 
         Args:
             canvas: 用于绘制的画布图像
             fps: 实时FPS值
-            draw_fps: 是否绘制实时FPS，默认为True
+            state: 当前状态 (ProcessState)
 
         Returns:
             绘制后的画布图像，如果出错则返回None
@@ -866,15 +934,32 @@ class ImageProcess:
                 )
 
             # 绘制实时FPS（左上角）
-            if draw_fps:
-                fps_text = f"FPS: {fps:.2f}" if fps is not None else "FPS: 0.00"
+            if fps != float("inf"):
+                fps_text = f"FPS: {fps:.2f}"
                 cv2.putText(
                     canvas,
                     fps_text,
                     (10, 25),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.7,
-                    (0, 255, 0),
+                    (255, 0, 128),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+            # 绘制当前状态（右上角）
+            if state is not None:
+                state_text = state.name
+                (tw, th), _ = cv2.getTextSize(
+                    state_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2
+                )
+                cv2.putText(
+                    canvas,
+                    state_text,
+                    (canvas.shape[1] - tw - 10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 255),
                     2,
                     cv2.LINE_AA,
                 )
@@ -1304,7 +1389,7 @@ def run_ros_topic_mode():
                     )
                     vision_line_pub.publish(vision_msg)
 
-                    canvas = imgprocess.draw_line(canvas, fps, draw_fps=True)
+                    canvas = imgprocess.draw_line(canvas, fps, state)
                     cv2.imshow("binary", binary_img)
                     cv2.imshow("processed_img", canvas)
                 else:
@@ -1326,7 +1411,7 @@ def run_ros_topic_mode():
                     )
                     vision_line_pub.publish(vision_msg)
 
-                    canvas = imgprocess.draw_line(canvas, fps, draw_fps=True)
+                    canvas = imgprocess.draw_line(canvas, fps, state)
                     cv2.imshow("binary", binary_img)
                     cv2.imshow("processed_img", canvas)
 
