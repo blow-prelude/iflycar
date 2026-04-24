@@ -597,7 +597,7 @@ class ImageProcess:
                 # cv2.imshow(
                 #     "diff", (diff != 0).astype(np.uint8) * 255
                 # )  # 显示发生跳变的地方
-                # logging.info(f"len(row_diff): {len(row_diff)}")
+                logging.info(f"len(row_diff): {len(row_diff)}")
 
                 # 左侧赛道线
                 # 获取搜索起点
@@ -616,7 +616,7 @@ class ImageProcess:
 
                 # 左边：从白到黑，跳变为1（搜索范围从小到大切片，取最右侧候选）
                 candidates = np.where(row_diff[search_end_left:search_start] == 1)[0]
-
+                # logging.info(f"row:{y}  ,len of left candidates: {len(candidates)}")
                 if len(candidates) > 0:
                     x = search_end_left + candidates[-1]
 
@@ -647,8 +647,8 @@ class ImageProcess:
                 )
 
                 # 右边：从黑到白，跳变为-1（取最左侧候选）
-                candidates = np.where(row_diff[search_start:search_end_right] == -1)[0]
-
+                candidates = np.where(row_diff[search_start:search_end_right] == 1)[0]
+                # logging.info(f"row:{y} , len of right candidates: {len(candidates)}")
                 if len(candidates) > 0:
                     x = search_start + candidates[0]
 
