@@ -105,3 +105,40 @@ class TestFillMissingLineEdgeCases:
         result = self.proc._fill_missing_line(self.img_shape)
         assert result is True
         assert len(self.proc.supple_left_line) == len(self.proc.supple_right_line)
+
+
+class TestIntegrationWithRealImage:
+    """使用真实图片验证完整流程"""
+
+    def _get_test_image(self):
+        """加载测试图片并预处理"""
+        pictures_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), os.pardir, "pictures"
+        )
+        test_img = os.path.join(pictures_dir, "test1.png")
+        if not os.path.exists(test_img):
+            pytest.skip("No test image available")
+        proc = ImageProcess(img_path=test_img)
+        binary = proc.preprocess()
+        return proc, binary
+
+    def test_full_pipeline_no_crash(self):
+        """完整流程不应崩溃"""
+        proc, binary = self._get_test_image()
+        canvas = proc.return_frame()
+        proc.get_side_line_task_1(binary, canvas, is_draw=False)
+
+    def test_midline_via_manual_missing_line(self):
+        """手动构造缺失线场景，验证中线计算正确"""
+        proc, binary = self._get_test_image()
+        img_shape = binary.shape
+        proc3 = ImageProcess()
+        proc3.right_line = [(160, 200), (162, 198), (164, 196)]
+        proc3.left_line = []
+        result = proc3._fill_missing_line(img_shape)
+        assert result is True
+        assert len(proc3.supple_left_line) > 0
+        assert len(proc3.supple_right_line) > 0
+        assert len(proc3.supple_left_line) == len(proc3.supple_right_line)
+        for lp, rp in zip(proc3.supple_left_line, proc3.supple_right_line):
+            assert lp[1] == rp[1]
