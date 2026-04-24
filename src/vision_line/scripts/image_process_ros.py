@@ -1283,8 +1283,8 @@ def run_ros_topic_mode():
     dt = 0.0
     j = 0.0
 
-    straight_received = True
-    right_received = False
+    straight_received = False
+    right_received = True
     left_received = False
     corner_delay_s = 1.5
 
@@ -1331,12 +1331,8 @@ def run_ros_topic_mode():
                     rospy.loginfo("State: IDLE -> LEFT_TRACKING (left received)")
             else:
                 imgprocess.frame = frame
-                try:
-                    binary_img = imgprocess.preprocess()
-                except Exception as e:
-                    rospy.logwarn(f"Frame preprocess failed: {e}")
-                    loop_rate.sleep()
-                    continue
+
+                binary_img = imgprocess.preprocess()
 
                 if state not in (
                     ProcessState.RIGHT_TRACKING,
@@ -1349,12 +1345,7 @@ def run_ros_topic_mode():
                                 f"State: STRAIGHT_TRACKING -> CORNER (after {corner_delay_s}s)"
                             )
 
-                    try:
-                        canvas = imgprocess.return_frame()
-                    except Exception as e:
-                        rospy.logwarn(f"Cannot get canvas: {e}")
-                        loop_rate.sleep()
-                        continue
+                    canvas = imgprocess.return_frame()
 
                     find_corner = state == ProcessState.CORNER
                     imgprocess.get_side_line_task_2(
@@ -1388,6 +1379,10 @@ def run_ros_topic_mode():
                                 f"Set turning flag param: {turning_flag_param}=1"
                             )
 
+                    if state == ProcessState.TURNING:
+                        # 开环转弯，一直转到两侧都不丢线，则继续巡线
+                        pass
+
                     imgprocess.fit_polynomial()
                     vision_msg = build_vision_line_msg(
                         imgprocess.fit_mid_line,
@@ -1400,13 +1395,8 @@ def run_ros_topic_mode():
                     canvas = imgprocess.draw_line(canvas, fps, state)
                     cv2.imshow("binary", binary_img)
                     cv2.imshow("processed_img", canvas)
-                else:
-                    try:
-                        canvas = imgprocess.return_frame()
-                    except Exception as e:
-                        rospy.logwarn(f"Cannot get canvas: {e}")
-                        loop_rate.sleep()
-                        continue
+                elif state in (ProcessState.RIGHT_TRACKING, ProcessState.LEFT_TRACKING):
+                    canvas = imgprocess.return_frame()
 
                     imgprocess.get_side_line_task_1(binary_img, canvas, is_draw=True)
                     imgprocess.fit_polynomial()
