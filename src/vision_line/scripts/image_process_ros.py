@@ -1179,6 +1179,10 @@ def run_ros_topic_mode():
     image_topic = rospy.get_param("~image_topic", "ucar_camera/image_raw")
     vision_line_topic = rospy.get_param("~vision_line_topic", "/vision_line")
     vision_target_y = rospy.get_param("~vision_target_y", 340.0)
+    turning_flag_param = rospy.get_param("~turning_flag_param", "/start_vision_line2")
+
+    # TURNING 标志由视觉状态机驱动，启动时先清零。
+    rospy.set_param(turning_flag_param, 0)
 
     image_receiver = ROSImageReceiver(image_topic)
     vision_line_pub = rospy.Publisher(
@@ -1290,9 +1294,13 @@ def run_ros_topic_mode():
                             stop_mid, binary_img.shape
                         ):
                             state = ProcessState.TURNING
+                            rospy.set_param(turning_flag_param, 1)
                             y_norm = stop_mid[1] / binary_img.shape[0]
                             rospy.loginfo(
                                 f"State: CROSS -> TURNING (stop line at y={stop_mid[1]}, y_norm={y_norm:.2f})"
+                            )
+                            rospy.loginfo(
+                                f"Set turning flag param: {turning_flag_param}=1"
                             )
 
                     imgprocess.fit_polynomial()
@@ -1341,6 +1349,8 @@ def run_ros_topic_mode():
     except Exception as e:
         rospy.logerr(f"Error occurred during image process: {e}")
     finally:
+        rospy.set_param(turning_flag_param, 0)
+        rospy.loginfo(f"Reset turning flag param: {turning_flag_param}=0")
         cv2.destroyAllWindows()
 
 
