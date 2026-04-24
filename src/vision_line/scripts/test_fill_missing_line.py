@@ -44,7 +44,7 @@ class TestFillMissingLineLeftMissing:
         self.proc.right_line = [(160, 200), (162, 198), (164, 196), (166, 194)]
         self.proc._fill_missing_line(self.img_shape)
         first_y = self.proc.supple_right_line[0][1]
-        assert first_y >= 237
+        assert first_y == 239  # 底部填充从 img_h - 1 = 239 开始
 
 
 class TestFillMissingLineRightMissing:
@@ -142,3 +142,36 @@ class TestIntegrationWithRealImage:
         assert len(proc3.supple_left_line) == len(proc3.supple_right_line)
         for lp, rp in zip(proc3.supple_left_line, proc3.supple_right_line):
             assert lp[1] == rp[1]
+
+
+class TestPointOrdering:
+    """验证点的排列顺序"""
+
+    def setup_method(self):
+        self.proc = ImageProcess()
+        self.img_shape = (240, 320)
+
+    def test_descending_y_order_left_missing(self):
+        """左线缺失时，supple 线应按 y 降序排列（从底部到顶部）"""
+        self.proc.right_line = [(160, 200), (162, 198), (164, 196), (166, 194)]
+        self.proc._fill_missing_line(self.img_shape)
+        for line in [self.proc.supple_left_line, self.proc.supple_right_line]:
+            for i in range(len(line) - 1):
+                assert line[i][1] >= line[i + 1][1]
+
+    def test_descending_y_order_right_missing(self):
+        """右线缺失时，supple 线应按 y 降序排列"""
+        self.proc.left_line = [(160, 200), (158, 198), (156, 196), (154, 194)]
+        self.proc._fill_missing_line(self.img_shape)
+        for line in [self.proc.supple_left_line, self.proc.supple_right_line]:
+            for i in range(len(line) - 1):
+                assert line[i][1] >= line[i + 1][1]
+
+    def test_no_bottom_fill_when_line_at_bottom(self):
+        """当已存在线的最低点已在图像底部时，不需要底部填充"""
+        # bottom_y = 239 == img_h - 1, 所以 if bottom_y < img_h - 1 为 False
+        self.proc.right_line = [(160, 239), (162, 237), (164, 235)]
+        self.proc._fill_missing_line(self.img_shape)
+        # 第一个点的 y 应该就是原始的 239，不会被额外填充
+        assert self.proc.supple_right_line[0][1] == 239
+        assert len(self.proc.supple_left_line) == len(self.proc.supple_right_line)
