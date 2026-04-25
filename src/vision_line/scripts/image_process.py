@@ -658,10 +658,12 @@ class ImageProcess:
                 cur_range = 50 if y_norm > 0.6 else 30
 
                 # --- 左侧赛道线 ---
-                search_start_left = min(prev_row_left_x + cur_range, img_w - 1)
-
-                search_end_left = max(0, prev_row_left_x - cur_range)
-                # search_end_left = 0
+                if left_stable[0]:
+                    search_start_left = min(prev_row_left_x + cur_range, img_w - 1)
+                    search_end_left = max(0, prev_row_left_x - cur_range)
+                else:
+                    search_start_left = mid_x
+                    search_end_left = 0
 
                 if is_draw:
                     cv2.circle(canvas, (search_start_left, y), 1, (0, 255, 255), -1)
@@ -696,12 +698,14 @@ class ImageProcess:
                     left_miss_count = 0
 
                 # --- 右侧赛道线 ---
-                search_start_right = max(
-                    0, min(prev_row_right_x - cur_range, img_w - 1)
-                )
-
-                search_end_right = min(img_w - 1, prev_row_right_x + cur_range)
-                # search_end_right = img_w - 1
+                if right_stable[0]:
+                    search_start_right = max(
+                        0, min(prev_row_right_x - cur_range, img_w - 1)
+                    )
+                    search_end_right = min(img_w - 1, prev_row_right_x + cur_range)
+                else:
+                    search_start_right = mid_x
+                    search_end_right = img_w - 1
 
                 if is_draw:
                     cv2.circle(canvas, (search_start_right, y), 1, (255, 255, 0), -1)
