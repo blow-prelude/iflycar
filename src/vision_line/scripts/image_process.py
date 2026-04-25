@@ -613,13 +613,15 @@ class ImageProcess:
     def get_side_line_task_1(self, img, canvas, is_draw=False):
         """从图像的中线往两边搜索，获取赛道边线
 
+        使用同帧逐行递推决定搜索起点，搜索窗口越往上越窄。
+
         Args:
             img: 输入的二值化图像
             canvas: 用于绘制的画布图像
             is_draw: 是否在canvas上绘制调试信息，默认为False
         """
         mid_x = img.shape[1] // 2
-        # 从图像下方（靠近车辆）开始搜索
+        img_h, img_w = img.shape[:2]
         up_ratio = 0.55
         down_ratio = 0.90
         try:
@@ -631,25 +633,14 @@ class ImageProcess:
             self.mid_line.clear()
             self.fit_mid_line.clear()
 
-            # 确定使用哪组上一帧边线数据（优先使用优化后的边线）
-            use_prev_supple = (
-                len(self.prev_supple_left_line) > 0
-                and len(self.prev_supple_right_line) > 0
-            )
-            prev_left = (
-                self.prev_supple_left_line if use_prev_supple else self.prev_left_line
-            )
-            prev_right = (
-                self.prev_supple_right_line if use_prev_supple else self.prev_right_line
-            )
+            # 逐行递推的搜索起点（初始为 mid_x）
+            prev_row_left_x = mid_x
+            prev_row_right_x = mid_x
 
-            # 第一帧或边线丢失标志
-            is_first_frame = len(prev_left) == 0 or len(prev_right) == 0
-
-            if is_first_frame:
-                logging.info(
-                    "First frame or no previous frame data, using center line search"
-                )
+            # miss 计数（只在 stable 后计数）
+            left_miss_count = 0
+            right_miss_count = 0
+            miss_threshold = 3
 
             # 稳定点缓冲区及标志
             left_stable_buf = []
@@ -658,40 +649,31 @@ class ImageProcess:
             right_stable = [False]
 
             diff = np.diff(img == 0, axis=1)  # 计算行内黑白跳变  右-左
-            # cv2.imshow("diff", (diff != 0).astype(np.uint8) * 255)    # 显示发生跳变的地方
 
-            for y in range(
-                int(img.shape[0] * down_ratio), int(img.shape[0] * up_ratio), -1
-            ):
-                # 获取当前行内的跳变点
+            for y in range(int(img_h * down_ratio), int(img_h * up_ratio), -1):
                 row_diff = diff[y]
-                # cv2.imshow(
-                #     "diff", (diff != 0).astype(np.uint8) * 255
-                # )  # 显示发生跳变的地方
-                logging.info(f"len(row_diff): {len(row_diff)}")
 
-                # 左侧赛道线
-                # 获取搜索起点
-                left_start_x = self._get_search_start_point(
-                    y, prev_left, img.shape[1], is_left=True
-                )
-                # 如果是第一帧，从中线开始搜索；否则从上一帧边线点右侧开始搜索
-                search_start = mid_x if is_first_frame else left_start_x
+                # 动态搜索窗口：二段阶梯
+                y_norm = y / img_h
+                cur_range = 50 if y_norm > 0.6 else 30
 
-                # 绘制左边线搜索起点（紫色）
+                # --- 左侧赛道线 ---
+                search_start_left = min(prev_row_left_x + cur_range, img_w - 1)
+
+                search_end_left = max(0, prev_row_left_x - cur_range)
+                # search_end_left = 0
+
                 if is_draw:
-                    cv2.circle(canvas, (search_start, y), 3, (255, 0, 255), -1)
+                    cv2.circle(canvas, (search_start_left, y), 1, (0, 255, 255), -1)
+                    cv2.circle(canvas, (search_end_left, y), 1, (0, 255, 255), -1)
 
-                # 计算搜索终点（避免搜索超出范围）
-                search_end_left = max(0, search_start - self.search_range)
-
-                # 左边：从白到黑，跳变为1（搜索范围从小到大切片，取最右侧候选）
-                candidates = np.where(row_diff[search_end_left:search_start] == 1)[0]
-                # logging.info(f"row:{y}  ,len of left candidates: {len(candidates)}")
+                candidates = np.where(row_diff[search_end_left:search_start_left] == 1)[
+                    0
+                ]
+                left_added = False
                 if len(candidates) > 0:
                     x = search_end_left + candidates[-1]
-
-                    _ = self._add_point_with_stable_start(
+                    left_added = self._add_point_with_stable_start(
                         self.left_line,
                         (x, y),
                         left_stable_buf,
@@ -699,31 +681,39 @@ class ImageProcess:
                         self.x_continual,
                         self.y_continual,
                     )
+                    # 如果当前行的点没有被加入正式边线，则下一行的搜索起点不更新；反之才更新
+                    if left_added:
+                        prev_row_left_x = x
 
-                # 右侧赛道线
-                # 获取搜索起点
-                right_start_x = self._get_search_start_point(
-                    y, prev_right, img.shape[1], is_left=False
+                # miss 计数（只在 stable 后）
+                if left_stable[0] and not left_added:
+                    left_miss_count += 1
+                else:
+                    left_miss_count = 0
+
+                if left_miss_count >= miss_threshold:
+                    prev_row_left_x = mid_x
+                    left_miss_count = 0
+
+                # --- 右侧赛道线 ---
+                search_start_right = max(
+                    0, min(prev_row_right_x - cur_range, img_w - 1)
                 )
-                # 如果是第一帧，从中线开始搜索；否则从上一帧边线点左侧开始搜索
-                search_start = mid_x if is_first_frame else right_start_x
 
-                # 绘制右边线搜索起点（青色）
+                search_end_right = min(img_w - 1, prev_row_right_x + cur_range)
+                # search_end_right = img_w - 1
+
                 if is_draw:
-                    cv2.circle(canvas, (search_start, y), 3, (255, 255, 0), -1)
+                    cv2.circle(canvas, (search_start_right, y), 1, (255, 255, 0), -1)
+                    cv2.circle(canvas, (search_end_right, y), 1, (255, 255, 0), -1)
 
-                # 计算搜索终点（避免搜索超出范围）
-                search_end_right = min(
-                    img.shape[1] - 1, search_start + self.search_range
-                )
-
-                # 右边：从黑到白，跳变为-1（取最左侧候选）
-                candidates = np.where(row_diff[search_start:search_end_right] == 1)[0]
-                # logging.info(f"row:{y} , len of right candidates: {len(candidates)}")
+                candidates = np.where(
+                    row_diff[search_start_right:search_end_right] == 1
+                )[0]
+                right_added = False
                 if len(candidates) > 0:
-                    x = search_start + candidates[0]
-
-                    self._add_point_with_stable_start(
+                    x = search_start_right + candidates[0]
+                    right_added = self._add_point_with_stable_start(
                         self.right_line,
                         (x, y),
                         right_stable_buf,
@@ -731,6 +721,18 @@ class ImageProcess:
                         self.x_continual,
                         self.y_continual,
                     )
+                    if right_added:
+                        prev_row_right_x = x
+
+                # miss 计数（只在 stable 后）
+                if right_stable[0] and not right_added:
+                    right_miss_count += 1
+                else:
+                    right_miss_count = 0
+
+                if right_miss_count >= miss_threshold:
+                    prev_row_right_x = mid_x
+                    right_miss_count = 0
 
             # 如果没有丢线，就直接补线；反之要补线
             filled = self._fill_missing_line(img.shape)
@@ -752,7 +754,6 @@ class ImageProcess:
                 mid_x = (
                     self.supple_left_line[y][0] + self.supple_right_line[y][0]
                 ) // 2
-                # 使用边线点的实际y坐标，而不是循环索引
                 mid_y = self.supple_left_line[y][1]
                 self.mid_line.append((mid_x, mid_y))
 
@@ -1243,8 +1244,21 @@ def main_video():
 
     try:
         while True:
-            frame = cap.read()[1]
-            # img_sender.enqueue_image(frame)
+            if paused:
+                key = cv2.waitKey(50) & 0xFF
+                if key == ord(" "):
+                    paused = False
+                    prev_t = None
+                    logging.info("Video resumed")
+                elif key == ord("q"):
+                    logging.info("User quit")
+                    break
+                continue
+
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                logging.info("Video ended or read failed")
+                break
 
             # 实时 FPS 计算
             now_t = time.perf_counter()
@@ -1372,14 +1386,9 @@ def main_video():
             if key == ord("q"):  # q键退出
                 logging.info("User quit")
                 break
-            elif key == ord(" "):  # 空格键暂停/继续
-                paused = not paused
-                if paused:
-                    logging.info("Video paused")
-                else:
-                    # 恢复播放时重置 prev_t，避免首帧 FPS 因暂停时间被拉低
-                    prev_t = None
-                    logging.info("Video resumed")
+            elif key == ord(" "):  # 空格键暂停
+                paused = True
+                logging.info("Video paused")
             elif key == ord("s"):  # s键保存图片
                 timestamp = int(time.perf_counter() * 1000)
                 save_path = os.path.join(save_dir, f"captured_{timestamp}.jpg")
@@ -1425,9 +1434,9 @@ def main():
 
     try:
         # 连接服务器，开启发送线程
-        img_sender.connect()
+        # img_sender.connect()
 
-        img_sender.start_sending(2)
+        # img_sender.start_sending(2)
 
         cap = CameraCapture(0)  # 0表示默认摄像头
         if not cap.is_opened():
@@ -1585,4 +1594,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main_video()
