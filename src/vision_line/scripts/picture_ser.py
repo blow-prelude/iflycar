@@ -29,7 +29,7 @@ class UDPImageReceiver(QObject):
     """负责UDP接收和图片解码，通过信号通知"""
 
     # 信号定义
-    image_received = pyqtSignal(int, QImage)  # img_id, 图片数据
+    image_received = pyqtSignal(int, QImage, str)  # img_id, 图片数据, 图像名
     stats_updated = pyqtSignal(float, int)  # fps, 包数
 
     def __init__(self, host: str, port: int, parent=None):
@@ -92,14 +92,14 @@ class UDPImageReceiver(QObject):
         try:
             while running_flag[0]:
                 try:
-                    img_id, img_byte = self.handle_connect(sock)
+                    img_id, img_name, img_byte = self.handle_connect(sock)
 
                     # 处理接收失败（包括超时）
                     if img_id is None or img_byte is None:
                         continue
 
                     self._packet_count += 1
-                    logging.debug(f"Received image {img_id}")
+                    logging.debug(f"Received image {img_id} name={img_name!r}")
 
                     # 测速：仅在实际收到图片时计数
                     cur_t = time.perf_counter()
@@ -115,7 +115,7 @@ class UDPImageReceiver(QObject):
 
                     img = self.process_image(img_byte)
                     qimage = self._array_to_qimage(img)
-                    self.image_received.emit(img_id, qimage)
+                    self.image_received.emit(img_id, qimage, img_name)
 
                 except socket.timeout:
                     # 超时是正常的，继续循环检查running_flag
@@ -145,35 +145,43 @@ class UDPImageReceiver(QObject):
 
     def handle_connect(
         self, sock: socket.socket
-    ) -> Tuple[Optional[int], Optional[bytes]]:
+    ) -> Tuple[Optional[int], Optional[str], Optional[bytes]]:
         """接收UDP数据包
 
         Args:
             sock: UDP socket对象
 
         Returns:
-            Tuple[img_id, img_data]: 图片ID和图片数据
-            如果接收失败返回 (None, None)
+            Tuple[img_id, img_name, img_data]: 图片ID、图像名和图片数据
+            如果接收失败返回 (None, None, None)
         """
         try:
-            data, _ = sock.recvfrom(65535)  # UDP最大包
+            data, _ = sock.recvfrom(65535)
         except socket.timeout:
-            return None, None
+            return None, None, None
 
-        # 验证包头完整性
-        if len(data) < 5:
+        # 验证包头完整性（13字节头部）
+        if len(data) < 13:
             logging.warning("Packet too short, dropping")
-            return None, None
+            return None, None, None
 
         img_id = int.from_bytes(data[0:1], "big")
-        size = int.from_bytes(data[1:5], "big")
+        name_raw = data[1:9]
+        size = int.from_bytes(data[9:13], "big")
+
+        null_idx = name_raw.find(b"\x00")
+        img_name = (
+            name_raw[:null_idx].decode("ascii")
+            if null_idx != -1
+            else name_raw.decode("ascii")
+        )
 
         # 验证数据完整性
-        if len(data) < 5 + size:
-            logging.warning(f"Incomplete packet, expected {5 + size}, got {len(data)}")
-            return None, None
+        if len(data) < 13 + size:
+            logging.warning(f"Incomplete packet, expected {13 + size}, got {len(data)}")
+            return None, None, None
 
-        img_data = data[5 : 5 + size]
+        img_data = data[13 : 13 + size]
 
         # 验证图片ID范围
         if self.num_images > 0:
@@ -181,9 +189,9 @@ class UDPImageReceiver(QObject):
                 logging.warning(
                     f"Invalid img_id {img_id}, expected 0-{self.num_images - 1}, dropping"
                 )
-                return None, None
+                return None, None, None
 
-        return img_id, img_data
+        return img_id, img_name, img_data
 
     def process_image(self, data: bytes) -> np.ndarray:
         """解码图片数据
@@ -263,7 +271,7 @@ class ImageDisplayWidget(QMainWindow):
             row_labels = []
             for c in range(self.cols):
                 label = QLabel()
-                label.setMinimumSize(320, 240)
+                label.setMinimumSize(640, 320)
                 label.setAlignment(Qt.AlignCenter)
                 label.setStyleSheet("QLabel { background-color: #1e1e1e; }")
                 layout.addWidget(label, r, c)
@@ -274,12 +282,13 @@ class ImageDisplayWidget(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Waiting for images...")
 
-    def set_image(self, img_id: int, qimage: QImage):
+    def set_image(self, img_id: int, qimage: QImage, img_name: str = ""):
         """将图片设置到网格中指定位置
 
         Args:
             img_id: 图片索引，用于计算网格位置
             qimage: 要显示的QImage对象
+            img_name: 图像名称，显示在图像左上角
         """
         row = img_id // self.cols
         col = img_id % self.cols
@@ -297,6 +306,17 @@ class ImageDisplayWidget(QMainWindow):
             Qt.KeepAspectRatio,
             Qt.SmoothTransformation,
         )
+
+        # 在图像左上角绘制图像名
+        if img_name:
+            from PyQt5.QtGui import QColor, QFont, QPainter
+
+            painter = QPainter(scaled)
+            painter.setPen(QColor(255, 0, 255))
+            painter.setFont(QFont("Monospace", 10))
+            painter.drawText(5, 15, img_name)
+            painter.end()
+
         label.setPixmap(scaled)
 
     def update_stats(self, fps: float, packet_count: int):
@@ -410,7 +430,7 @@ if __name__ == "__main__":
     port = 12345
 
     try:
-        with PyQt5ImageReceiver(host, port, rows=2, cols=3) as img_rec:
+        with PyQt5ImageReceiver(host, port, rows=1, cols=2) as img_rec:
             img_rec.receive_picture(num_images=6)
     except KeyboardInterrupt:
         logging.info("Interrupted by user.")

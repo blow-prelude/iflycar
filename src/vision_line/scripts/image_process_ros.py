@@ -19,6 +19,7 @@ class ProcessState(Enum):
     CORNER = 2  # 延时已到，find_corner=True
     CROSS = 3  # 双拐点触发，find_corner=False，执行额外处理
     TURNING = 4  # 检测到停止线后的转弯状态
+    TRACKING2 = 7  # 转弯结束后的巡线状态
 
 
 transformation_matrix = np.array(
@@ -527,6 +528,35 @@ class ImageProcess:
 
         y_norm = stop_mid[1] / img_shape[0]
         return y_norm > y_thresh
+
+    def judge_turning_end(self, img_shape, y_thresh=0.60, miss_line=[False]):
+        """判断转弯是否结束：一开始两边都不丢线，然后一边丢线一边不丢线，最后两边都不丢线
+
+        Args:
+            img_shape: 图像形状 (h, w, ...)
+            y_thresh: y 坐标阈值（归一化），默认 0.70
+            miss_line: 转弯期间是否丢先
+
+        Returns:
+            bool: True 表示转弯结束，可以进入 TRACKING2 状态
+
+        一开始，两边还没有丢线，两边的y最小值接近；
+        转到一半有一边开始丢线，
+        转到最后两边都不丢线，说明转弯已经到位了
+        """
+        # 丢线了，说明正在转弯，继续观察
+        if len(self.left_line) == 0 or len(self.right_line) == 0:
+            miss_line[0] = True
+            return False
+
+        # 在丢线阶段，两边都没有丢线，说明转弯已经到位了
+        if miss_line[0] and abs(self.right_line[-1] - self.left_line[-1]) <= 20:
+            return True
+
+        # 可能没有丢线，但是两条边线x坐标重合，也认为丢线
+        if abs(self.right_line[-1] - self.left_line[-1]) <= 20:
+            miss_line[0] = True
+            return False
 
     def get_stop_line(self, binary_img, is_draw=False, canvas=None):
         """在 ROI 内检测水平白线并返回其中点
@@ -1302,6 +1332,7 @@ def run_ros_topic_mode():
 
     state = ProcessState.IDLE
     t0 = None
+    miss_line = [False]
     wait_log_t = 0.0
     loop_rate = rospy.Rate(60)
 
@@ -1392,8 +1423,15 @@ def run_ros_topic_mode():
                             )
 
                     if state == ProcessState.TURNING:
-                        # 开环转弯，一直转到两侧都不丢线，则继续巡线
-                        pass
+                        # 转弯一直转到两侧都不丢线，则继续巡线
+                        # 从开始转弯到停止转弯，是一个从不丢线到一边丢线一边不丢线再到两边都不丢线的过程，进入巡线状态
+                        if imgprocess.judge_turning_end(
+                            binary_img.shape, miss_line=miss_line
+                        ):
+                            state = ProcessState.TRACKING2
+                            logging.info(
+                                "State: TURNING -> TRACKING2 (turning end detected)"
+                            )
 
                     imgprocess.fit_polynomial()
                     vision_msg = build_vision_line_msg(

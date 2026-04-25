@@ -23,6 +23,7 @@ class ProcessState(Enum):
     CORNER = 2  # 延时已到，find_corner=True
     CROSS = 3  # 双拐点触发，find_corner=False，执行额外处理
     TURNING = 4  # 检测到停止线后的转弯状态
+    TRACKING2 = 7  # 转弯后继续循迹
 
 
 transformation_matrix = np.array(
@@ -67,7 +68,7 @@ class ImageProcess:
         self.y_continual = 5
 
         # 搜索配置参数
-        self.search_range = 100  # 搜索范围（像素），向左/右搜索的最大距离
+        # self.search_range = 100  # 搜索范围（像素），向左/右搜索的最大距离
         self.search_offset = 30  # 搜索偏移量（像素）
         self.init_stable_count = 5  # 初始连续点数阈值
 
@@ -532,6 +533,35 @@ class ImageProcess:
         y_norm = stop_mid[1] / img_shape[0]
         return y_norm > y_thresh
 
+    def judge_turning_end(self, img_shape, y_thresh=0.60, miss_line=[False]):
+        """判断转弯是否结束：一开始两边都不丢线，然后一边丢线一边不丢线，最后两边都不丢线
+
+        Args:
+            img_shape: 图像形状 (h, w, ...)
+            y_thresh: y 坐标阈值（归一化），默认 0.70
+            miss_line: 转弯期间是否丢先
+
+        Returns:
+            bool: True 表示转弯结束，可以进入 TRACKING2 状态
+
+        一开始，两边还没有丢线，两边的y最小值接近；
+        转到一半有一边开始丢线，
+        转到最后两边都不丢线，说明转弯已经到位了
+        """
+        # 丢线了，说明正在转弯，继续观察
+        if len(self.left_line) == 0 or len(self.right_line) == 0:
+            miss_line[0] = True
+            return False
+
+        # 在丢线阶段，两边都没有丢线，说明转弯已经到位了
+        if miss_line[0] and abs(self.right_line[-1] - self.left_line[-1]) <= 20:
+            return True
+
+        # 可能没有丢线，但是两条边线x坐标重合，也认为丢线
+        if abs(self.right_line[-1] - self.left_line[-1]) <= 20:
+            miss_line[0] = True
+            return False
+
     def get_stop_line(self, binary_img, is_draw=False, canvas=None):
         """在 ROI 内检测水平白线并返回其中点
 
@@ -662,7 +692,7 @@ class ImageProcess:
                     search_start_left = min(prev_row_left_x + cur_range, img_w - 1)
                     search_end_left = max(0, prev_row_left_x - cur_range)
                 else:
-                    search_start_left = mid_x
+                    search_start_left = mid_x - self.search_offset
                     search_end_left = 0
 
                 if is_draw:
@@ -694,7 +724,7 @@ class ImageProcess:
                     left_miss_count = 0
 
                 if left_miss_count >= miss_threshold:
-                    prev_row_left_x = mid_x
+                    prev_row_left_x = mid_x - self.search_offset
                     left_miss_count = 0
 
                 # --- 右侧赛道线 ---
@@ -704,7 +734,7 @@ class ImageProcess:
                     )
                     search_end_right = min(img_w - 1, prev_row_right_x + cur_range)
                 else:
-                    search_start_right = mid_x
+                    search_start_right = mid_x + self.search_offset
                     search_end_right = img_w - 1
 
                 if is_draw:
@@ -735,7 +765,7 @@ class ImageProcess:
                     right_miss_count = 0
 
                 if right_miss_count >= miss_threshold:
-                    prev_row_right_x = mid_x
+                    prev_row_right_x = mid_x + self.search_offset
                     right_miss_count = 0
 
             # 如果没有丢线，就直接补线；反之要补线
@@ -1435,6 +1465,7 @@ def main():
     # 状态机变量
     state = ProcessState.IDLE
     t0 = None  # 指令开始时刻
+    miss_line = [False]
 
     try:
         # 连接服务器，开启发送线程
@@ -1533,8 +1564,15 @@ def main():
                             )
 
                     if state == ProcessState.TURNING:
-                        # 开环转弯，一直转到两侧都不丢线，则继续巡线
-                        pass
+                        # 转弯一直转到两侧都不丢线，则继续巡线
+                        # 从开始转弯到停止转弯，是一个从不丢线到一边丢线一边不丢线再到两边都不丢线的过程，进入巡线状态
+                        if imgprocess.judge_turning_end(
+                            binary_img.shape, miss_line=miss_line
+                        ):
+                            state = ProcessState.TRACKING2
+                            logging.info(
+                                "State: TURNING -> TRACKING2 (turning end detected)"
+                            )
 
                     # 多项式拟合
                     imgprocess.fit_polynomial()

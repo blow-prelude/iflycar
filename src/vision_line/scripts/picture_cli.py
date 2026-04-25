@@ -28,7 +28,7 @@ class ImageSender:
         self.send_thread = None
         self.running = None
         self.img_queues = None  # 改为队列列表
-        self.num_images = 10000  # 添加图片数量字段
+        self.num_images = None  # 添加图片数量字段
         self._is_closed = False
 
         self.thread_t_log = 0
@@ -42,18 +42,26 @@ class ImageSender:
         self.cli_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         logging.info(f"UDP socket created for {self.host}:{self.port}")
 
-    def send_picture(self, img: cv2.typing.MatLike, img_id: int = 0) -> None:
+    def send_picture(
+        self, img: cv2.typing.MatLike, img_id: int = 0, img_name: str = ""
+    ) -> None:
         """通过UDP发送单张图片
 
         Args:
             img: OpenCV图像
-            img_id: 图片ID，用于区分不同的图像流
+            img_id: 图片ID，用于网格位置索引
+            img_name: 图像名称，可打印ASCII，最长8字符
 
         Raises:
-            ValueError: 如果 img_id 不在 0-255 范围内
+            ValueError: 如果 img_id 不在 0-255 范围内，或 img_name 不合法
         """
         if not (0 <= img_id <= 255):
             raise ValueError(f"img_id must be in range 0-255, got {img_id}")
+
+        if not all(0x20 <= ord(c) <= 0x7E for c in img_name):
+            raise ValueError(f"img_name must be printable ASCII, got {img_name!r}")
+        if len(img_name) > 8:
+            raise ValueError(f"img_name must be <= 8 chars, got {len(img_name)}")
 
         if self.cli_socket is None:
             raise RuntimeError("Socket is not initialized.")
@@ -63,17 +71,21 @@ class ImageSender:
         if not res:
             raise RuntimeError("Failed to encode picture")
 
-        # 新协议: [1字节ID][4字节大小][图片数据]
+        # 新协议: [1字节ID][8字节名称][4字节大小][图片数据]
+        name_bytes = img_name.encode("ascii").ljust(8, b"\x00")
         data = (
-            img_id.to_bytes(1, "big")  # 图片ID
-            + len(buf).to_bytes(4, "big")  # 图片大小
-            + buf.tobytes()  # 图片内容
+            img_id.to_bytes(1, "big")
+            + name_bytes
+            + len(buf).to_bytes(4, "big")
+            + buf.tobytes()
         )
 
         # UDP发送
         try:
             self.cli_socket.sendto(data, (self.host, self.port))
-            logging.debug(f"Picture sent with ID={img_id}, size={len(buf)}")
+            logging.debug(
+                f"Picture sent with ID={img_id}, name={img_name!r}, size={len(buf)}"
+            )
         except OSError as e:
             logging.error(f"UDP send failed: {e}")
             raise
@@ -85,25 +97,25 @@ class ImageSender:
         while running_flag[0]:
             try:
                 # 测速
-                # thread_cur_t = time.perf_counter()
-                # thread_t_log += 1
-                # thread_t_sum += thread_cur_t - thread_pre_t
-                # if thread_t_log % 10 == 0:
-                #     thread_t_log = 0
-                #     logging.info(
-                #         f"send thread frequence:{1 / (thread_t_sum / 10):.6f} Hz"
-                #     )
-                #     thread_t_sum = 0.0
-                # thread_pre_t = thread_cur_t
+                thread_cur_t = time.perf_counter()
+                thread_t_log += 1
+                thread_t_sum += thread_cur_t - thread_pre_t
+                if thread_t_log % 10 == 0:
+                    thread_t_log = 0
+                    logging.info(
+                        f"send thread frequence:{1 / (thread_t_sum / 10):.6f} Hz"
+                    )
+                    thread_t_sum = 0.0
+                thread_pre_t = thread_cur_t
 
                 # 轮询所有队列
                 any_sent = False
                 for img_id, queue in enumerate(queues):
                     if not queue.empty():
                         try:
-                            img = queue.get_nowait()
+                            img, img_name = queue.get_nowait()
                             if img is not None:
-                                self.send_picture(img, img_id)
+                                self.send_picture(img, img_id, img_name)
                             queue.task_done()
                             any_sent = True
                         except Empty:
@@ -145,12 +157,15 @@ class ImageSender:
         self.send_thread.start()
         logging.info(f"Send thread started for {num_images} images.")
 
-    def enqueue_image(self, img: cv2.typing.MatLike, img_id: int = 0) -> None:
+    def enqueue_image(
+        self, img: cv2.typing.MatLike, img_id: int = 0, img_name: str = ""
+    ) -> None:
         """将图片放入对应ID的发送队列
 
         Args:
             img: OpenCV图像
             img_id: 图片队列ID (0 到 num_images-1)
+            img_name: 图像名称
         """
         if self.img_queues is None:
             raise RuntimeError("Sender is not started.")
@@ -161,7 +176,7 @@ class ImageSender:
             )
 
         if not self.img_queues[img_id].full():
-            self.img_queues[img_id].put(img)
+            self.img_queues[img_id].put((img, img_name))
         else:
             logging.debug(f"Queue {img_id} full, dropping frame.")
 
@@ -265,7 +280,7 @@ if __name__ == "__main__":
     try:
         with CameraCapture(0) as camera, ImageSender(host, port) as sender:
             sender.connect()
-            sender.start_sending(num_images=3)  # 启动3个图像流
+            sender.start_sending(num_images=5)  # 启动3个图像流
 
             # cap = cv2.VideoCapture("test2.avi")
 
@@ -292,10 +307,14 @@ if __name__ == "__main__":
                     img0 = img.copy()
                     img1 = img.copy()
                     img2 = img.copy()
+                    img3 = img.copy()
+                    img4 = img.copy()
 
-                    sender.enqueue_image(img0, img_id=0)
-                    sender.enqueue_image(img1, img_id=1)
-                    sender.enqueue_image(img2, img_id=2)
+                    sender.enqueue_image(img0, img_id=0, img_name="img0")
+                    sender.enqueue_image(img1, img_id=1, img_name="img1")
+                    sender.enqueue_image(img2, img_id=2, img_name="img2")
+                    sender.enqueue_image(img3, img_id=3, img_name="img3")
+                    sender.enqueue_image(img4, img_id=4, img_name="img4")
 
                     if cv2.waitKey(20) & 0xFF == 27:
                         logging.info("User interrupted by ESC key.")
