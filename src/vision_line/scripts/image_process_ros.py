@@ -64,7 +64,7 @@ class ImageProcess:
 
         # 搜索配置参数
         self.search_range = 100  # 搜索范围（像素），向左/右搜索的最大距离
-        self.search_offset = 30  # 搜索偏移量（像素）
+        self.search_offset = 60  # 搜索偏移量（像素）
         self.init_stable_count = 5  # 初始连续点数阈值
 
     def preprocess(self):
@@ -654,14 +654,34 @@ class ImageProcess:
             for y in range(
                 int(img.shape[0] * down_ratio), int(img.shape[0] * up_ratio), -1
             ):
+                # 获取当前行内的跳变点
                 row_diff = diff[y]
-                # 左边：从白到黑，跳变为1
-                candidates = np.where(row_diff[:mid_x] == 1)[0]
+                # cv2.imshow(
+                #     "diff", (diff != 0).astype(np.uint8) * 255
+                # )  # 显示发生跳变的地方
+                # rospy.loginfo(f"len(row_diff): {len(row_diff)}")
+
+                # 左侧赛道线
+                # 获取搜索起点
+                left_start_x = self._get_search_start_point(
+                    y, prev_left, img.shape[1], is_left=True
+                )
+                # 如果是第一帧，从中线开始搜索；否则从上一帧边线点右侧开始搜索
+                search_start = mid_x if is_first_frame else left_start_x
+
+                # 绘制左边线搜索起点（紫色）
+                if is_draw:
+                    cv2.circle(canvas, (search_start, y), 3, (255, 0, 255), -1)
+
+                # 计算搜索终点（避免搜索超出范围）
+                search_end_left = max(0, search_start - self.search_range)
+
+                # 左边：从白到黑，跳变为1（搜索范围从小到大切片，取最右侧候选）
+                candidates = np.where(row_diff[search_end_left:search_start] == 1)[0]
 
                 if len(candidates) > 0:
-                    x = candidates[-1]
+                    x = search_end_left + candidates[-1]
 
-                    # 先进行稳定点检测
                     _ = self._add_point_with_stable_start(
                         self.left_line,
                         (x, y),
@@ -671,13 +691,30 @@ class ImageProcess:
                         self.y_continual,
                     )
 
-                # 右线
-                candidates = np.where(row_diff[mid_x:] == 1)[0]
-                if len(candidates) > 0:
-                    x = candidates[0] + mid_x
+                # 右侧赛道线
+                # 获取搜索起点
+                right_start_x = self._get_search_start_point(
+                    y, prev_right, img.shape[1], is_left=False
+                )
+                # 如果是第一帧，从中线开始搜索；否则从上一帧边线点左侧开始搜索
+                search_start = mid_x if is_first_frame else right_start_x
 
-                    # 先进行稳定点检测
-                    _ = self._add_point_with_stable_start(
+                # 绘制右边线搜索起点（青色）
+                if is_draw:
+                    cv2.circle(canvas, (search_start, y), 3, (255, 255, 0), -1)
+
+                # 计算搜索终点（避免搜索超出范围）
+                search_end_right = min(
+                    img.shape[1] - 1, search_start + self.search_range
+                )
+
+                # 右边：从黑到白，跳变为-1（取最左侧候选）
+                candidates = np.where(row_diff[search_start:search_end_right] == 1)[0]
+
+                if len(candidates) > 0:
+                    x = search_start + candidates[0]
+
+                    self._add_point_with_stable_start(
                         self.right_line,
                         (x, y),
                         right_stable_buf,
@@ -1348,7 +1385,7 @@ def run_ros_topic_mode():
 
                     imgprocess.fit_polynomial()
                     vision_msg = build_vision_line_msg(
-                        imgprocess.fit_mid_line,
+                        imgprocess.mid_line,
                         binary_img.shape,
                         original_shape,
                         target_y=vision_target_y,
@@ -1365,7 +1402,7 @@ def run_ros_topic_mode():
                     imgprocess.fit_polynomial()
 
                     vision_msg = build_vision_line_msg(
-                        imgprocess.fit_mid_line,
+                        imgprocess.mid_line,
                         binary_img.shape,
                         original_shape,
                         target_y=vision_target_y,
