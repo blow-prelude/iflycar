@@ -65,7 +65,7 @@ class ImageProcess:
 
         # 搜索配置参数
         self.search_range = 100  # 搜索范围（像素），向左/右搜索的最大距离
-        self.search_offset = 30  # 搜索偏移量（像素）
+        self.search_offset = 60  # 搜索偏移量（像素）
         self.init_stable_count = 5  # 初始连续点数阈值
 
     def preprocess(self):
@@ -639,6 +639,8 @@ class ImageProcess:
             canvas: 用于绘制的画布图像
             is_draw: 是否在canvas上绘制调试信息，默认为False
         """
+
+        # 从图像下方（靠近车辆）开始搜索
         mid_x = img.shape[1] // 2
         img_h, img_w = img.shape[:2]
         up_ratio = 0.55
@@ -1267,7 +1269,7 @@ class ROSImageReceiver:
             return self.latest_frame.copy()
 
 
-def build_vision_line_msg(line_points, processed_shape, original_shape, target_y=340.0):
+def build_vision_line_msg(line_points, processed_shape, original_shape, target_y=380.0):
     """构造 /vision_line 消息，格式为 [x_error, y_pixel]。"""
     msg = Float32MultiArray()
 
@@ -1305,7 +1307,7 @@ def run_ros_topic_mode():
     rospy.init_node("image_process", anonymous=True)
     image_topic = rospy.get_param("~image_topic", "ucar_camera/image_raw")
     vision_line_topic = rospy.get_param("~vision_line_topic", "/vision_line")
-    vision_target_y = rospy.get_param("~vision_target_y", 340.0)
+    vision_target_y = rospy.get_param("~vision_target_y", 380.0)
     turning_flag_param = rospy.get_param("~turning_flag_param", "/start_vision_line2")
 
     # TURNING 标志由视觉状态机驱动，启动时先清零。
@@ -1325,8 +1327,8 @@ def run_ros_topic_mode():
     dt = 0.0
     j = 0.0
 
-    straight_received = False
-    right_received = True
+    straight_received = True
+    right_received = False
     left_received = False
     corner_delay_s = 1.5
 
