@@ -443,9 +443,11 @@ class ImageProcess:
         return False
 
     def fit_polynomial(self):
-        """根据self.mid_line的原始值，用二次函数拟合曲线，返回曲线上的点的numpy数组 self.fit_mid_line"""
+        """分段线性拟合中线：近端和远端各用一次函数拟合，
+        当两段斜率差异较大时，根据远端方向给近端施加横向偏移。
+        """
         self.fit_mid_line = np.empty((0, 2), dtype=np.int32)
-        if len(self.mid_line) < 3:
+        if len(self.mid_line) < 4:
             logging.warning("Not enough points for polynomial fitting")
             return
 
@@ -453,17 +455,60 @@ class ImageProcess:
             y_points = self.mid_line[:, 1].astype(np.float64)
             x_points = self.mid_line[:, 0].astype(np.float64)
 
-            coefficients = np.polyfit(y_points, x_points, 2)
+            # 按 y 中值分为远端（小 y，图像上方）和近端（大 y，图像下方）
+            y_mid = (y_points.min() + y_points.max()) / 2.0
+            near_mask = y_points >= y_mid
+            far_mask = ~near_mask
 
-            y_min = int(y_points.min())
-            y_max = int(y_points.max())
-            ys = np.arange(y_min, y_max + 1, dtype=np.float64)
-            xs = np.polyval(coefficients, ys).astype(np.int32)
-            self.fit_mid_line = np.stack([xs, ys.astype(np.int32)], axis=1)
+            if np.sum(near_mask) < 2 or np.sum(far_mask) < 2:
+                # 某段点数不足，退化为整体一次拟合
+                coeff = np.polyfit(y_points, x_points, 1)
+                ys = np.arange(
+                    int(y_points.min()), int(y_points.max()) + 1, dtype=np.float64
+                )
+                xs = np.polyval(coeff, ys).astype(np.int32)
+                self.fit_mid_line = np.stack([xs, ys.astype(np.int32)], axis=1)
+                return
+
+            # 分段一次拟合 x = k*y + b
+            near_y, near_x = y_points[near_mask], x_points[near_mask]
+            far_y, far_x = y_points[far_mask], x_points[far_mask]
+
+            near_coeff = np.polyfit(near_y, near_x, 1)  # [k_near, b_near]
+            far_coeff = np.polyfit(far_y, far_x, 1)  # [k_far, b_far]
+
+            k_near, k_far = near_coeff[0], far_coeff[0]
+
+            # 计算两直线夹角
+            angle = self.get_angle_k(k_near, k_far)
+
+            offset = 0
+            angle_thresh = 15.0  # 度
+            max_offset = 20  # 最大偏移像素
+
+            if angle > angle_thresh:
+                # k_far < 0 → 远端斜向右上 → 正偏移(右)
+                # k_far > 0 → 远端斜向左上 → 负偏移(左)
+                offset = int(-np.sign(k_far) * min(angle / 45.0, 1.0) * max_offset)
+
+            # 生成近端拟合点（含偏移）
+            near_ys = np.arange(
+                int(near_y.min()), int(near_y.max()) + 1, dtype=np.float64
+            )
+            near_xs = np.polyval(near_coeff, near_ys).astype(np.int32) + offset
+
+            # 生成远端拟合点
+            far_ys = np.arange(int(far_y.min()), int(far_y.max()) + 1, dtype=np.float64)
+            far_xs = np.polyval(far_coeff, far_ys).astype(np.int32)
+
+            near_pts = np.stack([near_xs, near_ys.astype(np.int32)], axis=1)
+            far_pts = np.stack([far_xs, far_ys.astype(np.int32)], axis=1)
+
+            self.fit_mid_line = np.vstack([far_pts, near_pts])
 
             logging.debug(
-                f"Polynomial fitting completed: {len(self.fit_mid_line)} points, "
-                f"coefficients: {coefficients}"
+                f"Two-segment fit: near_k={k_near:.3f}, far_k={k_far:.3f}, "
+                f"angle={angle:.1f}°, offset={offset}px"
             )
         except Exception as e:
             logging.error(f"Error occurred during polynomial fitting: {e}")
@@ -1221,7 +1266,7 @@ class ImageProcess:
 
 def main_video():
     # 视频文件路径
-    video_path = r"D:\programs\ucar_ws\src\vision_line\videos\test2.avi"
+    video_path = r"D:\programs\ucar_ws\src\vision_line\videos\test1.avi"
 
     # 打开视频文件
     cap = cv2.VideoCapture(video_path)

@@ -44,21 +44,22 @@ class ImageProcess:
         self.img_path = img_path
         self.frame = img
         self.canvas = None
-        self.left_line = []
-        self.right_line = []
-        self.supple_left_line = []
-        self.supple_right_line = []
-        self.mid_line = []
-        self.fit_mid_line = []
+        _empty = np.empty((0, 2), dtype=np.int32)
+        self.left_line = _empty.copy()
+        self.right_line = _empty.copy()
+        self.supple_left_line = _empty.copy()
+        self.supple_right_line = _empty.copy()
+        self.mid_line = _empty.copy()
+        self.fit_mid_line = _empty.copy()
 
         self.left_c = None  # 本帧左边线拐点 (x, y)，未检测到时为 None
         self.right_c = None  # 本帧右边线拐点 (x, y)，未检测到时为 None
 
         # 上一帧的边线信息（用于指导当前帧搜索）
-        self.prev_left_line = []  # 上一帧的左边线点列表
-        self.prev_right_line = []  # 上一帧的右边线点列表
-        self.prev_supple_left_line = []  # 上一帧优化后的左边线
-        self.prev_supple_right_line = []  # 上一帧优化后的右边线
+        self.prev_left_line = _empty.copy()
+        self.prev_right_line = _empty.copy()
+        self.prev_supple_left_line = _empty.copy()
+        self.prev_supple_right_line = _empty.copy()
 
         self.x_continual = 15
         self.y_continual = 5
@@ -235,43 +236,23 @@ class ImageProcess:
 
         Args:
             y_coord: 当前搜索行的y坐标
-            prev_line: 上一帧的边线点列表
+            prev_line: 上一帧的边线点 numpy数组 (N, 2)
             img_width: 图像宽度
             is_left: 是否为左边线（True=左边线，False=右边线）
 
         Returns:
             int: 搜索起点的x坐标，如果没有上一帧信息则返回中线位置
         """
-        # 如果没有上一帧信息，返回图像中线
         if len(prev_line) == 0:
             return img_width // 2
+        best_idx = np.argmin(np.abs(prev_line[:, 1] - y_coord))
+        prev_x = int(prev_line[best_idx, 0])
 
-        # 在上一帧边线中查找y坐标最接近的点
-        best_match = None
-        min_y_diff = float("inf")
-
-        for point in prev_line:
-            x, y = point
-            y_diff = abs(y - y_coord)
-            if y_diff < min_y_diff:
-                min_y_diff = y_diff
-                best_match = point
-
-        if best_match is not None:
-            prev_x, prev_y = best_match
-            # 左边线：从上一帧点的右侧偏移位置开始向左搜索
-            # 右边线：从上一帧点的左侧偏移位置开始向右搜索
-            if is_left:
-                start_x = prev_x + self.search_offset
-            else:
-                start_x = prev_x - self.search_offset
-
-            # 边界检查
-            start_x = max(0, min(start_x, img_width - 1))
-            return start_x
-
-        # 如果没有找到匹配点，返回中线
-        return img_width // 2
+        if is_left:
+            start_x = prev_x + self.search_offset
+        else:
+            start_x = prev_x - self.search_offset
+        return max(0, min(start_x, img_width - 1))
 
     def _add_point_with_stable_start(
         self, line, point, stable_buf, stable, x_thresh, y_thresh
@@ -335,7 +316,7 @@ class ImageProcess:
         使用np向量化，加快效率
         """
         if len(line_points) < 2:
-            return line_points.copy()
+            return np.asarray(line_points, dtype=np.int32).reshape(-1, 2).copy()
 
         pts = np.array(line_points, dtype=np.int32)
 
@@ -374,66 +355,55 @@ class ImageProcess:
                 result.extend(map(tuple, interp_pts))
 
         result.append(tuple(pts[-1]))
-
-        return result
+        return np.array(result, dtype=np.int32).reshape(-1, 2)
 
     def _fill_boundary(self, left_line, right_line, img_shape):
         """将边线延伸到图像边界，防止计算中线时越界
 
         Args:
-            left_line: 左边线点列表
-            right_line: 右边线点列表
+            left_line: 左边线 numpy数组 (N, 2)
+            right_line: 右边线 numpy数组 (N, 2)
             img_shape: 图像形状 (height, width)
 
         Returns:
-            (填充后的左边线, 填充后的右边线)
+            (填充后的左边线, 填充后的右边线) 均为 numpy数组
         """
         img_height, img_width = img_shape[0], img_shape[1]
 
-        # 左边线边界填充
         if len(left_line) > 0:
-            bottom_y = left_line[0][1]
-            ys = np.arange(img_height - 1, bottom_y, -2)
+            bottom_y = int(left_line[0, 1])
+            ys = np.arange(img_height - 1, bottom_y, -2, dtype=np.int32)
             xs = np.zeros_like(ys)
+            bottom_pts = np.stack([xs, ys], axis=1)
+            left_line = np.vstack([bottom_pts, left_line])
 
-            temp_left_line = list(zip(xs.tolist(), ys.tolist()))
-            left_line = temp_left_line + left_line
-
-        # 右边线边界填充
         if len(right_line) > 0:
-            bottom_y = right_line[0][1]
-
-            ys = np.arange(img_height - 1, bottom_y, -2)
+            bottom_y = int(right_line[0, 1])
+            ys = np.arange(img_height - 1, bottom_y, -2, dtype=np.int32)
             xs = np.full_like(ys, img_width - 1)
-
-            temp_right_line = list(zip(xs.tolist(), ys.tolist()))
-            right_line = temp_right_line + right_line
+            bottom_pts = np.stack([xs, ys], axis=1)
+            right_line = np.vstack([bottom_pts, right_line])
 
         return left_line, right_line
 
     def fit_polynomial(self):
-        """根据self.mid_line的原始值，用二次函数拟合曲线，返回曲线上的点的列表 self.fit_mid_line"""
-        self.fit_mid_line = []
+        """根据self.mid_line的原始值，用二次函数拟合曲线，返回曲线上的点的numpy数组 self.fit_mid_line"""
+        self.fit_mid_line = np.empty((0, 2), dtype=np.int32)
         if len(self.mid_line) < 3:
             rospy.logwarn("Not enough points for polynomial fitting")
             return
 
         try:
-            # 提取y和x坐标（y为自变量，x为因变量）
-            y_points = np.array([point[1] for point in self.mid_line])
-            x_points = np.array([point[0] for point in self.mid_line])
+            y_points = self.mid_line[:, 1].astype(np.float64)
+            x_points = self.mid_line[:, 0].astype(np.float64)
 
-            # 二次多项式拟合: x = a*y^2 + b*y + c
             coefficients = np.polyfit(y_points, x_points, 2)
 
-            # 生成y的序列（从最小y到最大y）
             y_min = int(y_points.min())
             y_max = int(y_points.max())
-
-            # 计算拟合曲线上的点
-            for y in range(y_min, y_max + 1):
-                x = int(np.polyval(coefficients, y))
-                self.fit_mid_line.append((x, y))
+            ys = np.arange(y_min, y_max + 1, dtype=np.float64)
+            xs = np.polyval(coefficients, ys).astype(np.int32)
+            self.fit_mid_line = np.stack([xs, ys.astype(np.int32)], axis=1)
 
             rospy.logdebug(
                 f"Polynomial fitting completed: {len(self.fit_mid_line)} points, "
@@ -459,8 +429,7 @@ class ImageProcess:
         # 左线缺失，右线存在
         if len(self.left_line) == 0 and len(self.right_line) > 0:
             supple_right = self._linear_interpolation(self.right_line)
-            supple_right = np.array(supple_right, dtype=np.int32)
-            bottom_y = supple_right[0][1]
+            bottom_y = int(supple_right[0, 1])
             if bottom_y < img_h - 1:
                 ys = np.arange(
                     img_h - 1, bottom_y, -2, dtype=np.int32
@@ -472,15 +441,13 @@ class ImageProcess:
             ys_all = supple_right[:, 1]
             boundary_left = np.stack([np.zeros_like(ys_all), ys_all], axis=1)
 
-            self.supple_left_line = list(map(tuple, boundary_left))
-            self.supple_right_line = list(map(tuple, supple_right))
+            self.supple_left_line = boundary_left
+            self.supple_right_line = supple_right
             return True
 
         if len(self.right_line) == 0 and len(self.left_line) > 0:
             supple_left = self._linear_interpolation(self.left_line)
-            supple_left = np.array(supple_left, dtype=np.int32)
-
-            bottom_y = supple_left[0, 1]
+            bottom_y = int(supple_left[0, 1])
 
             if bottom_y < img_h - 1:
                 ys = np.arange(img_h - 1, bottom_y, -2, dtype=np.int32)
@@ -491,8 +458,8 @@ class ImageProcess:
             ys_all = supple_left[:, 1]
             boundary_right = np.stack([np.full_like(ys_all, img_w - 1), ys_all], axis=1)
 
-            self.supple_right_line = list(map(tuple, boundary_right))
-            self.supple_left_line = list(map(tuple, supple_left))
+            self.supple_right_line = boundary_right
+            self.supple_left_line = supple_left
             return True
 
         return False
@@ -535,26 +502,20 @@ class ImageProcess:
         Args:
             img_shape: 图像形状 (h, w, ...)
             y_thresh: y 坐标阈值（归一化），默认 0.70
-            miss_line: 转弯期间是否丢先
+            miss_line: 转弯期间是否丢线
 
         Returns:
             bool: True 表示转弯结束，可以进入 TRACKING2 状态
-
-        一开始，两边还没有丢线，两边的y最小值接近；
-        转到一半有一边开始丢线，
-        转到最后两边都不丢线，说明转弯已经到位了
         """
-        # 丢线了，说明正在转弯，继续观察
         if len(self.left_line) == 0 or len(self.right_line) == 0:
             miss_line[0] = True
             return False
 
-        # 在丢线阶段，两边都没有丢线，说明转弯已经到位了
-        if miss_line[0] and abs(self.right_line[-1] - self.left_line[-1]) <= 20:
+        x_diff = abs(int(self.right_line[-1, 0]) - int(self.left_line[-1, 0]))
+        if miss_line[0] and x_diff <= 20:
             return True
 
-        # 可能没有丢线，但是两条边线x坐标重合，也认为丢线
-        if abs(self.right_line[-1] - self.left_line[-1]) <= 20:
+        if x_diff <= 20:
             miss_line[0] = True
             return False
 
@@ -646,13 +607,9 @@ class ImageProcess:
         up_ratio = 0.55
         down_ratio = 0.90
         try:
-            # 清空列表
-            self.left_line.clear()
-            self.right_line.clear()
-            self.supple_left_line.clear()
-            self.supple_right_line.clear()
-            self.mid_line.clear()
-            self.fit_mid_line.clear()
+            local_left_line = []
+            local_right_line = []
+            _empty = np.empty((0, 2), dtype=np.int32)
 
             # 逐行递推的搜索起点（初始为 mid_x）
             prev_row_left_x = mid_x
@@ -705,7 +662,7 @@ class ImageProcess:
                 if len(candidates) > 0:
                     x = search_end_left + candidates[-1]
                     left_added = self._add_point_with_stable_start(
-                        self.left_line,
+                        local_left_line,
                         (x, y),
                         left_stable_buf,
                         left_stable,
@@ -747,7 +704,7 @@ class ImageProcess:
                 if len(candidates) > 0:
                     x = search_start_right + candidates[0]
                     right_added = self._add_point_with_stable_start(
-                        self.right_line,
+                        local_right_line,
                         (x, y),
                         right_stable_buf,
                         right_stable,
@@ -767,30 +724,43 @@ class ImageProcess:
                     prev_row_right_x = mid_x + self.search_offset
                     right_miss_count = 0
 
+            # 转换为 numpy 数组
+            self.left_line = (
+                np.array(local_left_line, dtype=np.int32).reshape(-1, 2)
+                if local_left_line
+                else _empty.copy()
+            )
+            self.right_line = (
+                np.array(local_right_line, dtype=np.int32).reshape(-1, 2)
+                if local_right_line
+                else _empty.copy()
+            )
+            self.supple_left_line = _empty.copy()
+            self.supple_right_line = _empty.copy()
+            self.fit_mid_line = _empty.copy()
+
             # 如果没有丢线，就直接补线；反之要补线
             filled = self._fill_missing_line(img.shape)
             if not filled:
                 if len(self.left_line) > 0 and len(self.right_line) > 0:
-                    # 线性插值
                     self.supple_left_line = self._linear_interpolation(self.left_line)
                     self.supple_right_line = self._linear_interpolation(self.right_line)
 
-                    # 填充边界，使线段一直延伸到左右下角
                     self.supple_left_line, self.supple_right_line = self._fill_boundary(
                         self.supple_left_line, self.supple_right_line, img.shape
                     )
 
-            # 使用优化后的边线计算中线
-            for y in range(
-                min(len(self.supple_left_line), len(self.supple_right_line))
-            ):
-                mid_x = int(
-                    0.55 * self.supple_left_line[y][0]
-                    + 0.45 * self.supple_right_line[y][0]
-                )
-                # 使用边线点的实际y坐标，而不是循环索引
-                mid_y = self.supple_left_line[y][1]
-                self.mid_line.append((mid_x, mid_y))
+            # 使用优化后的边线计算中线（向量化）
+            n = min(len(self.supple_left_line), len(self.supple_right_line))
+            if n > 0:
+                mid_xs = (
+                    0.55 * self.supple_left_line[:n, 0]
+                    + 0.45 * self.supple_right_line[:n, 0]
+                ).astype(np.int32)
+                mid_ys = self.supple_left_line[:n, 1]
+                self.mid_line = np.stack([mid_xs, mid_ys], axis=1)
+            else:
+                self.mid_line = _empty.copy()
 
         except Exception as e:
             rospy.logerr(f"Error occurred during getting side lines : {e}")
@@ -821,13 +791,9 @@ class ImageProcess:
         mid_x = int(img.shape[1] // 2)
 
         try:
-            # 清空之前搜索到的赛道线
-            self.left_line.clear()
-            self.right_line.clear()
-            self.supple_left_line.clear()
-            self.supple_right_line.clear()
-            self.mid_line.clear()
-            self.fit_mid_line.clear()
+            local_left_line = []
+            local_right_line = []
+            _empty = np.empty((0, 2), dtype=np.int32)
             self.left_c = None
             self.right_c = None
 
@@ -853,7 +819,7 @@ class ImageProcess:
 
                     # 先进行稳定点检测
                     added = self._add_point_with_stable_start(
-                        self.left_line,
+                        local_left_line,
                         (x, y),
                         left_stable_buf,
                         left_stable,
@@ -886,7 +852,7 @@ class ImageProcess:
 
                     # 先进行稳定点检测
                     added = self._add_point_with_stable_start(
-                        self.right_line,
+                        local_right_line,
                         (x, y),
                         right_stable_buf,
                         right_stable,
@@ -914,26 +880,40 @@ class ImageProcess:
                         right_pre_p = right_cur_p
                         right_cur_p = right_nxt_p
 
+            # 转换为 numpy 数组
+            self.left_line = (
+                np.array(local_left_line, dtype=np.int32).reshape(-1, 2)
+                if local_left_line
+                else _empty.copy()
+            )
+            self.right_line = (
+                np.array(local_right_line, dtype=np.int32).reshape(-1, 2)
+                if local_right_line
+                else _empty.copy()
+            )
+            self.supple_left_line = _empty.copy()
+            self.supple_right_line = _empty.copy()
+            self.fit_mid_line = _empty.copy()
+
             # 线性补插，优化边线
             if len(self.left_line) > 0 and len(self.right_line) > 0:
-                # 线性插值
                 self.supple_left_line = self._linear_interpolation(self.left_line)
                 self.supple_right_line = self._linear_interpolation(self.right_line)
 
-                # 填充边界，使线段一直延伸到左右下角
                 self.supple_left_line, self.supple_right_line = self._fill_boundary(
                     self.supple_left_line, self.supple_right_line, img.shape
                 )
 
-            # 用优化后的边线计算中线
-            for j in range(
-                min(len(self.supple_left_line), len(self.supple_right_line))
-            ):
-                line_mid_x = (
-                    self.supple_left_line[j][0] + self.supple_right_line[j][0]
+            # 用优化后的边线计算中线（向量化）
+            n = min(len(self.supple_left_line), len(self.supple_right_line))
+            if n > 0:
+                mid_xs = (
+                    self.supple_left_line[:n, 0] + self.supple_right_line[:n, 0]
                 ) // 2
-                line_mid_y = self.supple_left_line[j][1]
-                self.mid_line.append((line_mid_x, line_mid_y))
+                mid_ys = self.supple_left_line[:n, 1]
+                self.mid_line = np.stack([mid_xs, mid_ys], axis=1)
+            else:
+                self.mid_line = _empty.copy()
 
             # 多项式拟合中线
             # self.fit_polynomial()
@@ -1011,16 +991,15 @@ class ImageProcess:
             rospy.logdebug(
                 f"length of left_line: {len(self.supple_left_line)} , lenth of right_line: {len(self.supple_right_line)}"
             )
-            # 绘制优化后的左边线（红色）
-            for i in range(len(self.supple_left_line)):
-                cv2.circle(canvas, self.supple_left_line[i], 2, (0, 0, 255), -1)
-            # 绘制优化后的右边线（绿色）
-            for i in range(len(self.supple_right_line)):
-                cv2.circle(canvas, self.supple_right_line[i], 2, (0, 0, 255), -1)
-            for i in range(len(self.mid_line)):
-                cv2.circle(canvas, self.mid_line[i], 2, (255, 0, 0), -1)
-            for i in range(len(self.fit_mid_line)):
-                cv2.circle(canvas, self.fit_mid_line[i], 2, (255, 255, 255), -1)
+            # 绘制优化后的边线和中线
+            for pt in self.supple_left_line.tolist():
+                cv2.circle(canvas, pt, 2, (0, 0, 255), -1)
+            for pt in self.supple_right_line.tolist():
+                cv2.circle(canvas, pt, 2, (0, 0, 255), -1)
+            for pt in self.mid_line.tolist():
+                cv2.circle(canvas, pt, 2, (255, 0, 0), -1)
+            for pt in self.fit_mid_line.tolist():
+                cv2.circle(canvas, pt, 2, (255, 255, 255), -1)
             return canvas
         except Exception as e:
             rospy.logerr(f"Error occurred during drawing lines: {e}")
@@ -1274,7 +1253,8 @@ def build_vision_line_msg(line_points, processed_shape, original_shape, target_y
     msg = Float32MultiArray()
 
     if (
-        not line_points
+        line_points is None
+        or len(line_points) == 0
         or processed_shape is None
         or original_shape is None
         or len(processed_shape) < 2
@@ -1293,7 +1273,10 @@ def build_vision_line_msg(line_points, processed_shape, original_shape, target_y
     scale_x = float(orig_w) / float(proc_w)
     scale_y = float(orig_h) / float(proc_h)
     target_y_proc = float(target_y) / scale_y
-    best_x, best_y = min(line_points, key=lambda p: abs(p[1] - target_y_proc))
+    # 找到 y 坐标最接近 target_y_proc 的点
+    y_diffs = np.abs(line_points[:, 1].astype(np.float64) - target_y_proc)
+    best_idx = np.argmin(y_diffs)
+    best_x, best_y = int(line_points[best_idx, 0]), int(line_points[best_idx, 1])
 
     x_raw = best_x * scale_x
     y_raw = best_y * scale_y
@@ -1431,7 +1414,7 @@ def run_ros_topic_mode():
                             binary_img.shape, miss_line=miss_line
                         ):
                             state = ProcessState.TRACKING2
-                            logging.info(
+                            rospy.loginfo(
                                 "State: TURNING -> TRACKING2 (turning end detected)"
                             )
 
