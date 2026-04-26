@@ -19,7 +19,7 @@ class ProcessState(Enum):
     CORNER = 2  # 延时已到，find_corner=True
     CROSS = 3  # 双拐点触发，find_corner=False，执行额外处理
     TURNING = 4  # 检测到停止线后的转弯状态
-    TRACKING2 = 7  # 转弯结束后的巡线状态
+    TRACKING2 = 7  # 转弯结束后的巡线状态，find_corner=False
 
 
 transformation_matrix = np.array(
@@ -506,16 +506,23 @@ class ImageProcess:
 
         Returns:
             bool: True 表示转弯结束，可以进入 TRACKING2 状态
+
+        一开始，两边还没有丢线，两边的y最小值接近；
+        转到一半有一边开始丢线，
+        转到最后两边都不丢线，说明转弯已经到位了
         """
+        # 检查边线是否存在
         if len(self.left_line) == 0 or len(self.right_line) == 0:
+            # logging.info("miss line in judge_turning_end")
             miss_line[0] = True
             return False
 
-        x_diff = abs(int(self.right_line[-1, 0]) - int(self.left_line[-1, 0]))
-        if miss_line[0] and x_diff <= 20:
+        # 在丢线阶段，两边都没有丢线，说明转弯已经到位了
+        if miss_line[0] and abs(self.right_line[-1][1] - self.left_line[-1][1]) <= 30:
             return True
 
-        if x_diff <= 20:
+        # 可能没有丢线，但是两条边线x坐标重合，也认为丢线
+        if abs(self.right_line[-1][0] - self.left_line[-1][0]) <= 50:
             miss_line[0] = True
             return False
 
@@ -1414,6 +1421,10 @@ def run_ros_topic_mode():
                             binary_img.shape, miss_line=miss_line
                         ):
                             state = ProcessState.TRACKING2
+                            rospy.set_param(turning_flag_param, 0)
+                            rospy.loginfo(
+                                f"Set turning flag param: {turning_flag_param}=0"
+                            )
                             rospy.loginfo(
                                 "State: TURNING -> TRACKING2 (turning end detected)"
                             )
