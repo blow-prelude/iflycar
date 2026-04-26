@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
+from picture_cli import ImageSender
 from sensor_msgs.msg import Image
 from std_msgs.msg import Float32MultiArray
 
@@ -386,7 +387,7 @@ class ImageProcess:
 
         return left_line, right_line
 
-    def fit_polynomial(self):
+    def fit_polynomial2(self):
         """根据self.mid_line的原始值，用二次函数拟合曲线，返回曲线上的点的numpy数组 self.fit_mid_line"""
         self.fit_mid_line = np.empty((0, 2), dtype=np.int32)
         if len(self.mid_line) < 3:
@@ -408,6 +409,77 @@ class ImageProcess:
             rospy.logdebug(
                 f"Polynomial fitting completed: {len(self.fit_mid_line)} points, "
                 f"coefficients: {coefficients}"
+            )
+        except Exception as e:
+            rospy.logerr(f"Error occurred during polynomial fitting: {e}")
+
+    def fit_polynomial(self):
+        """分段线性拟合中线：近端和远端各用一次函数拟合，
+        当两段斜率差异较大时，根据远端方向给近端施加横向偏移。
+        """
+        self.fit_mid_line = np.empty((0, 2), dtype=np.int32)
+        if len(self.mid_line) < 4:
+            rospy.logwarn("Not enough points for polynomial fitting")
+            return
+
+        try:
+            y_points = self.mid_line[:, 1].astype(np.float64)
+            x_points = self.mid_line[:, 0].astype(np.float64)
+
+            # 按 y 中值分为远端（小 y，图像上方）和近端（大 y，图像下方）
+            y_mid = (y_points.min() + y_points.max()) * 0.5
+            near_mask = y_points >= y_mid
+            far_mask = ~near_mask
+
+            if np.sum(near_mask) < 2 or np.sum(far_mask) < 2:
+                # 某段点数不足，退化为整体一次拟合
+                coeff = np.polyfit(y_points, x_points, 1)
+                ys = np.arange(
+                    int(y_points.min()), int(y_points.max()) + 1, dtype=np.float64
+                )
+                xs = np.polyval(coeff, ys).astype(np.int32)
+                self.fit_mid_line = np.stack([xs, ys.astype(np.int32)], axis=1)
+                return
+
+            # 分段一次拟合 x = k*y + b
+            near_y, near_x = y_points[near_mask], x_points[near_mask]
+            far_y, far_x = y_points[far_mask], x_points[far_mask]
+
+            near_coeff = np.polyfit(near_y, near_x, 1)  # [k_near, b_near]
+            far_coeff = np.polyfit(far_y, far_x, 1)  # [k_far, b_far]
+
+            k_near, k_far = near_coeff[0], far_coeff[0]
+
+            # 计算两直线夹角
+            angle = self.get_angle_k(k_near, k_far)
+
+            offset = 0
+            angle_thresh = 15.0  # 度
+            max_offset = 20  # 最大偏移像素
+
+            if angle > angle_thresh:
+                # k_far < 0 → 远端斜向右上 → 正偏移(右)
+                # k_far > 0 → 远端斜向左上 → 负偏移(左)
+                offset = int(-np.sign(k_far) * min(angle / 45.0, 1.0) * max_offset)
+
+            # 生成近端拟合点（含偏移）
+            near_ys = np.arange(
+                int(near_y.min()), int(near_y.max()) + 1, dtype=np.float64
+            )
+            near_xs = np.polyval(near_coeff, near_ys).astype(np.int32) + offset
+
+            # 生成远端拟合点
+            far_ys = np.arange(int(far_y.min()), int(far_y.max()) + 1, dtype=np.float64)
+            far_xs = np.polyval(far_coeff, far_ys).astype(np.int32)
+
+            near_pts = np.stack([near_xs, near_ys.astype(np.int32)], axis=1)
+            far_pts = np.stack([far_xs, far_ys.astype(np.int32)], axis=1)
+
+            self.fit_mid_line = np.vstack([far_pts, near_pts])
+
+            rospy.logdebug(
+                f"Two-segment fit: near_k={k_near:.3f}, far_k={k_far:.3f}, "
+                f"angle={angle:.1f}°, offset={offset}px"
             )
         except Exception as e:
             rospy.logerr(f"Error occurred during polynomial fitting: {e}")
@@ -1255,7 +1327,7 @@ class ROSImageReceiver:
             return self.latest_frame.copy()
 
 
-def build_vision_line_msg(line_points, processed_shape, original_shape, target_y=380.0):
+def build_vision_line_msg(line_points, processed_shape, original_shape, target_y=400.0):
     """构造 /vision_line 消息，格式为 [x_error, y_pixel]。"""
     msg = Float32MultiArray()
 
@@ -1297,7 +1369,7 @@ def run_ros_topic_mode():
     rospy.init_node("image_process", anonymous=True)
     image_topic = rospy.get_param("~image_topic", "ucar_camera/image_raw")
     vision_line_topic = rospy.get_param("~vision_line_topic", "/vision_line")
-    vision_target_y = rospy.get_param("~vision_target_y", 380.0)
+    vision_target_y = rospy.get_param("~vision_target_y", 400.0)
     turning_flag_param = rospy.get_param("~turning_flag_param", "/start_vision_line2")
 
     # TURNING 标志由视觉状态机驱动，启动时先清零。
@@ -1312,14 +1384,18 @@ def run_ros_topic_mode():
 
     imgprocess = ImageProcess()
 
+    ip = "192.168.208.45"
+    port = 12345
+    img_sender = ImageSender(ip, port)
+
     prev_t = None
     fps = 0.0
     dt = 0.0
     j = 0.0
 
-    straight_received = True
+    straight_received = False
     right_received = False
-    left_received = False
+    left_received = True
     corner_delay_s = 1.5
 
     state = ProcessState.IDLE
@@ -1329,6 +1405,11 @@ def run_ros_topic_mode():
     loop_rate = rospy.Rate(60)
 
     try:
+        # 连接服务器，开启发送线程
+        img_sender.connect()
+
+        img_sender.start_sending(2)
+
         while not rospy.is_shutdown():
             frame = image_receiver.get_latest_frame()
             if frame is None:
@@ -1441,11 +1522,14 @@ def run_ros_topic_mode():
                     canvas = imgprocess.draw_line(canvas, fps, state)
                     cv2.imshow("binary", binary_img)
                     cv2.imshow("processed_img", canvas)
+                    img_sender.enqueue_image(binary_img, img_id=0, img_name="binary")
+                    img_sender.enqueue_image(canvas, img_id=1, img_name="process")
+
                 elif state in (ProcessState.RIGHT_TRACKING, ProcessState.LEFT_TRACKING):
                     canvas = imgprocess.return_frame()
 
                     imgprocess.get_side_line_task_1(binary_img, canvas, is_draw=True)
-                    imgprocess.fit_polynomial()
+                    imgprocess.fit_polynomial2()
 
                     vision_msg = build_vision_line_msg(
                         imgprocess.fit_mid_line,
@@ -1458,6 +1542,8 @@ def run_ros_topic_mode():
                     canvas = imgprocess.draw_line(canvas, fps, state)
                     cv2.imshow("binary", binary_img)
                     cv2.imshow("processed_img", canvas)
+                    img_sender.enqueue_image(binary_img, img_id=0, img_name="binary")
+                    img_sender.enqueue_image(canvas, img_id=1, img_name="process")
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
