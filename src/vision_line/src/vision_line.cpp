@@ -14,8 +14,8 @@ private:
     const double MIN_LINEAR_VEL = 0.05;    // 最小线速度 (m/s)
     const int PIXEL_ERROR_THRESHOLD = 10;  // x 误差收敛阈值
     const int STABLE_COUNT_THRESHOLD = 5;  // 误差稳定计数阈值
-    const int Y_LOWER_BOUND = 320;         // y 值有效范围下限
-    const int Y_UPPER_BOUND = 360;         // y 值有效范围上限
+    const int Y_LOWER_BOUND = 340;         // y 值有效范围下限
+    const int Y_UPPER_BOUND = 420;         // y 值有效范围上限
     const double X_REFERENCE = 0.0;        // x 方向参考值
     const double Y_ERROR_TOLERANCE = 0.05; // y方向位置误差容忍值 (m)
     const double LOOP_RATE = 50.0;         // 主循环频率 (Hz)
@@ -59,7 +59,7 @@ private:
     void initPID()
     {
         // 角速度PID参数
-        angular_pid_ = {0.0005, 0.0, 0.008, 0, 0, 0, MAX_ANGULAR_VEL};
+        angular_pid_ = {0.005, 0.0, 0.008, 0, 0, 0, MAX_ANGULAR_VEL};
         // 线速度PID参数
         linear_pid_ = {0.5, 0.01, 0.05, 0, 0, 0, MAX_LINEAR_VEL};
     }
@@ -156,7 +156,7 @@ public:
         vision_sub_ = nh_.subscribe("/vision_line", 10, &VisionErrorController::visionCallback, this);
 
         // 读取参数服务器配置
-        turning_angular_vel_ = nh_.param("/turning_angular_vel", 0.35);
+        turning_angular_vel_ = nh_.param("/turning_angular_vel", 0.5);
         initPID();
 
         // 打印初始化信息
@@ -195,7 +195,7 @@ public:
                 ROS_INFO("TURNING active: enter rotate mode");
             }
 
-            turning_angular_vel_ = nh_.param("/turning_angular_vel", 0.35);
+            turning_angular_vel_ = nh_.param("/turning_angular_vel", 0.5);
             cmd.angular.z = turning_angular_vel_;
             cmd_vel_pub_.publish(cmd);
             return;
