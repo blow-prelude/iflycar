@@ -1371,6 +1371,7 @@ def run_ros_topic_mode():
     vision_line_topic = rospy.get_param("~vision_line_topic", "/vision_line")
     vision_target_y = rospy.get_param("~vision_target_y", 400.0)
     turning_flag_param = rospy.get_param("~turning_flag_param", "/start_vision_line2")
+    turning_end_x_error_abs_max = rospy.get_param("~turning_end_x_error_abs_max", 15.0)
 
     # TURNING 标志由视觉状态机驱动，启动时先清零。
     rospy.set_param(turning_flag_param, 0)
@@ -1393,9 +1394,9 @@ def run_ros_topic_mode():
     dt = 0.0
     j = 0.0
 
-    straight_received = False
+    straight_received = True
     right_received = False
-    left_received = True
+    left_received = False
     corner_delay_s = 1.5
 
     state = ProcessState.IDLE
@@ -1471,8 +1472,10 @@ def run_ros_topic_mode():
                         find_corner=find_corner,
                     )
 
+                    imgprocess.fit_polynomial2()
+
                     if state == ProcessState.CORNER:
-                        if imgprocess.judge_enter_cross_state(binary_img.shape, 0.75):
+                        if imgprocess.judge_enter_cross_state(binary_img.shape, 0.70):
                             state = ProcessState.CROSS
                             rospy.loginfo(
                                 "State: CORNER -> CROSS (dual corner detected)"
@@ -1483,7 +1486,7 @@ def run_ros_topic_mode():
                             binary_img, is_draw=True, canvas=canvas
                         )
                         if stop_mid is not None and imgprocess.judge_enter_turning(
-                            stop_mid, binary_img.shape, y_thresh=0.70
+                            stop_mid, binary_img.shape, 0.65
                         ):
                             state = ProcessState.TURNING
                             rospy.set_param(turning_flag_param, 1)
@@ -1501,16 +1504,35 @@ def run_ros_topic_mode():
                         if imgprocess.judge_turning_end(
                             binary_img.shape, miss_line=miss_line
                         ):
-                            state = ProcessState.TRACKING2
-                            rospy.set_param(turning_flag_param, 0)
-                            rospy.loginfo(
-                                f"Set turning flag param: {turning_flag_param}=0"
-                            )
-                            rospy.loginfo(
-                                "State: TURNING -> TRACKING2 (turning end detected)"
-                            )
+                            if miss_line[0]:
+                                turning_mid_msg = build_vision_line_msg(
+                                    imgprocess.fit_mid_line,
+                                    binary_img.shape,
+                                    original_shape,
+                                    target_y=360.0,
+                                )
+                                x_error, y_pixel = (
+                                    turning_mid_msg.data[0],
+                                    turning_mid_msg.data[1],
+                                )
+                                rospy.loginfo(f"y_pixel:{y_pixel}")
+                                # 中线误差归零（或在阈值内）后才允许退出 TURNING。
+                                if (
+                                    y_pixel >= 0
+                                    and abs(x_error) <= turning_end_x_error_abs_max
+                                ):
+                                    state = ProcessState.TRACKING2
+                                    rospy.set_param(turning_flag_param, 0)
+                                    rospy.loginfo(
+                                        f"Set turning flag param: {turning_flag_param}=0"
+                                    )
+                                    rospy.loginfo(
+                                        "State: TURNING -> TRACKING2 (turning end detected, center error zeroed)"
+                                    )
 
-                    imgprocess.fit_polynomial()
+                    if state == ProcessState.TRACKING2:
+                        imgprocess.fit_polynomial()
+
                     vision_msg = build_vision_line_msg(
                         imgprocess.fit_mid_line,
                         binary_img.shape,
