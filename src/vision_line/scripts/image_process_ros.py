@@ -1483,7 +1483,7 @@ def run_ros_topic_mode():
                             binary_img, is_draw=True, canvas=canvas
                         )
                         if stop_mid is not None and imgprocess.judge_enter_turning(
-                            stop_mid, binary_img.shape
+                            stop_mid, binary_img.shape, y_thresh=0.70
                         ):
                             state = ProcessState.TURNING
                             rospy.set_param(turning_flag_param, 1)
