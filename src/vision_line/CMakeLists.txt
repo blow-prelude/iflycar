@@ -136,6 +136,7 @@ include_directories(
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
 add_executable(${PROJECT_NAME}_node src/vision_line.cpp)
+add_executable(${PROJECT_NAME}_node_fixed src/vision_line_fixed.cpp)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -149,6 +150,9 @@ add_executable(${PROJECT_NAME}_node src/vision_line.cpp)
 
 ## Specify libraries to link a library or executable target against
 target_link_libraries(${PROJECT_NAME}_node
+  ${catkin_LIBRARIES}
+)
+target_link_libraries(${PROJECT_NAME}_node_fixed
   ${catkin_LIBRARIES}
 )
 
