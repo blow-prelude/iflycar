@@ -361,32 +361,69 @@ class ImageProcess:
         result.append(tuple(pts[-1]))
         return np.array(result, dtype=np.int32).reshape(-1, 2)
 
-    def _fill_boundary(self, left_line, right_line, img_shape):
-        """将边线延伸到图像边界，防止计算中线时越界
+    def _fill_boundary(self, left_line, right_line, img_shape, down_ratio=0.90):
+        """将边线延伸到指定y位置，处理丢线情况
+
+        三种情况：
+        1. 两边都有线：插值后填充到底部
+        2. 一边丢线：存在的一边插值填充，缺失的一边用图像边界替代
 
         Args:
             left_line: 左边线 numpy数组 (N, 2)
             right_line: 右边线 numpy数组 (N, 2)
             img_shape: 图像形状 (height, width)
+            down_ratio: 填充到的y坐标比例（归一化），默认0.90
 
         Returns:
             (填充后的左边线, 填充后的右边线) 均为 numpy数组
         """
-        img_height, img_width = img_shape[0], img_shape[1]
+        img_h, img_w = img_shape[0], img_shape[1]
+        bottom_y_limit = int(down_ratio * img_h)
 
-        if len(left_line) > 0:
-            bottom_y = int(left_line[0, 1])
-            ys = np.arange(img_height - 1, bottom_y, -2, dtype=np.int32)
-            xs = np.zeros_like(ys)
-            bottom_pts = np.stack([xs, ys], axis=1)
-            left_line = np.vstack([bottom_pts, left_line])
+        # 两边都有线：插值 + 填充到底部
+        if len(left_line) > 0 and len(right_line) > 0:
+            supple_left = self._linear_interpolation(left_line)
+            supple_right = self._linear_interpolation(right_line)
 
-        if len(right_line) > 0:
-            bottom_y = int(right_line[0, 1])
-            ys = np.arange(img_height - 1, bottom_y, -2, dtype=np.int32)
-            xs = np.full_like(ys, img_width - 1)
-            bottom_pts = np.stack([xs, ys], axis=1)
-            right_line = np.vstack([bottom_pts, right_line])
+            bottom_y = int(supple_left[0, 1])
+            if bottom_y < bottom_y_limit:
+                ys = np.arange(bottom_y_limit, bottom_y, -2, dtype=np.int32)
+                xs = np.zeros_like(ys)
+                supple_left = np.vstack([np.stack([xs, ys], axis=1), supple_left])
+
+            bottom_y = int(supple_right[0, 1])
+            if bottom_y < bottom_y_limit:
+                ys = np.arange(bottom_y_limit, bottom_y, -2, dtype=np.int32)
+                xs = np.full_like(ys, img_w - 1)
+                supple_right = np.vstack([np.stack([xs, ys], axis=1), supple_right])
+
+            return supple_left, supple_right
+
+        # 左边丢线，右边存在
+        if len(left_line) == 0 and len(right_line) > 0:
+            supple_right = self._linear_interpolation(right_line)
+            bottom_y = int(supple_right[0, 1])
+            if bottom_y < bottom_y_limit:
+                ys = np.arange(bottom_y_limit, bottom_y, -2, dtype=np.int32)
+                xs = np.full_like(ys, img_w - 1)
+                supple_right = np.vstack([np.stack([xs, ys], axis=1), supple_right])
+
+            ys_all = supple_right[:, 1]
+            boundary_left = np.stack([np.zeros_like(ys_all), ys_all], axis=1)
+            return boundary_left, supple_right
+
+        # 右边丢线，左边存在
+        if len(right_line) == 0 and len(left_line) > 0:
+            supple_left = self._linear_interpolation(left_line)
+            bottom_y = int(supple_left[0, 1])
+            if bottom_y < bottom_y_limit:
+                ys = np.arange(bottom_y_limit, bottom_y, -2, dtype=np.int32)
+                xs = np.zeros_like(ys)
+                supple_left = np.vstack([np.stack([xs, ys], axis=1), supple_left])
+
+            ys_all = supple_left[:, 1]
+            boundary_right = np.stack([np.full_like(ys_all, img_w - 1), ys_all], axis=1)
+            return supple_left, boundary_right
 
         return left_line, right_line
 
@@ -646,7 +683,25 @@ class ImageProcess:
 
         return (mid_x, mid_y)
 
-    def get_side_line_task_1(self, img, canvas, is_draw=False):
+    def offset_line(self, line, offset):
+        """将边线整体在 x 方向偏移指定像素数
+
+        Args:
+            line: 边线点 numpy 数组 (N, 2)，每行为 (x, y)
+            offset: x 方向偏移量（像素），正数向右，负数向左
+
+        Returns:
+            numpy 数组: 偏移后的边线，形状与输入相同
+        """
+        if len(line) == 0:
+            return line.copy()
+        result = line.copy()
+        result[:, 0] += offset
+        return result
+
+    def get_side_line_task_1(
+        self, img, canvas, is_draw=False, up_ratio=0.55, down_ratio=0.90
+    ):
         """从图像的中线往两边搜索，获取赛道边线
 
         使用同帧逐行递推决定搜索起点，搜索窗口越往上越窄。
@@ -658,8 +713,6 @@ class ImageProcess:
         """
         mid_x = img.shape[1] // 2
         img_h, img_w = img.shape[:2]
-        up_ratio = 0.55
-        down_ratio = 0.90
         try:
             local_left_line = []
             local_right_line = []
@@ -785,16 +838,10 @@ class ImageProcess:
             self.supple_right_line = _empty.copy()
             self.fit_mid_line = _empty.copy()
 
-            # 如果没有丢线，就直接补线；反之要补线
-            filled = self._fill_missing_line(img.shape)
-            if not filled:
-                if len(self.left_line) > 0 and len(self.right_line) > 0:
-                    self.supple_left_line = self._linear_interpolation(self.left_line)
-                    self.supple_right_line = self._linear_interpolation(self.right_line)
-
-                    self.supple_left_line, self.supple_right_line = self._fill_boundary(
-                        self.supple_left_line, self.supple_right_line, img.shape
-                    )
+            # 插值 + 填充边线（同时处理丢线情况）
+            self.supple_left_line, self.supple_right_line = self._fill_boundary(
+                self.left_line, self.right_line, img.shape
+            )
 
             # 使用优化后的边线计算中线（向量化）
             n = min(len(self.supple_left_line), len(self.supple_right_line))
@@ -813,7 +860,15 @@ class ImageProcess:
             # 更新上一帧的边线信息
             self._update_prev_frame_lines()
 
-    def get_side_line_task_2(self, img, canvas, is_draw=False, find_corner=False):
+    def get_side_line_task_2(
+        self,
+        img,
+        canvas,
+        is_draw=False,
+        find_corner=False,
+        up_ratio=0.55,
+        down_ratio=0.90,
+    ):
         """从图像的中线往两边搜索，获取赛道边线
 
         Args:
@@ -823,17 +878,18 @@ class ImageProcess:
             find_corner: 是否搜寻拐点
         """
         # 从图像中间向两边搜索，获取边线
-        up_ratio = 0.55
-        down_ratio = 0.95
 
+        # 拐点检测角度阈值
         angle_high_thresh = 135
         angle_low_thresh = 45
 
+        # 拐点检测
         left_nxt_p, left_cur_p, left_pre_p = None, None, None
         right_nxt_p, right_cur_p, right_pre_p = None, None, None
-
         find_left_corner, find_right_corner = False, False
+
         mid_x = int(img.shape[1] // 2)
+        img_h, img_w = img.shape[:2]
 
         try:
             local_left_line = []
@@ -842,6 +898,15 @@ class ImageProcess:
             self.left_c = None
             self.right_c = None
 
+            # 逐行递推的搜索起点（初始为 mid_x）
+            prev_row_left_x = mid_x
+            prev_row_right_x = mid_x
+
+            # miss 计数（只在 stable 后计数）
+            left_miss_count = 0
+            right_miss_count = 0
+            miss_threshold = 3
+
             # 稳定点缓冲区及标志
             left_stable_buf = []
             right_stable_buf = []
@@ -849,21 +914,41 @@ class ImageProcess:
             right_stable = [False]
 
             diff = np.diff(img == 0, axis=1)  # 计算行内黑白跳变  右-左
-            cv2.imshow("diff", (diff != 0).astype(np.uint8) * 255)  # 显示发生跳变的地方
+            # cv2.imshow("diff", (diff != 0).astype(np.uint8) * 255)  # 显示发生跳变的地方
 
             # 从图像下方（靠近车辆）开始搜索
             for y in range(
                 int(img.shape[0] * down_ratio), int(img.shape[0] * up_ratio), -1
             ):
                 row_diff = diff[y]
-                # 左边：从白到黑，跳变为1
-                candidates = np.where(row_diff[:mid_x] == 1)[0]
+
+                # 动态搜索窗口：二段阶梯
+                y_norm = y / img_h
+                cur_range = 50 if y_norm > 0.6 else 30
+
+                # --- 左侧赛道线 ---
+                if left_stable[0]:
+                    search_start_left = min(prev_row_left_x + cur_range, img_w - 1)
+                    search_end_left = max(0, prev_row_left_x - cur_range)
+                # 默认从中间偏左一直搜索到左边界
+                else:
+                    search_start_left = mid_x - self.search_offset
+                    search_end_left = 0
+
+                if is_draw:
+                    cv2.circle(canvas, (search_start_left, y), 1, (0, 255, 255), -1)
+                    cv2.circle(canvas, (search_end_left, y), 1, (0, 255, 255), -1)
+
+                candidates = np.where(row_diff[search_end_left:search_start_left] == 1)[
+                    0
+                ]
+                left_added = False
 
                 if len(candidates) > 0:
-                    x = candidates[-1]
+                    x = candidates[-1] + search_end_left
 
                     # 先进行稳定点检测
-                    added = self._add_point_with_stable_start(
+                    left_added = self._add_point_with_stable_start(
                         local_left_line,
                         (x, y),
                         left_stable_buf,
@@ -872,31 +957,62 @@ class ImageProcess:
                         self.y_continual,
                     )
 
-                    # 只有稳定点才参与拐点检测
-                    if added and find_corner and not find_left_corner:
-                        left_nxt_p = (x, y)
-                        if left_cur_p is not None and left_pre_p is not None:
-                            angle = self.get_angle_p(left_nxt_p, left_cur_p, left_pre_p)
-                            logging.debug(
-                                f"left line angle: {angle} , pre_p: {left_pre_p},  cur_p: {left_cur_p} , nxt_p: {left_nxt_p}"
-                            )
-                            if angle_low_thresh < angle < angle_high_thresh:
-                                logging.debug(
-                                    f"slope mutation , angle: {angle} ,pre_p:{left_pre_p} , cur_p: {left_cur_p} , nxt_p: {left_nxt_p} "
+                    # 如果当前行的点没有被加入正式边线，则下一行的搜索起点不更新；反之才更新
+                    if left_added:
+                        prev_row_left_x = x
+                        # 只有稳定点才参与拐点检测
+                        if find_corner and not find_left_corner:
+                            left_nxt_p = (x, y)
+                            if left_cur_p is not None and left_pre_p is not None:
+                                angle = self.get_angle_p(
+                                    left_nxt_p, left_cur_p, left_pre_p
                                 )
-                                self.left_c = left_cur_p
-                                find_left_corner = True
-                        # 更新点
-                        left_pre_p = left_cur_p
-                        left_cur_p = left_nxt_p
+                                logging.debug(
+                                    f"left line angle: {angle} , pre_p: {left_pre_p},  cur_p: {left_cur_p} , nxt_p: {left_nxt_p}"
+                                )
+                                if angle_low_thresh < angle < angle_high_thresh:
+                                    logging.debug(
+                                        f"slope mutation , angle: {angle} ,pre_p:{left_pre_p} , cur_p: {left_cur_p} , nxt_p: {left_nxt_p} "
+                                    )
+                                    self.left_c = left_cur_p
+                                    find_left_corner = True
+                            # 更新点
+                            left_pre_p = left_cur_p
+                            left_cur_p = left_nxt_p
+
+                    # miss 计数（只在 stable 后）,如果连续丢失多个点就恢复默认搜索范围
+                    if left_stable[0] and not left_added:
+                        left_miss_count += 1
+                    else:
+                        left_miss_count = 0
+
+                    if left_miss_count >= miss_threshold:
+                        prev_row_left_x = mid_x - self.search_offset
+                        left_miss_count = 0
 
                 # 右线
-                candidates = np.where(row_diff[mid_x:] == 1)[0]
+                if right_stable[0]:
+                    search_start_right = max(
+                        0, min(prev_row_right_x - cur_range, img_w - 1)
+                    )
+                    search_end_right = min(img_w - 1, prev_row_right_x + cur_range)
+                else:
+                    search_start_right = mid_x + self.search_offset
+                    search_end_right = img_w - 1
+
+                if is_draw:
+                    cv2.circle(canvas, (search_start_right, y), 1, (255, 255, 0), -1)
+                    cv2.circle(canvas, (search_end_right, y), 1, (255, 255, 0), -1)
+
+                candidates = np.where(
+                    row_diff[search_start_right:search_end_right] == 1
+                )[0]
+                right_added = False
                 if len(candidates) > 0:
-                    x = candidates[0] + mid_x
+                    x = candidates[0] + search_start_right
 
                     # 先进行稳定点检测
-                    added = self._add_point_with_stable_start(
+                    right_added = self._add_point_with_stable_start(
                         local_right_line,
                         (x, y),
                         right_stable_buf,
@@ -904,26 +1020,38 @@ class ImageProcess:
                         self.x_continual,
                         self.y_continual,
                     )
+                    if right_added:
+                        prev_row_right_x = x
 
-                    # 只有稳定点才参与拐点检测
-                    if added and find_corner and find_right_corner is False:
-                        right_nxt_p = (x, y)
-                        if right_cur_p is not None and right_pre_p is not None:
-                            angle = self.get_angle_p(
-                                right_nxt_p, right_cur_p, right_pre_p
-                            )
-                            logging.debug(
-                                f"right line angle: {angle} , pre_p: {right_pre_p},  cur_p: {right_cur_p} , nxt_p: {right_nxt_p}"
-                            )
-                            if angle_low_thresh < angle < angle_high_thresh:
-                                logging.debug(
-                                    f"slope mutation , angle: {angle} ,pre_p:{right_pre_p} cur_p: {right_cur_p} , nxt_p: {right_nxt_p} "
+                        # miss 计数（只在 stable 后）
+                        if right_stable[0] and not right_added:
+                            right_miss_count += 1
+                        else:
+                            right_miss_count = 0
+
+                        if right_miss_count >= miss_threshold:
+                            prev_row_right_x = mid_x + self.search_offset
+                            right_miss_count = 0
+
+                        # 只有稳定点才参与拐点检测
+                        if find_corner and find_right_corner is False:
+                            right_nxt_p = (x, y)
+                            if right_cur_p is not None and right_pre_p is not None:
+                                angle = self.get_angle_p(
+                                    right_nxt_p, right_cur_p, right_pre_p
                                 )
-                                self.right_c = right_cur_p
-                                find_right_corner = True
-                        # 更新点
-                        right_pre_p = right_cur_p
-                        right_cur_p = right_nxt_p
+                                logging.debug(
+                                    f"right line angle: {angle} , pre_p: {right_pre_p},  cur_p: {right_cur_p} , nxt_p: {right_nxt_p}"
+                                )
+                                if angle_low_thresh < angle < angle_high_thresh:
+                                    logging.debug(
+                                        f"slope mutation , angle: {angle} ,pre_p:{right_pre_p} cur_p: {right_cur_p} , nxt_p: {right_nxt_p} "
+                                    )
+                                    self.right_c = right_cur_p
+                                    find_right_corner = True
+                            # 更新点
+                            right_pre_p = right_cur_p
+                            right_cur_p = right_nxt_p
 
             # 转换为 numpy 数组
             self.left_line = (
@@ -940,14 +1068,10 @@ class ImageProcess:
             self.supple_right_line = _empty.copy()
             self.fit_mid_line = _empty.copy()
 
-            # 线性补插，优化边线
-            if len(self.left_line) > 0 and len(self.right_line) > 0:
-                self.supple_left_line = self._linear_interpolation(self.left_line)
-                self.supple_right_line = self._linear_interpolation(self.right_line)
-
-                self.supple_left_line, self.supple_right_line = self._fill_boundary(
-                    self.supple_left_line, self.supple_right_line, img.shape
-                )
+            # 插值 + 填充边线（同时处理丢线情况）
+            self.supple_left_line, self.supple_right_line = self._fill_boundary(
+                self.left_line, self.right_line, img.shape
+            )
 
             # 用优化后的边线计算中线（向量化）
             n = min(len(self.supple_left_line), len(self.supple_right_line))
@@ -1266,7 +1390,7 @@ class ImageProcess:
 
 def main_video():
     # 视频文件路径
-    video_path = r"D:\programs\ucar_ws\src\vision_line\videos\test1.avi"
+    video_path = r"D:\programs\ucar_ws\src\vision_line\videos\test2.avi"
 
     # 打开视频文件
     cap = cv2.VideoCapture(video_path)
