@@ -26,15 +26,6 @@ class ProcessState(Enum):
     TRACKING2 = 7  # 转弯后继续循迹
 
 
-transformation_matrix = np.array(
-    [
-        [-0.498345, -1.637252, 251.246087],
-        [-0.021773, 0.349689, -81.638093],
-        [-0.000241, -0.009225, 1.000000],
-    ]
-)
-
-
 class ImageProcess:
     def __init__(self, img_path=None, img=None):
         """
@@ -73,24 +64,36 @@ class ImageProcess:
         self.search_offset = 30  # 搜索偏移量（像素）
         self.init_stable_count = 5  # 初始连续点数阈值
 
-    def preprocess(self):
+        self.perspective_matrix = np.array(
+            [
+                [-0.498345, -1.637252, 251.246087],
+                [-0.021773, 0.349689, -81.638093],
+                [-0.000241, -0.009225, 1.000000],
+            ]
+        )
+
+    def preprocess(self, frame):
         try:
             if self.img_path is not None:
                 # 从图片文件读取
-                self.frame = cv2.imread(self.img_path)
+                frame = cv2.imread(self.img_path)
 
             if self.frame is not None:
+                frame = self.frame
+
+            if frame is not None:
                 # 如果图片太大，按比例缩小
-                if self.frame.shape[0] >= 240 or self.frame.shape[1] >= 320:
+                if frame.shape[0] >= 240 or frame.shape[1] >= 320:
                     # 将图片按比例缩小，使宽和高都不超过640和480
-                    h, w = self.frame.shape[:2]
+                    h, w = frame.shape[:2]
                     scale = min(240 / h, 320 / w)
                     new_h = int(h * scale)
                     new_w = int(w * scale)
-                    self.frame = cv2.resize(
-                        self.frame, (new_w, new_h), interpolation=cv2.INTER_AREA
+                    frame = cv2.resize(
+                        frame, (new_w, new_h), interpolation=cv2.INTER_AREA
                     )
-                gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
+                    self.frame = frame.copy()
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
                 # 大尺寸高斯模糊获取背景光照分布
                 # 核大小应根据图像尺寸调整，通常为图像宽度的1/5到1/3
@@ -133,36 +136,32 @@ class ImageProcess:
         Returns:
             透视变换后的图像，如果变换失败则返回None
         """
-        try:
-            if matrix is None:
-                logging.error("Perspective transform matrix is None")
-                return None
+        if matrix is None:
+            matrix = self.perspective_matrix
 
-            if img is None:
-                logging.error("Input image is None")
-                return None
-
-            # 如果没有指定输出尺寸，使用原图像尺寸
-            if output_size is None:
-                output_size = (img.shape[1], img.shape[0])  # (width, height)
-
-            # 执行透视变换
-            transformed_img = cv2.warpPerspective(
-                img,
-                matrix,
-                output_size,
-                flags=cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_REPLICATE,
+        if matrix is None:
+            raise ValueError(
+                "[perspective_transform]:Perspective transform matrix is None"
             )
 
-            logging.debug(
-                f"Perspective transform completed, output size: {output_size}"
-            )
-            return transformed_img
+        if img is None:
+            raise ValueError("[perspective_transform]:Input image is None")
 
-        except Exception as e:
-            logging.error(f"Error occurred during perspective transform: {e}")
-            return None
+        # 如果没有指定输出尺寸，使用原图像尺寸
+        if output_size is None:
+            output_size = (img.shape[1], img.shape[0])  # (width, height)
+
+        # 执行透视变换
+        transformed_img = cv2.warpPerspective(
+            img,
+            matrix,
+            output_size,
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+
+        logging.debug(f"Perspective transform completed, output size: {output_size}")
+        return transformed_img
 
     def get_perspective_matrix(self, src_points, dst_points):
         """根据源点和目标点计算透视变换矩阵
@@ -546,6 +545,32 @@ class ImageProcess:
             logging.debug(
                 f"Two-segment fit: near_k={k_near:.3f}, far_k={k_far:.3f}, "
                 f"angle={angle:.1f}°, offset={offset}px"
+            )
+        except Exception as e:
+            logging.error(f"Error occurred during polynomial fitting: {e}")
+
+    def fit_polynomial2(self):
+        """根据self.mid_line的原始值，用二次函数拟合曲线，返回曲线上的点的numpy数组 self.fit_mid_line"""
+        self.fit_mid_line = np.empty((0, 2), dtype=np.int32)
+        if len(self.mid_line) < 3:
+            logging.warning("Not enough points for polynomial fitting")
+            return
+
+        try:
+            y_points = self.mid_line[:, 1].astype(np.float64)
+            x_points = self.mid_line[:, 0].astype(np.float64)
+
+            coefficients = np.polyfit(y_points, x_points, 2)
+
+            y_min = int(y_points.min())
+            y_max = int(y_points.max())
+            ys = np.arange(y_min, y_max + 1, dtype=np.float64)
+            xs = np.polyval(coefficients, ys).astype(np.int32)
+            self.fit_mid_line = np.stack([xs, ys.astype(np.int32)], axis=1)
+
+            logging.debug(
+                f"Polynomial fitting completed: {len(self.fit_mid_line)} points, "
+                f"coefficients: {coefficients}"
             )
         except Exception as e:
             logging.error(f"Error occurred during polynomial fitting: {e}")
@@ -1390,7 +1415,7 @@ class ImageProcess:
 
 def main_video():
     # 视频文件路径
-    video_path = r"D:\programs\ucar_ws\src\vision_line\videos\test2.avi"
+    video_path = r"D:\programs\ucar_ws\src\vision_line\videos\test1.avi"
 
     # 打开视频文件
     cap = cv2.VideoCapture(video_path)
@@ -1471,10 +1496,10 @@ def main_video():
             # --- 非 IDLE 状态才执行图像处理 ---
             else:
                 # 保存当前帧到imgprocess
-                imgprocess.frame = frame
+                # imgprocess.frame = frame
 
                 # 预处理
-                binary_img = imgprocess.preprocess()
+                binary_img = imgprocess.preprocess(frame)
 
                 if state not in (
                     ProcessState.RIGHT_TRACKING,
@@ -1599,6 +1624,76 @@ def main_video():
         cv2.destroyAllWindows()
 
 
+def main_perspective():
+    # FPS 计算：使用高精度计时器，逐帧更新 imgprocess.fps
+    prev_t = None  # 上一帧时间戳（time.perf_counter）
+    fps = 0.0
+    dt = 0.0
+    j = 0.0
+
+    imgprocess = ImageProcess()
+
+    try:
+        ip = "127.0.0.1"
+        port = 12345
+        img_sender = ImageSender(ip, port)
+
+        # 连接服务器，开启发送线程
+        img_sender.connect()
+
+        img_sender.start_sending(3)
+
+        cap = CameraCapture(0)  # 0表示默认摄像头
+        if not cap.is_opened():
+            logging.error("Cannot open camera.")
+            return
+
+        while True:
+            frame = cap.get_picture()
+
+            # 实时 FPS 计算
+            now_t = time.perf_counter()
+            if prev_t is not None:
+                dt += now_t - prev_t
+                j += 1
+                if j % 10 == 0 and dt > 1e-6:
+                    fps = 1.0 / dt * 10
+                    logging.info(f"Current FPS: {fps:.2f}")
+                    dt = 0.0
+            prev_t = now_t
+
+            canvas = imgprocess.return_frame()
+            perspective_frame = imgprocess.perspective_transform(frame, matrix=None)
+            # cv2.imshow("perspective", perspective_frame)
+            img_sender.enqueue_image(perspective_frame, img_id=0, img_name="perspect")
+
+            binary_img = imgprocess.preprocess(perspective_frame)
+            # cv2.imshow("binary", binary_img)
+            img_sender.enqueue_image(binary_img, img_id=0, img_name="binary")
+
+            # 获取边线（传入canvas用于绘制调试信息）
+            imgprocess.get_side_line_task_2(
+                binary_img,
+                canvas,
+                is_draw=True,
+                find_corner=False,
+            )
+            imgprocess.fit_polynomial()
+
+            canvas = imgprocess.draw_line(canvas, fps)
+
+            # cv2.imshow("canvas", canvas)
+            img_sender.enqueue_image(canvas, img_id=0, img_name="canvas")
+
+    except KeyboardInterrupt:
+        logging.info("Interrupted by user , start exit...")
+    except Exception as e:
+        logging.error(f"Error occurred in main_perspective: {e}")
+    finally:
+        cap.close()
+        cv2.destroyAllWindows()
+
+
 def main():
 
     # 设置保存图片的目录（当前文件的上一级路径下的pictures文件夹）
@@ -1673,7 +1768,7 @@ def main():
                 imgprocess.frame = frame
 
                 # 预处理
-                binary_img = imgprocess.preprocess()
+                binary_img = imgprocess.preprocess(frame)
                 if state not in (
                     ProcessState.RIGHT_TRACKING,
                     ProcessState.LEFT_TRACKING,
@@ -1797,4 +1892,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main_video()
+    # main_video()
+    main()

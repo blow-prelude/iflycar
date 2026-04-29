@@ -1,4 +1,3 @@
-
 """
 手动标定透视变换参数工具
 从斜视图变换到鸟瞰图（Bird's Eye View）
@@ -50,7 +49,7 @@ class PerspectiveCalibration:
         self.display_image = self.image.copy()
         self.window_name = "选择4个点: 左上 -> 右上 -> 右下 -> 左下"
 
-        self.dst_rect = (0.2, 0.8, 0.2, 0.75)  # 目标矩形归一化坐标,分别为 左右上下
+        self.dst_rect = (0.07, 0.94, 0.4, 0.6)  # 目标矩形归一化坐标,分别为 左右上下
 
     def mouse_callback(self, event, x, y, flags, param):  # noqa: ARG002
         """
@@ -343,7 +342,7 @@ def main():
     pictures_dir = os.path.join(os.path.dirname(script_dir), "pictures")
 
     # 查找测试图片
-    image_path = r"D:\programs\ucar_ws\src\vision_line\pictures\test5.png"
+    image_path = r"D:\programs\ucar_ws\src\vision_line\pictures\captured_image_20260428_212542.jpg"
 
     if image_path is None:
         print(f"错误: 在 {pictures_dir} 目录下没有找到图片")
