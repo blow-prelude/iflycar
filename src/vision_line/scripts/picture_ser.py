@@ -430,8 +430,8 @@ if __name__ == "__main__":
     port = 12345
 
     try:
-        with PyQt5ImageReceiver(host, port, rows=1, cols=3) as img_rec:
-            img_rec.receive_picture(num_images=3)
+        with PyQt5ImageReceiver(host, port, rows=1, cols=2) as img_rec:
+            img_rec.receive_picture(num_images=2)
     except KeyboardInterrupt:
         logging.info("Interrupted by user.")
     except RuntimeError as e:
