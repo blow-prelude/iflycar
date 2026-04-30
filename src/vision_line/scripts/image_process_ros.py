@@ -620,7 +620,9 @@ class ImageProcess:
             return False
 
         x_diff = abs(int(self.right_line[-1, 0]) - int(self.left_line[-1, 0]))
-        if miss_line[0] and x_diff <= 20:
+        y_diff = abs(int(self.right_line[-1, 1]) - int(self.left_line[-1, 1]))
+
+        if miss_line[0] and y_diff <= 30:
             return True
 
         if x_diff <= 20:
@@ -1536,7 +1538,7 @@ def run_ros_topic_mode():
                 j += 1
                 if j % 10 == 0 and dt > 1e-6:
                     fps = 1.0 / dt * 10
-                    rospy.loginfo(f"Current FPS: {fps:.2f}")
+                    # rospy.loginfo(f"Current FPS: {fps:.2f}")
                     dt = 0.0
             prev_t = now_t
 
@@ -1611,6 +1613,7 @@ def run_ros_topic_mode():
                         if imgprocess.judge_turning_end(
                             binary_img.shape, miss_line=miss_line
                         ):
+
                             if miss_line[0]:
                                 turning_mid_msg = build_vision_line_msg(
                                     imgprocess.fit_mid_line,
@@ -1622,7 +1625,7 @@ def run_ros_topic_mode():
                                     turning_mid_msg.data[0],
                                     turning_mid_msg.data[1],
                                 )
-                                rospy.loginfo(f"y_pixel:{y_pixel}")
+
                                 # 中线误差归零（或在阈值内）后才允许退出 TURNING。
                                 if (
                                     y_pixel >= 0

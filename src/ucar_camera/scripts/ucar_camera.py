@@ -9,6 +9,17 @@ from std_msgs.msg import Header
 
 class UcarCamera:
     def __init__(self):
+        self.mtx = np.array(
+            [
+                [420.88617453, 0.0, 322.17160714],
+                [0.0, 423.22330218, 231.10564846],
+                [0.0, 0.0, 1.0],
+            ]
+        )  # 内参数矩阵
+        self.dist = np.array(
+            [[-0.34912917, 0.17532058, 0.01055267, -0.00249659, -0.05667369]]
+        )  # 畸变系数
+
         rospy.init_node("ucar_camera", anonymous=True)
 
         self.img_width = int(rospy.get_param("~image_width", default=640))  # 1280
@@ -32,7 +43,7 @@ class UcarCamera:
         )  # 告诉ROS图片每行的大小 28是宽度3是3byte像素（rgb）
         ## 设置摄像头相关信息
         device_path = rospy.get_param("device_path", default="/dev/video0")
-        self.cap = cv2.VideoCapture(device_path)
+        self.cap = cv2.VideoCapture(device_path, cv2.CAP_V4L2)
         self.cap.set(3, self.img_width)
         self.cap.set(4, self.img_height)
         # codec = cv2.cv.CV_FOURCC(*'XVID')
@@ -46,8 +57,11 @@ class UcarCamera:
             ret, frame_1 = (
                 self.cap.read()
             )  ##ret 为布尔值表示是否可以获得图像    frame为获取的帧
-            frame_1 = self.correct_img(frame_1)
+            # cv2.imshow("raw_frame", frame_1)
+            # frame_1 = self.correct_img(frame_1)
             frame_1 = cv2.flip(frame_1, 1)
+            # cv2.imshow("frame", frame_1)
+            # cv2.waitKey(1)
             self.frame = cv2.cvtColor(
                 frame_1, cv2.COLOR_BGR2RGB
             )  # 由OPENCV默认的BGR转为通用的RGB
@@ -73,7 +87,8 @@ class UcarCamera:
             dst = cv2.remap(img, mapx, mapy, cv2.INTER_LINEAR)
             return dst
         except Exception as e:
-            raise RuntimeError(f"error when correct img with mtx:{e}")
+            rospy.logerr(f"error when correct img with mtx:{e}")
+            return img
 
 
 if __name__ == "__main__":
