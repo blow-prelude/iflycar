@@ -1,0 +1,25 @@
+<launch>
+    <!-- <node pkg="ourgoal" type="ourgoal_test" name="ourgoal_test" output="screen"/>  -->
+
+    
+
+
+    <!-- <node pkg="ourgoal" type="switch" name="switch_node" output="screen"/> 
+    <node pkg="ourgoal" type="TransformListener2" name="TransformListener2" />  -->
+
+
+
+
+
+    <node pkg="ourgoal" type="param_reload.py" name="param_reload" />
+
+
+
+
+
+    <!-- <node pkg="speech_command" type="speech_command_node" name="speech_command_node" />
+    <node pkg="speech_command" type="speech_contrl" name="speech_contrl_node" /> -->
+
+    <include file="$(find ucar_nav)/launch/test1.launch" > </include>
+    
+</launch>
