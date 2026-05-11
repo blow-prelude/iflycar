@@ -1650,6 +1650,8 @@ def main_perspective():
 
         while True:
             frame = cap.get_picture()
+            # frame = cap.correct_img(frame)
+            # frame = cv2.flip(frame, 1)  # 水平翻转
 
             # 实时 FPS 计算
             now_t = time.perf_counter()
@@ -1736,7 +1738,8 @@ def main():
 
         while True:
             frame = cap.get_picture()
-            # img_sender.enqueue_image(frame)
+            # frame = cap.correct_img(frame)
+            # frame = cv2.flip(frame, 1)  # 水平翻转
 
             # 实时 FPS 计算
             now_t = time.perf_counter()
@@ -1836,13 +1839,13 @@ def main():
                     canvas = imgprocess.draw_line(canvas, fps, state)
 
                     # 显示二值化图像
-                    # cv2.imshow("binary", binary_img)
-                    img_sender.enqueue_image(binary_img, img_id=0)
+                    cv2.imshow("binary", binary_img)
+                    # img_sender.enqueue_image(binary_img, img_id=0, img_name="binary")
 
                     # 显示处理结果
-                    # cv2.imshow("processed_img", canvas)
+                    cv2.imshow("processed_img", canvas)
                     # 发送处理结果
-                    img_sender.enqueue_image(canvas, img_id=1)
+                    # img_sender.enqueue_image(canvas, img_id=1, img_name="canvas")
 
                 elif state in (ProcessState.RIGHT_TRACKING, ProcessState.LEFT_TRACKING):
                     canvas = imgprocess.return_frame()
@@ -1866,8 +1869,8 @@ def main():
                     cv2.imshow("processed_img", canvas)
 
                     # 发送图像
-                    # img_sender.enqueue_image(binary_img, img_id=0)
-                    # img_sender.enqueue_image(canvas, img_id=1)
+                    # img_sender.enqueue_image(binary_img, img_id=0, img_name="binary")
+                    # img_sender.enqueue_image(canvas, img_id=1, img_name="canvas")
 
             # 按键控制
             key = cv2.waitKey(1) & 0xFF
