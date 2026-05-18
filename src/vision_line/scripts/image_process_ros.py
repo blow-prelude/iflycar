@@ -9,7 +9,7 @@ import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from picture_cli import ImageSender
 from sensor_msgs.msg import Image
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, String
 
 
 class ProcessState(Enum):
@@ -1503,9 +1503,46 @@ def run_ros_topic_mode():
     dt = 0.0
     j = 0.0
 
-    straight_received = True
-    right_received = False
-    left_received = False
+    # 方向状态：可通过话题动态切换
+    direction_lock = threading.Lock()
+    direction_state = {
+        "straight": True,
+        "right": False,
+        "left": False,
+        "reset_requested": False,
+    }
+
+    # 允许通过参数服务器设置初始方向
+    initial_direction = rospy.get_param("~initial_direction", "straight")
+    _valid_dirs = {"straight", "right", "left"}
+    if initial_direction in _valid_dirs:
+        direction_state["straight"] = (initial_direction == "straight")
+        direction_state["right"] = (initial_direction == "right")
+        direction_state["left"] = (initial_direction == "left")
+    else:
+        rospy.logwarn(
+            f"Invalid initial_direction '{initial_direction}', defaulting to 'straight'"
+        )
+
+    direction_topic = rospy.get_param("~direction_topic", "/vision_line_direction")
+
+    def direction_callback(msg):
+        direction = msg.data.lower().strip()
+        if direction not in _valid_dirs:
+            rospy.logwarn(
+                f"Ignoring invalid direction: '{msg.data}', expected: {_valid_dirs}"
+            )
+            return
+        with direction_lock:
+            direction_state["straight"] = (direction == "straight")
+            direction_state["right"] = (direction == "right")
+            direction_state["left"] = (direction == "left")
+            direction_state["reset_requested"] = True
+        rospy.loginfo(f"Direction set to: {direction}")
+
+    rospy.Subscriber(direction_topic, String, direction_callback, queue_size=10)
+    rospy.loginfo(f"Subscribed direction topic: {direction_topic}")
+
     corner_delay_s = 1.5
 
     state = ProcessState.IDLE
@@ -1542,17 +1579,30 @@ def run_ros_topic_mode():
                     dt = 0.0
             prev_t = now_t
 
+            # 收到新方向指令时，重置状态机到 IDLE 以重新选择循迹模式
+            with direction_lock:
+                if direction_state["reset_requested"]:
+                    state = ProcessState.IDLE
+                    t0 = None
+                    miss_line[0] = False
+                    direction_state["reset_requested"] = False
+                    rospy.loginfo("State machine reset to IDLE (direction changed)")
+
             if state == ProcessState.IDLE:
-                if straight_received:
+                with direction_lock:
+                    go_straight = direction_state["straight"]
+                    go_right = direction_state["right"]
+                    go_left = direction_state["left"]
+                if go_straight:
                     state = ProcessState.STRAIGHT_TRACKING
                     t0 = time.perf_counter()
                     rospy.loginfo(
                         "State: IDLE -> STRAIGHT_TRACKING (straight received)"
                     )
-                elif right_received:
+                elif go_right:
                     state = ProcessState.RIGHT_TRACKING
                     rospy.loginfo("State: IDLE -> RIGHT_TRACKING (right received)")
-                elif left_received:
+                elif go_left:
                     state = ProcessState.LEFT_TRACKING
                     rospy.loginfo("State: IDLE -> LEFT_TRACKING (left received)")
             else:
