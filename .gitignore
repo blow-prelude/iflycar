@@ -6,3 +6,4 @@
 /.worktrees
 /docs
 
+**/__pycache__/
