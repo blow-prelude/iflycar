@@ -1514,7 +1514,7 @@ def run_ros_topic_mode():
 
     # 允许通过参数服务器设置初始方向
     initial_direction = rospy.get_param("~initial_direction", "straight")
-    _valid_dirs = {"straight", "right", "left"}
+    _valid_dirs = {"straight", "right", "left", "stop"}
     if initial_direction in _valid_dirs:
         direction_state["straight"] = (initial_direction == "straight")
         direction_state["right"] = (initial_direction == "right")
@@ -1524,7 +1524,7 @@ def run_ros_topic_mode():
             f"Invalid initial_direction '{initial_direction}', defaulting to 'straight'"
         )
 
-    direction_topic = rospy.get_param("~direction_topic", "/vision_line_direction")
+    direction_topic = rospy.get_param("~direction_topic", "/vision_line_direction_out")
 
     def direction_callback(msg):
         direction = msg.data.lower().strip()
@@ -1534,9 +1534,14 @@ def run_ros_topic_mode():
             )
             return
         with direction_lock:
-            direction_state["straight"] = (direction == "straight")
-            direction_state["right"] = (direction == "right")
-            direction_state["left"] = (direction == "left")
+            if direction == "stop":
+                direction_state["straight"] = False
+                direction_state["right"] = False
+                direction_state["left"] = False
+            else:
+                direction_state["straight"] = (direction == "straight")
+                direction_state["right"] = (direction == "right")
+                direction_state["left"] = (direction == "left")
             direction_state["reset_requested"] = True
         rospy.loginfo(f"Direction set to: {direction}")
 
