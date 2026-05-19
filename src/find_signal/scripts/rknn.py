@@ -54,9 +54,44 @@ class img_processor:
                 2,
             )
 
+    def letter_box(
+        self,
+        im,
+        new_shape,
+        pad_color=(0, 0, 0),
+    ):
+        # Resize and pad image while meeting stride-multiple constraints
+        shape = im.shape[:2]  # current shape [height, width]
+        if isinstance(new_shape, int):
+            new_shape = (new_shape, new_shape)
 
-def post_process(output):
-    pass
+        # Scale ratio
+        r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+
+        # Compute padding
+        ratio = r  # width, height ratios
+        new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+        dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
+
+        dw /= 2  # divide padding into 2 sides
+        dh /= 2
+
+        if shape[::-1] != new_unpad:  # resize
+            im = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
+        top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+        left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+        im = cv2.copyMakeBorder(
+            im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=pad_color
+        )  # add border
+
+        return im, ratio, (dw, dh)
+
+
+def get_center_point(box):
+    box = np.array(box).reshape(-1, 2)
+    x_mid = int((box[:, 0].min() + box[:, 0].max()) / 2)
+    y_mid = int((box[:, 1].min() + box[:, 1].max()) / 2)
+    return (x_mid, y_mid)
 
 
 def crop_text_region(img, output):
@@ -71,16 +106,20 @@ def crop_text_region(img, output):
         area = (x_max - x_min) * (y_max - y_min)
         if area > max_area:
             max_area = area
-            max_box = (x_min, y_min, x_max, y_max)
+            max_box = box
 
-    # Crop the largest box from original image
-    if max_box:
-        x_min, y_min, x_max, y_max = max_box
+    if max_box is not None:
+        x_min = int(max_box[:, 0].min())
+        x_max = int(max_box[:, 0].max())
+        y_min = int(max_box[:, 1].min())
+        y_max = int(max_box[:, 1].max())
         cropped = img[y_min:y_max, x_min:x_max]
-        logging.debug(f"Largest box: {max_box}, size: {x_max - x_min}x{y_max - y_min}")
+        logging.debug(
+            f"Largest box: ({x_min}, {y_min}, {x_max}, {y_max}), size: {x_max - x_min}x{y_max - y_min}"
+        )
     else:
         cropped = None
-    return cropped
+    return cropped, max_box
 
 
 def inference_worker(
@@ -91,15 +130,18 @@ def inference_worker(
             img = input_queue.get(timeout=1)  # 等待图像输入
             time1 = time.perf_counter()
             det_output = det_model.run(img)
-            det_output_queue.put(det_output)  # 放入检测结果
-            logging.info(f"det inference time: {time.perf_counter() - time1:.4f} s")
+            logging.debug(f"det inference time: {time.perf_counter() - time1:.4f} s")
 
-            cropped = crop_text_region(img, det_output)
+            cropped, corners = crop_text_region(img, det_output)
+            if corners is not None:
+                det_output_queue.put([corners.astype(np.int32)])
             if cropped is not None:
                 cropped = cv2.resize(cropped, (REC_INPUT_SHAPE[1], REC_INPUT_SHAPE[0]))
                 time1 = time.perf_counter()
                 rec_output = rec_model.run(cropped)
-                logging.info(f"rec inference time: {time.perf_counter() - time1:.4f} s")
+                logging.debug(
+                    f"rec inference time: {time.perf_counter() - time1:.4f} s"
+                )
                 rec_output_queue.put(rec_output)
         except queue.Empty:
             continue  # 没有图像输入，继续等待
@@ -159,7 +201,8 @@ def main():
             frame = cv2.flip(frame, 1)
             # cv2.imshow("Camera", frame)
 
-            frame = cv2.resize(frame, (DET_INPUT_SHAPE[1], DET_INPUT_SHAPE[0]))
+            # frame = cv2.resize(frame, (DET_INPUT_SHAPE[1], DET_INPUT_SHAPE[0]))
+            frame = img_proc.letter_box(frame, DET_INPUT_SHAPE)[0]
             canvas = frame.copy()
 
             # cv2.imshow("before detection", frame)
@@ -171,7 +214,7 @@ def main():
                 frame_count += 1
                 pre_t = cur_t
 
-                if frame_count % 10 == 0:
+                if frame_count >= 10:
                     fps = frame_count / elapsed if elapsed > 0 else 0.0
                     # logging.info(f"Current FPS: {fps:.2f}")
                     img_proc.update_fps(fps)
@@ -180,9 +223,13 @@ def main():
 
                 det_output = det_output_queue.get(timeout=0.15)  # 获取检测结果
 
-                for box in det_output:
-                    box = np.array(box).astype(np.int32)
-                    cv2.polylines(canvas, [box], True, (0, 255, 0), 2)
+                # logging.debug(f"Detection box: {det_output}")
+
+                det_output = np.array(det_output).astype(np.int32)
+                center = get_center_point(det_output)
+                logging.debug(f"Drawing box: {det_output}")
+                logging.info(f"Center point: {center}")
+                cv2.polylines(canvas, [det_output], True, (0, 255, 0), 2)
 
                 img_proc.draw_fps(canvas)
                 cv2.imshow("Detection Results", canvas)
