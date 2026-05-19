@@ -126,57 +126,49 @@ def box_process(position):
 
 
 def post_process(input_data):
-    boxes, scores, classes_conf = [], [], []
-    defualt_branch = 3
-    pair_per_branch = len(input_data) // defualt_branch
-    # Python 忽略 score_sum 输出
-    for i in range(defualt_branch):
-        boxes.append(box_process(input_data[pair_per_branch * i]))
-        classes_conf.append(input_data[pair_per_branch * i + 1])
-        scores.append(
-            np.ones_like(
-                input_data[pair_per_branch * i + 1][:, :1, :, :], dtype=np.float32
-            )
-        )
+    num_branches = 3
+    pair_per_branch = len(input_data) // num_branches
 
-    def sp_flatten(_in):
-        ch = _in.shape[1]
-        _in = _in.transpose(0, 2, 3, 1)
-        return _in.reshape(-1, ch)
+    # 处理每个检测分支: box回归 + 类别置信度
+    box_parts, conf_parts = [], []
+    for i in range(num_branches):
+        box_parts.append(box_process(input_data[pair_per_branch * i]))
+        conf_parts.append(input_data[pair_per_branch * i + 1])
 
-    boxes = [sp_flatten(_v) for _v in boxes]
-    classes_conf = [sp_flatten(_v) for _v in classes_conf]
-    scores = [sp_flatten(_v) for _v in scores]
+    # (1, C, H, W) -> (H*W, C)
+    def flatten_hw(x):
+        return x.transpose(0, 2, 3, 1).reshape(-1, x.shape[1])
 
-    boxes = np.concatenate(boxes)
-    classes_conf = np.concatenate(classes_conf)
-    scores = np.concatenate(scores)
+    boxes = np.concatenate([flatten_hw(b) for b in box_parts])
+    classes_conf = np.concatenate([flatten_hw(c) for c in conf_parts])
 
-    # filter according to threshold
-    boxes, classes, scores = filter_boxes(boxes, scores, classes_conf)
+    # box_confidence 全为1，实际置信度来自 class_max_score * 1
+    box_confidences = np.ones((boxes.shape[0], 1), dtype=np.float32)
 
-    # nms
-    nboxes, nclasses, nscores = [], [], []
-    for c in set(classes):
-        inds = np.where(classes == c)
-        b = boxes[inds]
-        c = classes[inds]
-        s = scores[inds]
-        keep = nms_boxes(b, s)
+    # 按阈值过滤
+    boxes, classes, scores = filter_boxes(boxes, box_confidences, classes_conf)
 
-        if len(keep) != 0:
-            nboxes.append(b[keep])
-            nclasses.append(c[keep])
-            nscores.append(s[keep])
-
-    if not nclasses and not nscores:
+    if boxes is None or len(boxes) == 0:
         return None, None, None
 
-    boxes = np.concatenate(nboxes)
-    classes = np.concatenate(nclasses)
-    scores = np.concatenate(nscores)
+    # 按类别做NMS
+    nboxes, nclasses, nscores = [], [], []
+    for cls_id in np.unique(classes):
+        mask = classes == cls_id
+        cls_boxes = boxes[mask]
+        cls_scores = scores[mask]
+        keep = nms_boxes(cls_boxes, cls_scores)
 
-    return boxes, classes, scores
+        if len(keep) > 0:
+            idx = np.where(mask)[0][keep]
+            nboxes.append(boxes[idx])
+            nclasses.append(classes[idx])
+            nscores.append(scores[idx])
+
+    if not nboxes:
+        return None, None, None
+
+    return np.concatenate(nboxes), np.concatenate(nclasses), np.concatenate(nscores)
 
 
 def draw(image, boxes, scores, classes):
@@ -231,9 +223,13 @@ def inference_worker(
             time1 = time.perf_counter()
             outputs = model.run([img_rgb])
             time2 = time.perf_counter()
+            logging.debug(f"Worker-{worker_id} inference time: {time2 - time1:.4f} s")
 
             # 后处理
             boxes, classes, scores = post_process(outputs)
+            logging.debug(
+                f"Worker-{worker_id} post-process time: {time.perf_counter() - time2:.4f} s"
+            )
 
             # 绘制结果
             canvas = cv2.cvtColor(img_rgb.copy(), cv2.COLOR_RGB2BGR)
@@ -245,6 +241,8 @@ def inference_worker(
                 "canvas": canvas,
                 "inference_time": time2 - time1,
                 "worker_id": worker_id,
+                "classes": classes,
+                "scores": scores,
             }
             output_queue.put(result)
 
@@ -318,11 +316,8 @@ def main():
     stop_event = threading.Event()
 
     # 用于FPS统计
-    frame_count = 0
     display_frame_count = 0  # 用于FPS显示更新
     fps_start_time = time.time()
-    last_log_time = fps_start_time
-    fps_accumulator = 0.0  # 累积FPS用于平均值计算
 
     try:
         # 初始化3个模型，分别绑定到3个NPU核心
@@ -350,7 +345,6 @@ def main():
             workers.append(worker)
             logging.info(f"Started worker-{i}")
 
-        pad_color = (0, 0, 0)
         logging.info("Starting main loop...")
 
         while True:
@@ -371,27 +365,29 @@ def main():
                 canvas = result["canvas"]
                 inference_time = result["inference_time"]
                 worker_id = result["worker_id"]
+                classes = result["classes"]
+                scores = result["scores"]
+                best_score = (
+                    scores.max() if scores is not None and len(scores) > 0 else 0
+                )
+                best_class = (
+                    classes[scores.argmax()]
+                    if classes is not None and scores is not None and len(classes) > 0
+                    else None
+                )
 
-                current_time = time.perf_counter()
+                logging.info(
+                    f"worker-{worker_id}: class: {best_class}, scores: {best_score} ,inference time: {inference_time:.4f} s"
+                )
 
                 # 统计FPS
-                frame_count += 1
+                current_time = time.perf_counter()
                 display_frame_count += 1
-
-                # 每1秒输出一次日志FPS
-                if current_time - last_log_time >= 1.0:
-                    elapsed = current_time - last_log_time
-                    fps = frame_count / elapsed
-                    logging.info(
-                        f"FPS: {fps:.2f} | Worker-{worker_id} inference: {inference_time * 1000:.2f}ms"
-                    )
-                    frame_count = 0
-                    last_log_time = current_time
-
                 # 每10帧更新一次FPS显示
                 if display_frame_count >= 10:
                     elapsed = current_time - fps_start_time
                     fps = display_frame_count / elapsed if elapsed > 0 else 0
+                    logging.info(f"Current FPS: {fps:.2f}")
                     img_processor.update_fps(fps)
                     fps_start_time = current_time
                     display_frame_count = 0
@@ -403,7 +399,7 @@ def main():
             except queue.Empty:
                 # 队列为空时继续显示原始图像，使用上次的FPS
                 img_processor.draw_fps(img_src)
-                cv2.imshow("predict", img_src)
+                cv2.imshow("img_src", img_src)
                 cv2.waitKey(1)
             except Exception as e:
                 logging.error(f"Error displaying result: {e}")
