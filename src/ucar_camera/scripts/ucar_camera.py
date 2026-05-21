@@ -18,7 +18,7 @@ class UcarCamera:
             dtype=np.float32,
         )  # 内参数矩阵
         self.dist = np.array(
-            [[-0.34912917, 0.17532058, 0.01055267, -0.00249659, -0.05667369]],
+            [[-0.34912917, 0.17532058, 0.01055267, -0.00249659, 0.0]],
             dtype=np.float32,
         )  # 畸变系数
 
@@ -87,45 +87,19 @@ class UcarCamera:
             self.cam_pub.publish(self.image_temp)
             ros_rate.sleep()
 
-    def _scaled_camera_matrix(self, w, h):
-        scale_x = float(w) / float(self.calib_width)
-        scale_y = float(h) / float(self.calib_height)
-        scaled = self.mtx.copy()
-        scaled[0, 0] *= scale_x
-        scaled[1, 1] *= scale_y
-        scaled[0, 2] *= scale_x
-        scaled[1, 2] *= scale_y
-        return scaled
-
-    def _ensure_undistort_map(self, w, h):
-        if self._map_size == (w, h) and self._mapx is not None and self._mapy is not None:
-            return
-        camera_matrix = self._scaled_camera_matrix(w, h)
-        newcameramtx, _roi = cv2.getOptimalNewCameraMatrix(
-            camera_matrix,
-            self.dist,
-            (w, h),
-            self.undistort_alpha,
-            (w, h),
-        )
-        self._mapx, self._mapy = cv2.initUndistortRectifyMap(
-            camera_matrix, self.dist, None, newcameramtx, (w, h), cv2.CV_32FC1
-        )
-        self._map_size = (w, h)
-
     def correct_img(self, img):
         h, w = img.shape[:2]
         try:
-            if self.mtx.size == 0 or self.dist.size == 0:
-                return img
-            self._ensure_undistort_map(w, h)
-            dst = cv2.remap(
-                img,
-                self._mapx,
-                self._mapy,
-                cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_REPLICATE,
+            if len(self.mtx) > 0 and len(self.dist) > 0:
+                newcameramtx, roi = cv2.getOptimalNewCameraMatrix(
+                    self.mtx, self.dist, (h, w), 0, (h, w)
+                )
+
+            # 生成去畸变映射表，并应用映射表将像素重新映射
+            mapx, mapy = cv2.initUndistortRectifyMap(
+                self.mtx, self.dist, None, newcameramtx, (w, h), 5
             )
+            dst = cv2.remap(img, mapx, mapy, cv2.INTER_LINEAR)
             return dst
         except Exception as e:
             rospy.logerr(f"error when correct img with mtx:{e}")
