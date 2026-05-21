@@ -9,8 +9,10 @@ import numpy as np
 import rospy
 from camera_capture import CameraCapture
 from coco_utils import COCO_test_helper
+from cv_bridge import CvBridge, CvBridgeError
 from rknn_executor import RKNN_model_container
 from rknnlite.api import RKNNLite
+from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
 # Configure logging
@@ -333,8 +335,23 @@ def main():
         model1, _ = setup_model(MODEL_PATH, device_id=RKNNLite.NPU_CORE_1)
         model2, _ = setup_model(MODEL_PATH, device_id=RKNNLite.NPU_CORE_2)
 
-        # 初始化摄像头
-        cap = CameraCapture(0, 640, 480)
+        # 初始化摄像头（ROS 话题）
+        image_topic = rospy.get_param("~image_topic", "ucar_camera/image_raw")
+        bridge = CvBridge()
+        latest_frame = None
+        frame_lock = threading.Lock()
+
+        def image_callback(msg):
+            nonlocal latest_frame
+            try:
+                frame = bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+                with frame_lock:
+                    latest_frame = frame
+            except CvBridgeError as e:
+                rospy.logerr(f"CvBridge conversion failed: {e}")
+
+        rospy.Subscriber(image_topic, Image, image_callback, queue_size=1, buff_size=2**24)
+        rospy.loginfo(f"Subscribed image topic: {image_topic}")
 
         co_helper = COCO_test_helper(enable_letter_box=True)
         img_processor = ImgProcessor(co_helper)
@@ -353,11 +370,15 @@ def main():
             logging.info(f"Started worker-{i}")
 
         logging.info("Starting main loop...")
+        loop_rate = rospy.Rate(30)
 
         while not rospy.is_shutdown():
-            # 主线程：采集图像
-            img_src = cap.get_picture()
-            img_src = cap.correct_img(img_src)
+            # 主线程：从 ROS 话题获取图像
+            with frame_lock:
+                img_src = latest_frame.copy() if latest_frame is not None else None
+            if img_src is None:
+                loop_rate.sleep()
+                continue
             img_src = cv2.flip(img_src, 1)
 
             # 预处理图像
@@ -428,7 +449,6 @@ def main():
 
         # 释放资源
         cv2.destroyAllWindows()
-        cap.close()
         model0.release()
         model1.release()
         model2.release()
