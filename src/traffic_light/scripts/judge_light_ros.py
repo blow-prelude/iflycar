@@ -1,4 +1,4 @@
-import logging
+#!/home/ucar/venv3.9/bin/python3
 import os
 import queue
 import threading
@@ -14,13 +14,6 @@ from rknn_executor import RKNN_model_container
 from rknnlite.api import RKNNLite
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 
 
 OBJ_THRESH = 0.25
@@ -216,7 +209,7 @@ def inference_worker(
         co_helper: COCO辅助工具
         stop_event: 停止事件
     """
-    logging.info(f"Worker-{worker_id} started on NPU core {worker_id}")
+    rospy.loginfo(f"Worker-{worker_id} started on NPU core {worker_id}")
 
     while not stop_event.is_set():
         try:
@@ -227,13 +220,13 @@ def inference_worker(
             time1 = time.perf_counter()
             outputs = model.run([img_rgb])
             time2 = time.perf_counter()
-            logging.debug(f"Worker-{worker_id} inference time: {time2 - time1:.4f} s")
+            # rospy.logdebug(f"Worker-{worker_id} inference time: {time2 - time1:.4f} s")
 
             # 后处理
             boxes, classes, scores = post_process(outputs)
-            logging.debug(
-                f"Worker-{worker_id} post-process time: {time.perf_counter() - time2:.4f} s"
-            )
+            # rospy.logdebug(
+            #     f"Worker-{worker_id} post-process time: {time.perf_counter() - time2:.4f} s"
+            # )
 
             # 绘制结果
             canvas = cv2.cvtColor(img_rgb.copy(), cv2.COLOR_RGB2BGR)
@@ -255,10 +248,10 @@ def inference_worker(
         except queue.Empty:
             continue
         except Exception as e:
-            logging.error(f"Worker-{worker_id} error: {e}")
+            rospy.logerr(f"Worker-{worker_id} error: {e}")
             continue
 
-    logging.info(f"Worker-{worker_id} stopped")
+    rospy.loginfo(f"Worker-{worker_id} stopped")
 
 
 def img_check(path):
@@ -323,14 +316,22 @@ def main():
     display_frame_count = 0  # 用于FPS显示更新
     fps_start_time = time.time()
 
+    model0 = model1 = model2 = None
+    workers = []
+
     try:
+        # 跳过 ROS 的 fileConfig（与 Python 3.9 不兼容）
+        import logging.config
+        _orig_fileConfig = logging.config.fileConfig
+        logging.config.fileConfig = lambda *a, **kw: None
         rospy.init_node("judge_light", anonymous=True)
+        logging.config.fileConfig = _orig_fileConfig
         direction_topic = rospy.get_param("~direction_topic", "/vision_line_direction")
         direction_pub = rospy.Publisher(direction_topic, String, queue_size=10)
         rospy.loginfo(f"Publishing direction to: {direction_topic}")
 
         # 初始化3个模型，分别绑定到3个NPU核心
-        logging.info("Initializing 3 models on NPU cores 0, 1, 2...")
+        rospy.loginfo("Initializing 3 models on NPU cores 0, 1, 2...")
         model0, _ = setup_model(MODEL_PATH, device_id=RKNNLite.NPU_CORE_0)
         model1, _ = setup_model(MODEL_PATH, device_id=RKNNLite.NPU_CORE_1)
         model2, _ = setup_model(MODEL_PATH, device_id=RKNNLite.NPU_CORE_2)
@@ -367,9 +368,9 @@ def main():
             )
             worker.start()
             workers.append(worker)
-            logging.info(f"Started worker-{i}")
+            rospy.loginfo(f"Started worker-{i}")
 
-        logging.info("Starting main loop...")
+        rospy.loginfo("Starting main loop...")
         loop_rate = rospy.Rate(30)
 
         while not rospy.is_shutdown():
@@ -379,7 +380,6 @@ def main():
             if img_src is None:
                 loop_rate.sleep()
                 continue
-            img_src = cv2.flip(img_src, 1)
 
             # 预处理图像
             img_rgb = img_processor.preprocess(img_src)
@@ -404,7 +404,7 @@ def main():
                     else None
                 )
 
-                logging.info(
+                rospy.loginfo(
                     f"worker-{worker_id}: class: {best_class}, scores: {best_score} ,inference time: {inference_time:.4f} s"
                 )
 
@@ -412,6 +412,10 @@ def main():
                 if best_class is not None and best_score >= OBJ_THRESH:
                     direction_name = CLASSES[best_class]
                     direction_pub.publish(String(direction_name))
+                    rospy.loginfo(f"Detected direction: {direction_name}, shutting down...")
+                    # 等待消息被消费，避免订阅者未收到就退出
+                    time.sleep(1.0)
+                    break
 
                 # 统计FPS
                 current_time = time.perf_counter()
@@ -420,7 +424,7 @@ def main():
                 if display_frame_count >= 10:
                     elapsed = current_time - fps_start_time
                     fps = display_frame_count / elapsed if elapsed > 0 else 0
-                    logging.info(f"Current FPS: {fps:.2f}")
+                    rospy.loginfo(f"Current FPS: {fps:.2f}")
                     img_processor.update_fps(fps)
                     fps_start_time = current_time
                     display_frame_count = 0
@@ -435,12 +439,13 @@ def main():
                 cv2.imshow("img_src", img_src)
                 cv2.waitKey(1)
             except Exception as e:
-                logging.error(f"Error displaying result: {e}")
+                rospy.logerr(f"Error displaying result: {e}")
 
     except KeyboardInterrupt:
-        logging.info("Interrupt by user, exiting...")
+        rospy.loginfo("Interrupt by user, exiting...")
     except Exception as e:
-        logging.error(f"Error in main: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         # 停止所有工作线程
         stop_event.set()
@@ -449,21 +454,21 @@ def main():
 
         # 释放资源
         cv2.destroyAllWindows()
-        model0.release()
-        model1.release()
-        model2.release()
+        if model0: model0.release()
+        if model1: model1.release()
+        if model2: model2.release()
 
 
 def main_test():
     FILE_DIR = os.path.dirname(os.path.abspath(__file__))
-    MODEL_PATH = os.path.join(FILE_DIR, "..", "models", "best.rknn")
+    MODEL_PATH = os.path.join(FILE_DIR, "..", "models", "bestfp.rknn")
     img_path = os.path.join(FILE_DIR, "..", "pictures", "006_0018.jpg")
 
     try:
         # init model
         model, _ = setup_model(MODEL_PATH, device_id=RKNNLite.NPU_CORE_0)
     except Exception as e:
-        logging.error(f"occur err when setup model: {e}")
+        rospy.logerr(f"occur err when setup model: {e}")
 
     try:
         co_helper = COCO_test_helper(enable_letter_box=True)
@@ -480,9 +485,9 @@ def main_test():
         time1 = time.perf_counter()
         outputs = model.run([img])
         time2 = time.perf_counter()
-        logging.info(f"inference take {time2 - time1:.6f}s")
+        rospy.loginfo(f"inference take {time2 - time1:.6f}s")
         boxes, classes, scores = post_process(outputs)
-        logging.info(f"post process takes {time.perf_counter() - time2:.6f}s")
+        rospy.loginfo(f"post process takes {time.perf_counter() - time2:.6f}s")
 
         canvas = cv2.cvtColor(img.copy(), cv2.COLOR_RGB2BGR)
         if boxes is not None:
@@ -491,9 +496,9 @@ def main_test():
         cv2.imshow("predict", canvas)
         cv2.waitKey(0)
     except KeyboardInterrupt:
-        logging.info("Interrupt by user,exiting...")
+        rospy.loginfo("Interrupt by user,exiting...")
     except Exception as e:
-        logging.error(f"occur err when inference: {e}")
+        rospy.logerr(f"occur err when inference: {e}")
     finally:
         cv2.destroyAllWindows()
         model.release()

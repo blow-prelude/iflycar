@@ -1513,16 +1513,16 @@ def run_ros_topic_mode():
     }
 
     # 允许通过参数服务器设置初始方向
-    initial_direction = rospy.get_param("~initial_direction", "straight")
+    initial_direction = rospy.get_param("~initial_direction", None)
     _valid_dirs = {"straight", "right", "left", "stop"}
     if initial_direction in _valid_dirs:
         direction_state["straight"] = (initial_direction == "straight")
         direction_state["right"] = (initial_direction == "right")
         direction_state["left"] = (initial_direction == "left")
     else:
-        rospy.logwarn(
-            f"Invalid initial_direction '{initial_direction}', defaulting to 'straight'"
-        )
+        direction_state["straight"] = False
+        direction_state["right"] = False
+        direction_state["left"] = False
 
     direction_topic = rospy.get_param("~direction_topic", "/vision_line_direction_out")
 
@@ -1601,14 +1601,17 @@ def run_ros_topic_mode():
                 if go_straight:
                     state = ProcessState.STRAIGHT_TRACKING
                     t0 = time.perf_counter()
+                    rospy.set_param("/start_vision1", 1)
                     rospy.loginfo(
                         "State: IDLE -> STRAIGHT_TRACKING (straight received)"
                     )
                 elif go_right:
                     state = ProcessState.RIGHT_TRACKING
+                    rospy.set_param("/start_vision1", 1)
                     rospy.loginfo("State: IDLE -> RIGHT_TRACKING (right received)")
                 elif go_left:
                     state = ProcessState.LEFT_TRACKING
+                    rospy.set_param("/start_vision1", 1)
                     rospy.loginfo("State: IDLE -> LEFT_TRACKING (left received)")
             else:
                 imgprocess.frame = frame
