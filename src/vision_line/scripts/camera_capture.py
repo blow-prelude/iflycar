@@ -144,18 +144,14 @@ class CameraCapture:
         logging.info(f"mtx:\n{mtx}")  # 内参数矩阵，包括焦距和光心
         logging.info(f"dist畸变值:\n{dist}")  # 畸变系数，包括径向畸变和切向畸变
 
-        # 根据畸变参数，计算一个去畸变后的最优内参矩阵
-        # roi： 去畸变后可剪掉黑边
-        newcameramtx, roi = cv2.getOptimalNewCameraMatrix(
-            mtx, dist, (ih, iw), 0, (ih, iw)
-        )
-
     def correct_img(self, img):
         h, w = img.shape[:2]
         try:
             if len(self.mtx) > 0 and len(self.dist) > 0:
+                # 根据畸变参数，计算一个去畸变后的最优内参矩阵
+                # roi： 去畸变后可剪掉黑边
                 newcameramtx, roi = cv2.getOptimalNewCameraMatrix(
-                    self.mtx, self.dist, (h, w), 0, (h, w)
+                    self.mtx, self.dist, (w, h), 0, (h, w)
                 )
 
             # 生成去畸变映射表，并应用映射表将像素重新映射

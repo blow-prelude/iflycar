@@ -92,7 +92,7 @@ class UcarCamera:
         try:
             if len(self.mtx) > 0 and len(self.dist) > 0:
                 newcameramtx, roi = cv2.getOptimalNewCameraMatrix(
-                    self.mtx, self.dist, (h, w), 0, (h, w)
+                    self.mtx, self.dist, (w, h), 0, (w, h)
                 )
 
             # 生成去畸变映射表，并应用映射表将像素重新映射
