@@ -7,11 +7,11 @@ import time
 import cv2
 import numpy as np
 import rospy
-from std_msgs.msg import String
 from camera_capture import CameraCapture
 from coco_utils import COCO_test_helper
 from rknn_executor import RKNN_model_container
 from rknnlite.api import RKNNLite
+from std_msgs.msg import String
 
 # Configure logging
 logging.basicConfig(
@@ -456,7 +456,7 @@ def main_test():
             im=img_src.copy(), new_shape=(IMG_SIZE[1], IMG_SIZE[0]), pad_color=pad_color
         )
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-将红灯stop的状态也发布
+        # 将红灯stop的状态也发布
         time1 = time.perf_counter()
         outputs = model.run([img])
         time2 = time.perf_counter()
