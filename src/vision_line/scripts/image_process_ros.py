@@ -1179,6 +1179,14 @@ class ImageProcess:
             rospy.logdebug(
                 f"length of left_line: {len(self.supple_left_line)} , lenth of right_line: {len(self.supple_right_line)}"
             )
+            # 绘制中线
+            cv2.line(
+                canvas,
+                (0, canvas.shape[0] // 2),
+                (canvas.shape[1] - 1, canvas.shape[0] // 2),
+                (255, 0, 127),
+                2,
+            )
             # 绘制优化后的边线和中线
             for pt in self.supple_left_line.tolist():
                 cv2.circle(canvas, pt, 2, (0, 0, 255), -1)
