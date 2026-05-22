@@ -26,7 +26,7 @@ NMS_THRESH = 0.45
 # OBJ_THRESH = 0.001
 # NMS_THRESH = 0.65
 
-IMG_SIZE = (640, 480)  # (width, height), such as (1280, 736)
+IMG_SIZE = (640, 640)  # (width, height), such as (1280, 736)
 
 CLASSES = ("stop", "straight", "right", "left")
 
@@ -126,49 +126,57 @@ def box_process(position):
 
 
 def post_process(input_data):
-    num_branches = 3
-    pair_per_branch = len(input_data) // num_branches
+    boxes, scores, classes_conf = [], [], []
+    defualt_branch = 3
+    pair_per_branch = len(input_data) // defualt_branch
+    # Python 忽略 score_sum 输出
+    for i in range(defualt_branch):
+        boxes.append(box_process(input_data[pair_per_branch * i]))
+        classes_conf.append(input_data[pair_per_branch * i + 1])
+        scores.append(
+            np.ones_like(
+                input_data[pair_per_branch * i + 1][:, :1, :, :], dtype=np.float32
+            )
+        )
 
-    # 处理每个检测分支: box回归 + 类别置信度
-    box_parts, conf_parts = [], []
-    for i in range(num_branches):
-        box_parts.append(box_process(input_data[pair_per_branch * i]))
-        conf_parts.append(input_data[pair_per_branch * i + 1])
+    def sp_flatten(_in):
+        ch = _in.shape[1]
+        _in = _in.transpose(0, 2, 3, 1)
+        return _in.reshape(-1, ch)
 
-    # (1, C, H, W) -> (H*W, C)
-    def flatten_hw(x):
-        return x.transpose(0, 2, 3, 1).reshape(-1, x.shape[1])
+    boxes = [sp_flatten(_v) for _v in boxes]
+    classes_conf = [sp_flatten(_v) for _v in classes_conf]
+    scores = [sp_flatten(_v) for _v in scores]
 
-    boxes = np.concatenate([flatten_hw(b) for b in box_parts])
-    classes_conf = np.concatenate([flatten_hw(c) for c in conf_parts])
+    boxes = np.concatenate(boxes)
+    classes_conf = np.concatenate(classes_conf)
+    scores = np.concatenate(scores)
 
-    # box_confidence 全为1，实际置信度来自 class_max_score * 1
-    box_confidences = np.ones((boxes.shape[0], 1), dtype=np.float32)
+    # filter according to threshold
+    boxes, classes, scores = filter_boxes(boxes, scores, classes_conf)
 
-    # 按阈值过滤
-    boxes, classes, scores = filter_boxes(boxes, box_confidences, classes_conf)
-
-    if boxes is None or len(boxes) == 0:
-        return None, None, None
-
-    # 按类别做NMS
+    # nms
     nboxes, nclasses, nscores = [], [], []
-    for cls_id in np.unique(classes):
-        mask = classes == cls_id
-        cls_boxes = boxes[mask]
-        cls_scores = scores[mask]
-        keep = nms_boxes(cls_boxes, cls_scores)
+    for c in set(classes):
+        inds = np.where(classes == c)
+        b = boxes[inds]
+        c = classes[inds]
+        s = scores[inds]
+        keep = nms_boxes(b, s)
 
-        if len(keep) > 0:
-            idx = np.where(mask)[0][keep]
-            nboxes.append(boxes[idx])
-            nclasses.append(classes[idx])
-            nscores.append(scores[idx])
+        if len(keep) != 0:
+            nboxes.append(b[keep])
+            nclasses.append(c[keep])
+            nscores.append(s[keep])
 
-    if not nboxes:
+    if not nclasses and not nscores:
         return None, None, None
 
-    return np.concatenate(nboxes), np.concatenate(nclasses), np.concatenate(nscores)
+    boxes = np.concatenate(nboxes)
+    classes = np.concatenate(nclasses)
+    scores = np.concatenate(nscores)
+
+    return boxes, classes, scores
 
 
 def draw(image, boxes, scores, classes):
@@ -424,7 +432,7 @@ def main():
 
 def main_test():
     FILE_DIR = os.path.dirname(os.path.abspath(__file__))
-    MODEL_PATH = os.path.join(FILE_DIR, "..", "models", "best.rknn")
+    MODEL_PATH = os.path.join(FILE_DIR, "..", "models", "besti8.rknn")
     img_path = os.path.join(FILE_DIR, "..", "pictures", "006_0018.jpg")
 
     try:

@@ -31,8 +31,19 @@ class CameraCapture:
             logging.error("Cannot open camera.")
             raise RuntimeError(f"Failed to open camera at index {index}")
 
-        self.mtx = np.array([])  # 内参数矩阵
-        self.dist = np.array([])  # 畸变系数
+        self.mtx = np.array(
+            [
+                [420.88617453, 0.0, 322.17160714],
+                [0.0, 423.22330218, 231.10564846],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )  # 内参数矩阵
+
+        self.dist = np.array(
+            [[-0.34912917, 0.17532058, 0.01055267, -0.00249659, 0.0]],
+            dtype=np.float32,
+        )  # 畸变系数
 
     def get_picture(self):
         """获取一帧图片"""
@@ -147,17 +158,17 @@ class CameraCapture:
     def correct_img(self, img):
         h, w = img.shape[:2]
         try:
-            if len(self.mtx) > 0 and len(self.dist) > 0:
-                # 根据畸变参数，计算一个去畸变后的最优内参矩阵
-                # roi： 去畸变后可剪掉黑边
-                newcameramtx, roi = cv2.getOptimalNewCameraMatrix(
-                    self.mtx, self.dist, (w, h), 0, (h, w)
-                )
+            # 根据畸变参数，计算一个去畸变后的最优内参矩阵
+            # roi： 去畸变后可剪掉黑边
+            newcameramtx, roi = cv2.getOptimalNewCameraMatrix(
+                self.mtx, self.dist, (w, h), 0, (h, w)
+            )
 
             # 生成去畸变映射表，并应用映射表将像素重新映射
             mapx, mapy = cv2.initUndistortRectifyMap(
                 self.mtx, self.dist, None, newcameramtx, (w, h), 5
             )
+
             dst = cv2.remap(img, mapx, mapy, cv2.INTER_LINEAR)
             return dst
         except Exception as e:
@@ -239,6 +250,7 @@ if __name__ == "__main__":
             prev_t = curr_t
 
             frame = cap.get_picture()
+            frame = cap.correct_img(frame)
 
             cv2.imshow("frame", frame)
             if cv2.waitKey(1) & 0xFF == ord(" "):

@@ -463,8 +463,8 @@ class ImageProcess:
             x_points = self.mid_line[:, 0].astype(np.float64)
 
             # 按 y 中值分为远端（小 y，图像上方）和近端（大 y，图像下方）
-            y_mid = (y_points.min() + y_points.max()) * 0.5
-            near_mask = y_points >= y_mid
+            y_div = y_points.min() * 0.3 + y_points.max() * 0.7
+            near_mask = y_points >= y_div
             far_mask = ~near_mask
 
             if np.sum(near_mask) < 2 or np.sum(far_mask) < 2:
@@ -1516,9 +1516,9 @@ def run_ros_topic_mode():
     initial_direction = rospy.get_param("~initial_direction", "straight")
     _valid_dirs = {"straight", "right", "left", "stop"}
     if initial_direction in _valid_dirs:
-        direction_state["straight"] = (initial_direction == "straight")
-        direction_state["right"] = (initial_direction == "right")
-        direction_state["left"] = (initial_direction == "left")
+        direction_state["straight"] = initial_direction == "straight"
+        direction_state["right"] = initial_direction == "right"
+        direction_state["left"] = initial_direction == "left"
     else:
         rospy.logwarn(
             f"Invalid initial_direction '{initial_direction}', defaulting to 'straight'"
@@ -1539,9 +1539,9 @@ def run_ros_topic_mode():
                 direction_state["right"] = False
                 direction_state["left"] = False
             else:
-                direction_state["straight"] = (direction == "straight")
-                direction_state["right"] = (direction == "right")
-                direction_state["left"] = (direction == "left")
+                direction_state["straight"] = direction == "straight"
+                direction_state["right"] = direction == "right"
+                direction_state["left"] = direction == "left"
             direction_state["reset_requested"] = True
         rospy.loginfo(f"Direction set to: {direction}")
 
@@ -1668,7 +1668,6 @@ def run_ros_topic_mode():
                         if imgprocess.judge_turning_end(
                             binary_img.shape, miss_line=miss_line
                         ):
-
                             if miss_line[0]:
                                 turning_mid_msg = build_vision_line_msg(
                                     imgprocess.fit_mid_line,
@@ -1715,8 +1714,8 @@ def run_ros_topic_mode():
                 elif state in (ProcessState.RIGHT_TRACKING, ProcessState.LEFT_TRACKING):
                     canvas = imgprocess.return_frame()
 
-                    imgprocess.get_side_line_task_1(binary_img, canvas, is_draw=True)
-                    imgprocess.fit_polynomial2()
+                    imgprocess.get_side_line_task_1(binary_img, canvas, is_draw=False)
+                    imgprocess.fit_polynomial()
 
                     vision_msg = build_vision_line_msg(
                         imgprocess.fit_mid_line,
