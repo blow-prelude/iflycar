@@ -1632,9 +1632,9 @@ def run_ros_topic_mode():
                 ):
                     if state == ProcessState.STRAIGHT_TRACKING and t0 is not None:
                         if time.perf_counter() - t0 >= corner_delay_s:
-                            state = ProcessState.CORNER
+                            state = ProcessState.CROSS
                             rospy.loginfo(
-                                f"State: STRAIGHT_TRACKING -> CORNER (after {corner_delay_s}s)"
+                                f"State: STRAIGHT_TRACKING -> CROSS (after {corner_delay_s}s)"
                             )
 
                     canvas = imgprocess.return_frame()

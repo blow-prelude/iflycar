@@ -1779,9 +1779,9 @@ def main():
                     # STRAIGHT_TRACKING 超时检查
                     if state == ProcessState.STRAIGHT_TRACKING and t0 is not None:
                         if time.perf_counter() - t0 >= corner_delay_s:
-                            state = ProcessState.CORNER
+                            state = ProcessState.CROSS
                             logging.info(
-                                f"State: STRAIGHT_TRACKING -> CORNER (after {corner_delay_s}s)"
+                                f"State: STRAIGHT_TRACKING -> CROSS(after {corner_delay_s}s)"
                             )
 
                     # 获取用于绘制的画布
