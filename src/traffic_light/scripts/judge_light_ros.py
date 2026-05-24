@@ -403,16 +403,25 @@ def main():
                 inference_time = result["inference_time"]
                 worker_id = result["worker_id"]
 
-                rospy.loginfo(
-                    f"worker-{worker_id}: class: {classes}, scores: {scores} ,inference time: {inference_time:.4f} s"
+                # 发布检测到的方向到 /vision_line_direction 话题
+                best_score = (
+                    scores.max() if scores is not None and len(scores) > 0 else 0
+                )
+                best_class = (
+                    classes[scores.argmax()]
+                    if classes is not None and scores is not None and len(classes) > 0
+                    else None
                 )
 
-                # 发布检测到的方向到 /vision_line_direction 话题
-                if classes is not None and scores >= OBJ_THRESH:
-                    direction_name = CLASSES[classes]
+                rospy.loginfo(
+                    f"worker-{worker_id}: best_class: {best_class}, best_score: {best_score} ,inference time: {inference_time:.4f} s"
+                )
+
+                if best_class is not None and best_score >= OBJ_THRESH:
+                    direction_name = CLASSES[best_class]
                     direction_pub.publish(String(direction_name))
                     rospy.loginfo(
-                        f"Detected direction: {direction_name}, shutting down..."
+                        f"Detected direction: {direction_name}"
                     )
                     # 等待消息被消费，避免订阅者未收到就退出
                     time.sleep(1.0)
