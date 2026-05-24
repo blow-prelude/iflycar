@@ -1,0 +1,4 @@
+<launch>
+    <node pkg="pcl_work" type="laser2plc" name="laser2plc" />
+    <include file="$(find pcl_work)/launch/ultrasound.launch" > </include>
+</launch>
