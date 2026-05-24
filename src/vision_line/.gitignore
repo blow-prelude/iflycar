@@ -1,4 +1,5 @@
-videos/
+*.jpg
+*.png 
 
-pictures/
-samples/
+*.avi
+*.mp4
