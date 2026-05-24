@@ -74,11 +74,13 @@ class ImageProcessConfig:
     fill_down_ratio: float = 0.90
 
     # ---- 透视变换矩阵 ----
-    perspective_matrix: list = field(default_factory=lambda: [
-        [-0.498345, -1.637252, 251.246087],
-        [-0.021773, 0.349689, -81.638093],
-        [-0.000241, -0.009225, 1.000000],
-    ])
+    perspective_matrix: list = field(
+        default_factory=lambda: [
+            [-0.498345, -1.637252, 251.246087],
+            [-0.021773, 0.349689, -81.638093],
+            [-0.000241, -0.009225, 1.000000],
+        ]
+    )
 
 
 @dataclass
@@ -142,9 +144,14 @@ class ImageProcess:
 
             if frame is not None:
                 # 如果图片太大，按比例缩小
-                if frame.shape[0] >= self.cfg.preprocess_max_h or frame.shape[1] >= self.cfg.preprocess_max_w:
+                if (
+                    frame.shape[0] >= self.cfg.preprocess_max_h
+                    or frame.shape[1] >= self.cfg.preprocess_max_w
+                ):
                     h, w = frame.shape[:2]
-                    scale = min(self.cfg.preprocess_max_h / h, self.cfg.preprocess_max_w / w)
+                    scale = min(
+                        self.cfg.preprocess_max_h / h, self.cfg.preprocess_max_w / w
+                    )
                     new_h = int(h * scale)
                     new_w = int(w * scale)
                     frame = cv2.resize(
@@ -387,7 +394,9 @@ class ImageProcess:
         dx = np.abs(p2[:, 0] - p1[:, 0])
         dy = np.abs(p2[:, 1] - p1[:, 1])
 
-        need_interp = (dx > self.cfg.interp_dx_thresh) | (dy > self.cfg.interp_dy_thresh)
+        need_interp = (dx > self.cfg.interp_dx_thresh) | (
+            dy > self.cfg.interp_dy_thresh
+        )
 
         result = []
 
@@ -525,7 +534,10 @@ class ImageProcess:
             x_points = self.mid_line[:, 0].astype(np.float64)
 
             # 按 y 中值分为远端（小 y，图像上方）和近端（大 y，图像下方）
-            y_div = y_points.min() * self.cfg.fit_y_div_far_w + y_points.max() * self.cfg.fit_y_div_near_w
+            y_div = (
+                y_points.min() * self.cfg.fit_y_div_far_w
+                + y_points.max() * self.cfg.fit_y_div_near_w
+            )
             near_mask = y_points >= y_div
             far_mask = ~near_mask
 
@@ -552,7 +564,9 @@ class ImageProcess:
             angle = self.get_angle_k(k_near, k_far)
 
             if angle > self.cfg.fit_angle_thresh:
-                offset = int(-np.sign(k_far) * min(angle / 45.0, 1.0) * self.cfg.fit_max_offset)
+                offset = int(
+                    -np.sign(k_far) * min(angle / 45.0, 1.0) * self.cfg.fit_max_offset
+                )
 
             # 生成近端拟合点（含偏移）
             near_ys = np.arange(
@@ -640,7 +654,10 @@ class ImageProcess:
         if self.left_c is None or self.right_c is None:
             return False
         img_h = img_shape[0]
-        return self.left_c[1] >= img_h * self.cfg.corner_y_ratio or self.right_c[1] >= img_h * self.cfg.corner_y_ratio
+        return (
+            self.left_c[1] >= img_h * self.cfg.corner_y_ratio
+            or self.right_c[1] >= img_h * self.cfg.corner_y_ratio
+        )
 
     def judge_enter_turning(self, stop_mid, img_shape):
         """判断是否应该进入 TURNING 状态
@@ -804,12 +821,18 @@ class ImageProcess:
 
             diff = np.diff(img == 0, axis=1)  # 计算行内黑白跳变  右-左
 
-            for y in range(int(img_h * self.cfg.down_ratio), int(img_h * self.cfg.up_ratio), -1):
+            for y in range(
+                int(img_h * self.cfg.down_ratio), int(img_h * self.cfg.up_ratio), -1
+            ):
                 row_diff = diff[y]
 
                 # 动态搜索窗口：二段阶梯
                 y_norm = y / img_h
-                cur_range = self.cfg.search_range_wide if y_norm > self.cfg.search_range_threshold else self.cfg.search_range_narrow
+                cur_range = (
+                    self.cfg.search_range_wide
+                    if y_norm > self.cfg.search_range_threshold
+                    else self.cfg.search_range_narrow
+                )
 
                 # --- 左侧赛道线 ---
                 if left_stable[0]:
@@ -980,13 +1003,19 @@ class ImageProcess:
 
             # 从图像下方（靠近车辆）开始搜索
             for y in range(
-                int(img.shape[0] * self.cfg.down_ratio), int(img.shape[0] * self.cfg.up_ratio), -1
+                int(img.shape[0] * self.cfg.down_ratio),
+                int(img.shape[0] * self.cfg.up_ratio),
+                -1,
             ):
                 row_diff = diff[y]
 
                 # 动态搜索窗口：二段阶梯
                 y_norm = y / img_h
-                cur_range = self.cfg.search_range_wide if y_norm > self.cfg.search_range_threshold else self.cfg.search_range_narrow
+                cur_range = (
+                    self.cfg.search_range_wide
+                    if y_norm > self.cfg.search_range_threshold
+                    else self.cfg.search_range_narrow
+                )
 
                 # --- 左侧赛道线 ---
                 if left_stable[0]:
@@ -1032,7 +1061,11 @@ class ImageProcess:
                                 rospy.logdebug(
                                     f"left line angle: {angle} , pre_p: {left_pre_p},  cur_p: {left_cur_p} , nxt_p: {left_nxt_p}"
                                 )
-                                if self.cfg.corner_angle_low < angle < self.cfg.corner_angle_high:
+                                if (
+                                    self.cfg.corner_angle_low
+                                    < angle
+                                    < self.cfg.corner_angle_high
+                                ):
                                     rospy.logdebug(
                                         f"slope mutation , angle: {angle} ,pre_p:{left_pre_p} , cur_p: {left_cur_p} , nxt_p: {left_nxt_p} "
                                     )
@@ -1105,7 +1138,11 @@ class ImageProcess:
                                 rospy.logdebug(
                                     f"right line angle: {angle} , pre_p: {right_pre_p},  cur_p: {right_cur_p} , nxt_p: {right_nxt_p}"
                                 )
-                                if self.cfg.corner_angle_low < angle < self.cfg.corner_angle_high:
+                                if (
+                                    self.cfg.corner_angle_low
+                                    < angle
+                                    < self.cfg.corner_angle_high
+                                ):
                                     rospy.logdebug(
                                         f"slope mutation , angle: {angle} ,pre_p:{right_pre_p} cur_p: {right_cur_p} , nxt_p: {right_nxt_p} "
                                     )
@@ -1525,7 +1562,9 @@ def build_vision_line_msg(line_points, processed_shape, original_shape, target_y
     return msg
 
 
-def build_vision_line_msg_by_index(line_points, processed_shape, original_shape, index=-1):
+def build_vision_line_msg_by_index(
+    line_points, processed_shape, original_shape, index=-1
+):
     """构造 /vision_line 消息，格式为 [x_error, y_pixel]。选择 line_points 的第 index 个点。"""
     msg = Float32MultiArray()
 
@@ -1569,12 +1608,18 @@ def run_ros_topic_mode():
     # 加载配置
     rt_cfg = RuntimeConfig(
         corner_delay_s=rospy.get_param("~corner_delay_s", RuntimeConfig.corner_delay_s),
-        turning_end_x_error_abs_max=rospy.get_param("~turning_end_x_error_abs_max", RuntimeConfig.turning_end_x_error_abs_max),
+        turning_end_x_error_abs_max=rospy.get_param(
+            "~turning_end_x_error_abs_max", RuntimeConfig.turning_end_x_error_abs_max
+        ),
         target_y=rospy.get_param("~vision_target_y", RuntimeConfig.target_y),
-        turning_target_y=rospy.get_param("~turning_target_y", RuntimeConfig.turning_target_y),
+        turning_target_y=rospy.get_param(
+            "~turning_target_y", RuntimeConfig.turning_target_y
+        ),
         loop_rate=rospy.get_param("~loop_rate", RuntimeConfig.loop_rate),
         img_sender_ip=rospy.get_param("~img_sender_ip", RuntimeConfig.img_sender_ip),
-        img_sender_port=rospy.get_param("~img_sender_port", RuntimeConfig.img_sender_port),
+        img_sender_port=rospy.get_param(
+            "~img_sender_port", RuntimeConfig.img_sender_port
+        ),
     )
 
     # TURNING 标志由视觉状态机驱动，启动时先清零。
@@ -1779,7 +1824,8 @@ def run_ros_topic_mode():
                                 # 中线误差归零（或在阈值内）后才允许退出 TURNING。
                                 if (
                                     y_pixel >= 0
-                                    and abs(x_error) <= rt_cfg.turning_end_x_error_abs_max
+                                    and abs(x_error)
+                                    <= rt_cfg.turning_end_x_error_abs_max
                                 ):
                                     state = ProcessState.TRACKING2
                                     rospy.set_param(turning_flag_param, 0)

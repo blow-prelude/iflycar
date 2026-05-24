@@ -55,6 +55,15 @@ baseBringup::baseBringup() :x_(0), y_(0), th_(0)
   led_green_value_ = 0;
   led_blue_value_  = 0;
 
+  q_init = Eigen::Quaterniond(1.0, 0.0, 0.0, 0.0); 
+  q_axis_fix =
+        Eigen::AngleAxisd(0.0, Eigen::Vector3d::UnitZ()) *
+        Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitY()) *
+        Eigen::AngleAxisd(0.0, Eigen::Vector3d::UnitX());
+  q_rot_x = Eigen::Quaterniond(1.0, 0.0, 0.0, 0.0); 
+  yaw = 0.0;
+  is_init = false;
+
   getMileage();
 
   odom_pub_    = nh_.advertise<nav_msgs::Odometry>(odom_topic_.c_str(),10);
@@ -62,6 +71,7 @@ baseBringup::baseBringup() :x_(0), y_(0), th_(0)
   vel_sub_     = nh_.subscribe<geometry_msgs::Twist>(vel_topic_.c_str(), 1, &baseBringup::velCallback,this);
   joy_sub_     = nh_.subscribe<sensor_msgs::Joy>(joy_topic_.c_str(),     1, &baseBringup::joyCallback,this);
   imu_pub_     = nh_.advertise<sensor_msgs::Imu>(imu_topic_.c_str(), 10);
+  yaw_pub      = nh_.advertise<std_msgs::Float32>("/imu/yaw", 10);
   mag_pose_pub_ = nh_.advertise<geometry_msgs::Pose2D>(mag_pose_2d_topic_.c_str(), 10);
 
   stop_move_server_   = nh_.advertiseService("stop_move", &baseBringup::stopMoveCB, this);
@@ -770,50 +780,44 @@ void baseBringup::processIMU(uint8_t head_type)
                               ahrs_frame_.frame.data.data_pack.Qx,
                               ahrs_frame_.frame.data.data_pack.Qy,
                               ahrs_frame_.frame.data.data_pack.Qz);
-    Eigen::Quaterniond q_r =                          
-        Eigen::AngleAxisd( 3.14159, Eigen::Vector3d::UnitZ()) * 
-        Eigen::AngleAxisd( 3.14159, Eigen::Vector3d::UnitY()) * 
-        Eigen::AngleAxisd( 0.00000, Eigen::Vector3d::UnitX());
-    Eigen::Quaterniond q_rr =                          
-        Eigen::AngleAxisd( 0.00000, Eigen::Vector3d::UnitZ()) * 
-        Eigen::AngleAxisd( 0.00000, Eigen::Vector3d::UnitY()) * 
-        Eigen::AngleAxisd( 3.14159, Eigen::Vector3d::UnitX());
-    Eigen::Quaterniond q_xiao_rr =
-        Eigen::AngleAxisd( 3.14159/2, Eigen::Vector3d::UnitZ()) * 
-        Eigen::AngleAxisd( 0.00000, Eigen::Vector3d::UnitY()) * 
-        Eigen::AngleAxisd( 3.14159, Eigen::Vector3d::UnitX());
-      
-    Eigen::Quaterniond q_out =  q_r * q_ahrs * q_rr;
-    imu_data.orientation.w = q_out.w();
-    imu_data.orientation.x = q_out.x();
-    imu_data.orientation.y = q_out.y();
-    imu_data.orientation.z = q_out.z();
-    imu_data.angular_velocity.x = ahrs_frame_.frame.data.data_pack.RollSpeed;
-    imu_data.angular_velocity.y = -ahrs_frame_.frame.data.data_pack.PitchSpeed;
-    imu_data.angular_velocity.z = -ahrs_frame_.frame.data.data_pack.HeadingSpeed;
-    imu_data.linear_acceleration.x = -imu_frame_.frame.data.data_pack.accelerometer_x;
-    imu_data.linear_acceleration.y = imu_frame_.frame.data.data_pack.accelerometer_y;
-    imu_data.linear_acceleration.z = imu_frame_.frame.data.data_pack.accelerometer_z;
 
-    imu_pub_.publish(imu_data);
+    if (!is_init) {
+        Eigen::Quaterniond q_fixed = q_axis_fix * q_ahrs;
+        // 【修改点1】：不要交换！按 w, x, y, z 的正确顺序传参
+        q_init = Eigen::Quaterniond(q_fixed.w(), q_fixed.x(), q_fixed.y(), q_fixed.z()); 
+        q_rot_x = q_init.inverse();
+        is_init = true;
+    }
 
-    Eigen::Quaterniond rpy_q(imu_data.orientation.w,
-                              imu_data.orientation.x,
-                              imu_data.orientation.y,
-                              imu_data.orientation.z);
-    geometry_msgs::Pose2D pose_2d;
-    double magx, magy, magz, roll, pitch;
-    magx  = -imu_frame_.frame.data.data_pack.magnetometer_x;
-    magy  = imu_frame_.frame.data.data_pack.magnetometer_y;
-    magz  = imu_frame_.frame.data.data_pack.magnetometer_z;
-    Eigen::Vector3d EulerAngle = rpy_q.matrix().eulerAngles(2, 1, 0);
-    roll  = EulerAngle[2];
-    pitch = EulerAngle[1];
+    Eigen::Quaterniond q_fixed = q_axis_fix * q_ahrs;
+    // 【修改点2】：不要交换！按 w, x, y, z 的正确顺序传参
+    Eigen::Quaterniond q_swapped(q_fixed.w(), q_fixed.x(), q_fixed.y(), q_fixed.z());
 
-    double magyaw;
-    magCalculateYaw(roll, pitch, magyaw, magx, magy, magz);
-    pose_2d.theta = magyaw;
-    mag_pose_pub_.publish(pose_2d);
+    Eigen::Quaterniond q_corrected = q_rot_x * q_swapped; // 消除初始偏移
+
+    imu_data.orientation.w = q_corrected.w();
+    imu_data.orientation.x = q_corrected.x();
+    imu_data.orientation.y = q_corrected.y();
+    imu_data.orientation.z = q_corrected.z();
+
+    // 获取出准确的 yaw 角
+    yaw = tf::getYaw(imu_data.orientation);
+
+    // 【加上这极其关键的一行！】 
+    yaw = -yaw;  // 因为 IMU 安装问题导致方向反了，手动拨乱反正！
+   
+    // imu_data.angular_velocity.x = ahrs_frame_.frame.data.data_pack.RollSpeed;
+    // imu_data.angular_velocity.y = -ahrs_frame_.frame.data.data_pack.PitchSpeed;
+    // imu_data.angular_velocity.z = -ahrs_frame_.frame.data.data_pack.HeadingSpeed;
+    // imu_data.linear_acceleration.x = imu_frame_.frame.data.data_pack.accelerometer_x;
+    // imu_data.linear_acceleration.y = -imu_frame_.frame.data.data_pack.accelerometer_y;
+    // imu_data.linear_acceleration.z = -imu_frame_.frame.data.data_pack.accelerometer_z;
+    // imu_data.orientation_covariance = {1e6, 0, 0, 0, 1e6, 0, 0, 0, 1e-6};
+    // imu_data.angular_velocity_covariance = {1e6, 0, 0, 0, 1e6, 0, 0, 0, 1e-6};
+    // imu_data.linear_acceleration_covariance = {-1, 0, 0, 0, 0, 0, 0, 0, 0};
+    // std_msgs::Float32 yaw_msg;
+    // yaw_msg.data = yaw;
+    // yaw_pub.publish(yaw_msg);
   }
 }
 
@@ -1041,7 +1045,8 @@ void baseBringup::processOdometry(){
   lock.lock();
   x_  += delta_x;
   y_  += delta_y;
-  th_ += delta_th;
+  // th_ += delta_th;
+  th_ = yaw;
   lock.unlock();
   nav_msgs::Odometry odom_tmp;
   odom_tmp.header.stamp = ros::Time::now();

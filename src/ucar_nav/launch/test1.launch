@@ -31,7 +31,7 @@
   <!-- <include file="$(find lidar_undistortion_2d)/launch/lidar_undistortion_2d.launch" > </include> -->
 
   <!-- 启动地图服务器 -->
-  <node name="map_server" pkg="map_server" type="map_server" args="$(find ucar_nav)/maps/7241545.yaml" output="screen">
+  <node name="map_server" pkg="map_server" type="map_server" args="$(find ucar_nav)/maps/2025811.yaml" output="screen">
     <param name="frame_id" value="map" />
   </node> 
 
@@ -40,6 +40,7 @@
   <!-- Publish scans from best pose at a max of 10 Hz -->
     <param name="odom_model_type" value="omni"/>
     <param name="transform_tolerance" value="0.2" />
+    
     <param name="gui_publish_rate" value="10.0"/>
     <param name="laser_max_beams" value="50"/>
     <param name="use_map_topic" value="false"/>  
@@ -82,62 +83,6 @@
     <!-- //设置为false阻止amcl发布全局坐标系和里程计坐标系之间的tf变换 -->
   </node>
 
-  <!-- <node pkg="robot_localization" type="ekf_localization_node" name="ekf_se" clear_params="true">
-    <rosparam command="load" file="$(find robot_localization)/params/ukf_user.yaml" />
-    <remap from="/odometry/filtered" to="/odom"/>
-  </node> -->
-  <node pkg="rf2o_laser_odometry" type="rf2o_laser_odometry_node" name="rf2o_laser_odometry">
-    <param name="laser_scan_topic" value="/scan"/>        
-    <param name="odom_topic" value="/odom" />             
-    <param name="publish_tf" value="true" />                   
-    <param name="base_frame_id" value="base_link"/>             
-    <param name="odom_frame_id" value="odom" />               
-    <param name="init_pose_from_topic" value="" />  
-    <param name="freq" value="10.0"/>                         
-    <param name="verbose" value="true" />                     
-  </node>
-
-  <!-- 启动卡尔曼滤波 -->
-  <!-- <node pkg="robot_pose_ekf" type="pose_to_odom_converter" name="pose_to_odom_converter"></node> -->
-  <!-- <node pkg="robot_pose_ekf" type="robot_pose_ekf" name="robot_pose_ekf"> -->
-    <!-- <param name="output_frame" value="odom"/> -->
-    <!-- <param name="base_footprint_frame" value="base_link"/> -->
-    <!-- <param name="freq" value="30.0"/> -->
-    <!-- <param name="sensor_timeout" value="1.0"/>   -->
-    <!-- <param name="odom_used" value="true"/> -->
-    <!-- <param name="imu_used" value="true"/> -->
-    <!-- <param name="vo_used" value="false"/> -->
-    <!-- <param name="debug" value="true"/> -->
-    <!-- <remap from="odom" to="odom_raw" /> -->
-        <!-- <remap from="robot_pose_ekf/odom_combined" to="/odom" /> -->
-    <!-- <remap from="imu_data" to="imu" /> -->
-  <!-- </node> -->
-  
-  <!-- 启动imu滤波 -->
-  <node name="imu_tf_server" pkg="robot_pose_ekf" type="imu_tf_server" />
-  <!-- <node pkg="imu_complementary_filter" type="complementary_filter_node" name="complementary_filter_gain_node" output="screen">
-    <param name="do_bias_estimation" value="true"/>
-    <param name="do_adaptive_gain" value="true"/>
-    <param name="use_mag" value="false"/>
-    <param name="gain_acc" value="0.01"/>
-    <param name="gain_mag" value="0.01"/>
-    <param name="publish_debug_topics" value="false"/>
-    <param name="publish_tf" value="false"/>
-    <remap from="imu/data_raw" to="imu" />
-  </node> -->
-  <!-- <node name="imu_filter_madgwick" pkg="imu_filter_madgwick" type="imu_filter_node" output="screen">
-     <param name="use_mag" value="false"/> <!是否使用磁力计数据 -->
-    <!-- <param name="publish_tf" value="true"/> 是否发布TF变换 -->
-    <!-- <param name="world_frame" value="enu"/> 世界坐标系 -->
-     <!-- <param name="fixed_frame" value="base_link"/> 固定坐标系 -->
-    <!-- <param name="gain" value="0.1"/> 滤波器增益 -->
-    <!-- <param name="fixed_frame_orientation" value="[-3.1415926, -3.1415926, -3.1415926]"/> -->
-    <!-- <param name="reverse_tf" value="flase"/>   -->
-    <!-- <param name="remove_gravity_vector" value="true"/> -->
-    <!-- <remap from="imu/data_raw" to="/imu"/> -->
-    <!-- <remap from="imu/data" to="/imu/data"/> -->
-  <!-- </node>  -->
-
   <!-- 启动move_base -->
   <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
     <param name="controller_frequency" value="10.0"/> 
@@ -152,6 +97,7 @@
     <rosparam file="$(find ucar_nav)/move_base/local_costmap_params.yaml" command="load" />
     <rosparam file="$(find ucar_nav)/move_base/global_costmap_params.yaml" command="load" />
 
+    <!-- <rosparam file="$(find ucar_nav)/move_base/move_base_params.yaml" command="load" /> -->
     <rosparam file="$(find ucar_nav)/move_base/base_global_planner_params.yaml" command="load" />
     <rosparam file="$(find ucar_nav)/move_base/teb_local_planner_params.yaml" command="load" />
     <rosparam file="$(find ucar_nav)/move_base/costmap_converter_params.yaml" command="load" />

@@ -5,6 +5,7 @@
 #include <tf/transform_broadcaster.h>
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/Joy.h>
+#include <std_msgs/Float32.h>
 #include <iostream>
 #include <serial/serial.h>  //ROS的串口包 http://wjwwood.io/serial/doc/1.1.0/index.html
 #include <math.h>
@@ -27,6 +28,8 @@
 #include <geometry_msgs/Pose2D.h>
 #include <ucar_controller/fdilink_data_struct.h>
 #include <ucar_controller/crc_table.h>
+#include <Eigen/Core>
+#include <Eigen/Geometry>
 
 using namespace std;
 #define ODOM_POSE_COVARIANCE {1e-3, 0, 0, 0, 0, 0,\
@@ -34,28 +37,28 @@ using namespace std;
                               0, 0, 1e6, 0, 0, 0,\
                               0, 0, 0, 1e6, 0, 0,\
                               0, 0, 0, 0, 1e6, 0,\
-                              0, 0, 0, 0, 0, 1e3}
+                              0, 0, 0, 0, 0, 1e6}
 
 #define ODOM_POSE_COVARIANCE2 {1e-9, 0, 0, 0, 0, 0,\
                               0, 1e-3, 1e-9, 0, 0, 0,\
                               0, 0, 1e6, 0, 0, 0,\
                               0, 0, 0, 1e6, 0, 0,\
                               0, 0, 0, 0, 1e6, 0,\
-                              0, 0, 0, 0, 0, 1e-9}
+                              0, 0, 0, 0, 0, 1e6}
 
 #define ODOM_TWIST_COVARIANCE {1e-3, 0, 0, 0, 0, 0,\
                                0, 1e-3, 0, 0, 0, 0,\
                                0, 0, 1e6, 0, 0, 0,\
                                0, 0, 0, 1e6, 0, 0,\
                                0, 0, 0, 0, 1e6, 0,\
-                               0, 0, 0, 0, 0, 1e3}
+                               0, 0, 0, 0, 0, 1e6}
 
 #define ODOM_TWIST_COVARIANCE2 {1e-9, 0, 0, 0, 0, 0,\
                                 0, 1e-3, 1e-9, 0, 0, 0,\
                                 0, 0, 1e6, 0, 0, 0,\
                                 0, 0, 0, 1e6, 0, 0,\
                                 0, 0, 0, 0, 1e6, 0,\
-                                0, 0, 0, 0, 0, 1e-9}
+                                0, 0, 0, 0, 0, 1e6}
 
 namespace ucarController
 {
@@ -184,6 +187,12 @@ private:
   FDILink::ahrs_frame_read ahrs_frame_;
   FDILink::insgps_frame_read insgps_frame_;
 
+  Eigen::Quaterniond q_init; // 启动时的初始四元数
+  Eigen::Quaterniond q_axis_fix;
+  Eigen::Quaterniond q_rot_x;
+  double yaw;
+  bool is_init;
+
   //joy ctl
   double linear_gain_;
   double twist_gain_;
@@ -213,6 +222,7 @@ private:
   ros::Publisher mileage_pub_;
   ros::Publisher battery_pub_;
   ros::Publisher imu_pub_;
+  ros::Publisher yaw_pub;
   ros::Publisher mag_pose_pub_;
   //Subscriber
   ros::Subscriber vel_sub_, joy_sub_;

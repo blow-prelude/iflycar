@@ -2,6 +2,7 @@
 /build
 .catkin_workspace
 /.vscode
+/.marscode
 /.claude
 /.worktrees
 /docs
