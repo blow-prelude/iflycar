@@ -78,7 +78,7 @@ private:
     void initPID()
     {
         // 角速度PID参数
-        angular_pid_ = {0.005, 0.0, 0.008, 0, 0, 0, MAX_ANGULAR_VEL};
+        angular_pid_ = {0.01, 0.0, 0.008, 0, 0, 0, MAX_ANGULAR_VEL};
         // 线速度PID参数
         linear_pid_ = {0.5, 0.01, 0.05, 0, 0, 0, MAX_LINEAR_VEL};
     }
@@ -379,7 +379,7 @@ public:
             // {
             //     cmd.linear.x = 0.0;
             // }
-            cmd.linear.x = 0.3; // 恒定速度
+            cmd.linear.x = 0.8; // 恒定速度
             // 发布速度指令
             cmd_vel_pub_.publish(cmd);
 
