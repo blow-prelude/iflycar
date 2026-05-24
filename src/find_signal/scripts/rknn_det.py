@@ -29,7 +29,6 @@ RKNN_PRE_PROCESS_CONFIG = [
         }
     },
 ]
-
 POSTPROCESS_CONFIG = {
     "DBPostProcess": {
         "thresh": 0.3,

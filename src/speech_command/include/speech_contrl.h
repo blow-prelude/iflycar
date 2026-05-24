@@ -53,9 +53,9 @@ param:
 #define CMD_coke_coke 836   // 可乐+可乐
 
 // 仿真
-#define CMD_Gazebo1 851   // 1房间
-#define CMD_Gazebo2 852   // 2房间
-#define CMD_Gazebo3 853   // 3房间
+#define CMD_Gazebo1 1   // 1房间
+#define CMD_Gazebo2 2   // 2房间
+#define CMD_Gazebo3 3   // 3房间
 
 //路口
 #define CMD_Intersection1 951   // 路口1

@@ -117,6 +117,8 @@ class OURSWITCH
         bool getCenterXFromParam();
         // 计算y方向速度（用于center_x调节）
         double calculateYVelocity();
+        // 计算x方向速度（用于距离调节）
+        double calculateXVelocity();
 
         ros::NodeHandle nh_;
         actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> ac_;
@@ -136,6 +138,7 @@ class OURSWITCH
         ros::ServiceClient play_flag_client;
         // 新增：订阅颜色识别结果话题
         ros::Subscriber color_result_sub;
+        ros::Subscriber imu_sub;
         
         // 消息与参数
         geometry_msgs::Twist cmd_vel;
@@ -146,6 +149,8 @@ class OURSWITCH
 
         // 任务参数
         int tool = 0, target;
+        int gazebo_flag = 1;
+        int Zbar_flag = 1;
         int target_class;
         int target1;
         int target2;
@@ -162,6 +167,9 @@ class OURSWITCH
         double distance_you_y;
         double distance_zuo_y;
 
+        double Start_CarX;
+        double Start_CarY;
+
         // 状态标志
         int vision_gettool = 0;
         int vision_getIntersection1 = 0;  // 绿色信号灯（1）
@@ -170,6 +178,7 @@ class OURSWITCH
         int fusion_size = 0;
         int Point_count = 0;
         bool vision_control_active_;
+        bool vision_control_active2_ = false;  // 新增：第二个视觉控制标志
         // 新增：存储颜色识别结果（1=绿色，2=红色）
         int current_color_;
 
@@ -178,8 +187,11 @@ class OURSWITCH
         PID Aid_X;
         PID Aid_Y;
         PID pid_center_x_;  // 用于center_x调节的PID
+        PID pid_distance_;  // 用于距离调节的PID
         const double target_center_x_ = 320.0;  // 目标中心x值（固定为320）
+        const double target_distance_ = 0.1;    // 目标前方距离（20cm）
         double current_center_x_;  // 当前中心x值（从参数服务器读取）
 };
 
 #endif 
+    

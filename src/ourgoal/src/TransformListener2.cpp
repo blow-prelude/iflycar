@@ -27,7 +27,7 @@ int main(int argc, char **argv)
     listener.waitForTransform("/map", "/base_link", ros::Time(0), ros::Duration(10.0));
     // 等待 /map 坐标系到 /base_link 坐标系的变换可用，最多等待 10 秒。
 
-    ros::Rate rate(1.0);  // ros::Rate rate(10.0)：设置循环频率为 10Hz。
+    ros::Rate rate(2);  // ros::Rate rate(10.0)：设置循环频率为 10Hz。
     while (nh.ok())
     {
         tf::StampedTransform transform;  // 定义一个带时间戳的变换对象。

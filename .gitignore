@@ -1,9 +1,11 @@
 /devel
 /build
 .catkin_workspace
-/.vscode
+**/.vscode/
+/.marscode
 /.claude
 /.worktrees
 /docs
 
 **/__pycache__/
+*.zip

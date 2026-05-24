@@ -1,22 +1,28 @@
-#Description:
-#  全局代价地图参数配置文件,各参数的意义如下：
-#  global_frame:在全局代价地图中的全局坐标系;
-#  robot_base_frame:机器人的基坐标系;
-#0.2quanju  inflation_layer
-global_costmap:
-  global_frame: map
-  robot_base_frame: base_link
-  update_frequency: 0.5
-  publish_frequency: 0.5
-  static_map: true
-  cost_scaling_factor: 8.0
-  # rolling_window: false
-  # transform_tolerance: 10
-  inflation_radius: 0.25
-
-  track_unknown_space: true
-  plugins:
-    - {name: static_layer,    type: "costmap_2d::StaticLayer"}
-    - {name: obstacle_layer,  type: "costmap_2d::ObstacleLayer"}
+  global_costmap:
+    #代价地图的世界坐标系
+    global_frame: map
+    #机器人底座的局部坐标系
+    robot_base_frame: base_link
+    #代价地图的更新频率
+    update_frequency: 5.0
+    #代价地图的发布频率
+    publish_frequency: 5.0
+    #代价比例系数，越大则代价值越小
+    cost_scaling_factor: 8.0
+    #决定代价地图是否需要根据map_server提供的地图信息进行初始化，如果不需要使用已有的地图或者map_server，最好将该参数设置为false
+    static_map: true        
     
-    - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
+    plugins:
+      - {name: static_layer,       type: "costmap_2d::StaticLayer"}
+      - {name: obstacle_layer,        type: "costmap_2d::ObstacleLayer"}
+      # - {name: obstacles,  type: "obstacle_layer_laser_undistortion/ObstacleLayerLaserUndistortion"}
+      # - {name: costmap_prohibition_layer,        type: "costmap_prohibition_layer_namespace::CostmapProhibitionLayer"}     
+      - {name: inflation_layer,        type: "costmap_2d::InflationLayer"}
+
+
+
+
+
+
+
+

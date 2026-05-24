@@ -100,9 +100,9 @@ void getYoloMsg(const object_information_msgs::ObjectConstPtr &msg)
     {
         vision_time = msg->header.stamp.toSec();
         nh.setParam("vision_time", vision_time);
-        nh.setParam("cl", cl);
         nh.getParam("target_class", target_class);
         double cx = msg->cx;
+        float score = msg -> score;
         x_id = cx;
         nh.setParam("yolo_cx", cx);
         int length = msg->right - msg->left;
@@ -115,6 +115,7 @@ void getYoloMsg(const object_information_msgs::ObjectConstPtr &msg)
             if (cl == CMD_Apple || cl == CMD_Banana || cl == CMD_Watermelon)
             {
                 flag = 1;
+                nh.setParam("cl", cl);
             }
         }
         else if (target_class == CMD_Vegetables)
@@ -122,6 +123,7 @@ void getYoloMsg(const object_information_msgs::ObjectConstPtr &msg)
             if (cl == CMD_pepper || cl == CMD_Tomato || cl == CMD_Potato)
             {
                 flag = 1;
+                nh.setParam("cl", cl);
             }
         }
         else if (target_class == CMD_sweet)
@@ -129,11 +131,13 @@ void getYoloMsg(const object_information_msgs::ObjectConstPtr &msg)
             if (cl == CMD_Milk || cl == CMD_Cake || cl == CMD_coke)
             {
                 flag = 1;
+                nh.setParam("cl", cl);
             }
         }
+        ROS_WARN("score:%.2f", score);
         
 
-        if (cx > 50 && cx < 590 && flag == 1)
+        if (cx > 100 && cx < 540 && flag == 1 && score > 0.7)
         {
             count_printf++;
             nh.setParam("/vision_gettool", 1);
@@ -261,3 +265,4 @@ int main(int argc, char **argv)
     ros::spin();
     return 0;
 }
+

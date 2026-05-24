@@ -2,21 +2,14 @@
 
 // 导航点宏定义
 #define goto_A1 sendPos(1.7, -0.05, -0.0872, 0.9962)
-#define goto_A sendPos(1.0, 0.45, 1.0, 0.0)
-#define goto_B1 sendPos(0.6, 0.45, 1.0, 0.0)
-#define goto_B2 sendPos(0.6, 1.50, 1.0, 0.0)
-#define goto_B sendPos(1.35, 3.0, 0.707, 0.707)
-#define goto_C sendPos(1.35, 3.0, 0.0, 1.0)
-#define goto_D1 sendPos(3.7, 4.0, 0.707, 0.707)
-#define goto_D2 sendPos(4.5, 4.0, 0.707, 0.707)
-#define goto_E1 sendPos(2.9, 3.5, -0.7071, 0.7071)
-#define goto_E2 sendPos(5.0, 3.5, -0.7071, 0.7071)
-#define goto_G1 sendPos(3.3, 1.4, -0.5, 0.866)    
-#define goto_G2 sendPos(3.7, 0.8, -0.707, 0.707)    
-#define goto_G3 sendPos(3.7, 0.3, -0.707, 0.707)    
-#define goto_G4 sendPos(3.1, 0.3, -0.707, 0.707)   
-#define goto_G5 sendPos(3.1, 0.0, -0.707, 0.707)   
-#define goto_F sendPos(3.6, -0.3, -0.707, 0.707)
+#define goto_A sendPos(0.70, 0.47, 1.0, 0.0)
+#define goto_B sendPos(0.86, 3.25, 0.707, 0.707)
+#define goto_C sendPos(0.96, 3.50, 0.0, 1.0)
+#define goto_D1 sendPos(3.15, 4.0, 0.707, 0.707)
+#define goto_D2 sendPos(4.2, 4.0, 0.707, 0.707)
+#define goto_E1 sendPos(3.0, 3.2, -0.7071, 0.7071)
+#define goto_E2 sendPos(4.4, 3.2, -0.7071, 0.7071) 
+#define goto_F sendPos(3.50, -0.90, -0.707, 0.707)
 
 // 物品ID宏定义
 #define CMD_Fruits 1170
@@ -31,9 +24,9 @@
 #define CMD_Milk 429
 #define CMD_Cake 404
 #define CMD_coke 418
-#define CMD_Gazebo1 851
-#define CMD_Gazebo2 852
-#define CMD_Gazebo3 853
+#define CMD_Gazebo1 1
+#define CMD_Gazebo2 2
+#define CMD_Gazebo3 3
 #define CMD_Intersection1 951  // 对应绿色信号灯
 #define CMD_Intersection2 952  // 对应红色信号灯
 #define CMD_OVER ((4 << 3) + 0)
@@ -63,6 +56,15 @@ OURSWITCH::OURSWITCH()
     pid_center_x_.integral = 0;
     pid_center_x_.output = 0;
 
+    // 初始化距离控制的PID参数
+    pid_distance_.kp = 0.25;     // 距离控制比例系数
+    pid_distance_.ki = 0.02;    // 距离控制积分系数
+    pid_distance_.kd = 0.01;     // 距离控制微分系数
+    pid_distance_.err = 0;
+    pid_distance_.err_last = 0;
+    pid_distance_.integral = 0;
+    pid_distance_.output = 0;
+
     // 初始化发布者
     cancel_pub = nh_.advertise<actionlib_msgs::GoalID>("move_base/cancel", 10);
     cmd_vel_pub__ = nh_.advertise<geometry_msgs::Twist>("/cmd_vel", 10);
@@ -78,6 +80,9 @@ OURSWITCH::OURSWITCH()
     sub_ultrasound = nh_.subscribe("/ultra", 10, &OURSWITCH::UltrasoundCallback, this);
     // 新增：订阅颜色识别结果话题
     color_result_sub = nh_.subscribe("/color_result", 10, &OURSWITCH::colorResultCallback, this);
+
+    Start_CarX = nh_.param("CarX", 0.0);
+    Start_CarY = nh_.param("CarY", 0.0);
 
     ros::service::waitForService("/param_reload");
     ROS_WARN("Initialization complete!");
@@ -227,6 +232,36 @@ double OURSWITCH::calculateYVelocity()
     return Limit_Value(output, max_y_vel, -max_y_vel);
 }
 
+// 计算x方向速度（用于距离调节）
+double OURSWITCH::calculateXVelocity()
+{
+    // 计算距离误差（目标距离 - 当前距离）
+    double error = target_distance_ - distance_qian_x;
+    
+    // 积分项（带限幅）
+    pid_distance_.integral += error;
+    const double integral_limit = 1.0; // 积分限幅
+    if (pid_distance_.integral > integral_limit)
+        pid_distance_.integral = integral_limit;
+    else if (pid_distance_.integral < -integral_limit)
+        pid_distance_.integral = -integral_limit;
+    
+    // 微分项
+    double derivative = error - pid_distance_.err_last;
+    
+    // PID输出计算
+    double output = pid_distance_.kp * error + 
+                   pid_distance_.ki * pid_distance_.integral + 
+                   pid_distance_.kd * derivative;
+    
+    // 保存当前误差
+    pid_distance_.err_last = error;
+    
+    // 速度限幅（限制在安全范围内）
+    const double max_x_vel = 0.1; // 最大x方向速度
+    return Limit_Value(output, max_x_vel, -max_x_vel);
+}
+
 // 获取点云处理后的目标点
 void OURSWITCH::getPoint(Point *P)
 {
@@ -302,11 +337,33 @@ void OURSWITCH::sendPos(double x, double y, double z, double w)
 void OURSWITCH::GotoA()
 {
     ROS_INFO("Entering GotoA state");
+    
+    // teb_reload.request.ask = 1;
+    // teb_param_reloader.call(teb_reload);
+    // ROS_WARN("teb_param1_reload!!!");
 
-    goto_A1;
-    ac_.waitForResult();
-    while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
+    // 让车向前走1秒
+    ROS_INFO("Moving forward for 2 second");
+    ros::Time rotate_start = ros::Time::now();
+    while (ros::Time::now() - rotate_start < ros::Duration(3.5))
+    {
+	cancel_pub.publish(cancel_msg);
+	cmd_vel.linear.x = 0.4;
+	cmd_vel.linear.y = 0.0;
+	cmd_vel.angular.z = 0.0;  
+	cmd_vel_pub__.publish(cmd_vel);
         ros::spinOnce();
+    }
+    
+    // 停止移动
+    cmd_vel.linear.x = 0.0;
+    cmd_vel_pub__.publish(cmd_vel);
+    
+    // 继续原有的导航逻辑
+    // goto_A1;
+    // ac_.waitForResult();
+    // while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
+    //    ros::spinOnce();
     
     goto_A;
     ac_.waitForResult();
@@ -317,7 +374,6 @@ void OURSWITCH::GotoA()
     do
     {
         nh_.getParam("target_class", target_class);
-        ros::Duration(0.1).sleep();
     } while (target_class != CMD_Fruits && target_class != CMD_Vegetables && target_class != CMD_sweet);
 
     ROS_WARN("Target class identified: %d", target_class);
@@ -330,19 +386,25 @@ void OURSWITCH::GotoA()
         ros::spinOnce();
 }
 
+
 // 到达拣货区路口
 void OURSWITCH::GotoB()
 {
     ROS_INFO("Entering GotoB state");
 
+    // 原来的参数
+    // teb_reload.request.ask = 0;
+    // teb_param_reloader.call(teb_reload);
+    // ROS_WARN("teb_param0_reload!!!");
+
     // 导航到B点
-    goto_B1;
-    while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
-        ros::spinOnce();
+    // goto_B1;
+    // while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
+    //     ros::spinOnce();
     
-    goto_B2;
-    while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
-        ros::spinOnce();
+    // goto_B2;
+    // while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
+    //     ros::spinOnce();
     
     goto_B;
     while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
@@ -365,7 +427,6 @@ void OURSWITCH::GotoB()
             cmd_vel.angular.z = -0.5;  // 逆时针旋转
             cmd_vel_pub__.publish(cmd_vel);
             ros::spinOnce();
-            ros::Duration(0.05).sleep();
         }
         
         // 停止旋转
@@ -382,7 +443,6 @@ void OURSWITCH::GotoB()
                 break;
             }
             ros::spinOnce();
-            ros::Duration(0.1).sleep();
         }
         
         if (vision_gettool)
@@ -398,7 +458,7 @@ void OURSWITCH::GotoB()
     }
 }
 
-// 视觉获取工具
+// 视觉获取工具：先调整物品到中心，再调整距离
 void OURSWITCH::Vision_GetTool()
 {
     ROS_INFO("Entering Vision_GetTool state");
@@ -442,55 +502,61 @@ void OURSWITCH::Vision_GetTool()
     while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
         ros::spinOnce();
 
-    // 调节center_x到320（核心控制逻辑）
-    const double tolerance = 5.0; // 允许的误差范围（像素）
-    const int max_adjust_count = 100; // 最大调节次数
-    int adjust_count = 0;
-    bool adjustment_complete = false;
-
-    ROS_INFO("Starting center_x adjustment to 320...");
+    ros::Time rotate_start = ros::Time::now();
+    while (ros::Time::now() - rotate_start < ros::Duration(0.5))
+    {
+	cancel_pub.publish(cancel_msg);
+	cmd_vel.linear.x = -0.2;
+	cmd_vel.linear.y = 0.0;
+	cmd_vel.angular.z = 0.0;  
+	cmd_vel_pub__.publish(cmd_vel);
+        ros::spinOnce();
+    }
     
-    while (adjust_count < max_adjust_count && !adjustment_complete && ros::ok())
+    // 停止移动
+    cmd_vel.linear.x = 0.0;
+    cmd_vel_pub__.publish(cmd_vel);
+
+    // 第一阶段：调节center_x到320（先将物品移动到像素中间）
+    const double center_tolerance = 80.0; // 允许的误差范围（像素）
+    const int max_center_adjust_count = 5000; // 最大调节次数
+    int center_adjust_count = 0;
+    bool center_adjustment_complete = false;
+
+    ROS_INFO("=== Starting center_x adjustment to 320 ===");
+    
+    while (center_adjust_count < max_center_adjust_count && !center_adjustment_complete && ros::ok())
     {
         // 从参数服务器获取center_x
         if (!getCenterXFromParam())
         {
             ROS_WARN("Failed to get valid center_x, retrying...");
-            adjust_count++;
-            ros::Duration(0.1).sleep();
+            center_adjust_count++;
             continue;
         }
 
         // 计算误差
         double error = fabs(target_center_x_ - current_center_x_);
-        ROS_INFO("Adjustment %d: Current center_x=%.2f, Target=%.2f, Error=%.2f",
-                 adjust_count, current_center_x_, target_center_x_, error);
+        ROS_INFO("Center Adjustment %d: Current=%.2f, Target=%.2f, Error=%.2f",
+                 center_adjust_count, current_center_x_, target_center_x_, error);
 
         // 检查是否达到目标
-        if (error < tolerance)
+        if (error < center_tolerance)
         {
-            ROS_INFO("center_x reached target (%.2f), adjustment complete", current_center_x_);
-            adjustment_complete = true;
+            ROS_INFO("Center adjustment complete (%.2f)", current_center_x_);
+            center_adjustment_complete = true;
             break;
         }
 
-        // 计算并发布速度指令
+        // 计算并发布速度指令（只调整y方向）
         double y_vel = calculateYVelocity();
         geometry_msgs::Twist cmd_vel;
-        cmd_vel.linear.x = 0;
+        cmd_vel.linear.x = 0;  // x方向不动
         cmd_vel.linear.y = y_vel;
         cmd_vel.angular.z = 0;
         cmd_vel_pub__.publish(cmd_vel);
 
-        adjust_count++;
-        ros::Duration(0.1).sleep();
-    }
-
-    // 超时处理
-    if (!adjustment_complete)
-    {
-        ROS_WARN("Adjustment timed out after %d attempts. Final error: %.2f",
-                 max_adjust_count, fabs(target_center_x_ - current_center_x_));
+        center_adjust_count++;
     }
 
     // 停止运动
@@ -498,11 +564,68 @@ void OURSWITCH::Vision_GetTool()
     stop_vel.linear.y = 0;
     cmd_vel_pub__.publish(stop_vel);
 
+    // 超时处理
+    if (!center_adjustment_complete)
+    {
+        ROS_WARN("Center adjustment timed out after %d attempts. Final error: %.2f",
+                 max_center_adjust_count, fabs(target_center_x_ - current_center_x_));
+    }
+
+    // 第二阶段：调节距离到0.2米（物品已居中后再调整距离）
+    const double distance_tolerance = 0.02; // 允许的误差范围（米）
+    const int max_distance_adjust_count = 15000; // 最大调节次数
+    int distance_adjust_count = 0;
+    bool distance_adjustment_complete = false;
+
+    // 重置距离PID参数
+    pid_distance_.err = 0;
+    pid_distance_.err_last = 0;
+    pid_distance_.integral = 0;
+    pid_distance_.output = 0;
+
+    ROS_INFO("=== Starting distance adjustment to 0.2m ===");
+    
+    while (distance_adjust_count < max_distance_adjust_count && !distance_adjustment_complete && ros::ok())
+    {
+        // 获取当前前方距离
+        ROS_INFO("Distance Adjustment %d: Current=%.3fm, Target=%.3fm, Error=%.3fm",
+                 distance_adjust_count, distance_qian_x, target_distance_, 
+                 fabs(target_distance_ - distance_qian_x));
+
+        // 检查是否达到目标距离
+        if (fabs(target_distance_ - distance_qian_x) < distance_tolerance)
+        {
+            ROS_INFO("Distance adjustment complete (%.3fm)", distance_qian_x);
+            distance_adjustment_complete = true;
+            break;
+        }
+
+        // 计算并发布速度指令（只调整x方向）
+        double x_vel = -calculateXVelocity();
+        geometry_msgs::Twist cmd_vel;
+        cmd_vel.linear.x = x_vel;
+        cmd_vel.linear.y = 0;  // y方向不动
+        cmd_vel.angular.z = 0;
+        cmd_vel_pub__.publish(cmd_vel);
+
+        distance_adjust_count++;
+    }
+
+    // 停止运动
+    stop_vel.linear.x = 0;
+    cmd_vel_pub__.publish(stop_vel);
+
+    // 超时处理
+    if (!distance_adjustment_complete)
+    {
+        ROS_WARN("Distance adjustment timed out after %d attempts. Final error: %.3fm",
+                 max_distance_adjust_count, fabs(target_distance_ - distance_qian_x));
+    }
+
     // 获取物品ID
     do
     {
         nh_.getParam("cl", target);
-        ros::Duration(0.1).sleep();
     } while (target != CMD_Apple && target != CMD_Banana && target != CMD_Watermelon &&
              target != CMD_pepper && target != CMD_Tomato && target != CMD_Potato &&
              target != CMD_Milk && target != CMD_Cake && target != CMD_coke);
@@ -532,8 +655,58 @@ void OURSWITCH::GotoC()
 void OURSWITCH::Gazebo()
 {
     ROS_INFO("Entering Gazebo state");
-    nh_.setParam("target_tool", 851);
+    std_msgs::Int32 room;
+
+    // 1. 确保room.data被正确初始化（处理所有情况）
+    if(target_class == CMD_Fruits)
+    {   
+        room.data = 1;
+    }
+    else if(target_class == CMD_Vegetables)  // 用else if避免多重赋值
+    {
+        room.data = 2;
+    }
+    else if(target_class == CMD_sweet)
+    {
+        room.data = 3;
+    }
+    else
+    {
+        ROS_ERROR("Invalid target_class: %d, cannot determine room number", target_class);
+        return;  // 无效状态下直接返回，避免发布错误数据
+    }
+
+    // 2. 持续发布2秒，加入调试信息和回调处理
+    ros::Time start_time = ros::Time::now();
+    ros::Rate publish_rate(50);  // 10Hz发布频率
+    int publish_count = 0;       // 记录发布次数（用于调试）
+
+    while (ros::Time::now() - start_time < ros::Duration(5.0) && ros::ok())
+    {
+        Gazebo_Command.publish(room);
+        publish_count++;
+        ROS_INFO("Publishing room: %d (count: %d, remaining: %.2fs)",
+                room.data, publish_count,
+                2.0 - (ros::Time::now() - start_time).toSec());
+        
+        publish_rate.sleep();
+        ros::spinOnce();  // 处理可能的回调（即使不处理回调，加上更安全）
+    }
+
+    ROS_INFO("Finished publishing. Total published: %d times", publish_count);
     
+    do
+    {
+        ROS_INFO("Receiving Room......"); // 房间
+    } while (target != CMD_Gazebo1 && target != CMD_Gazebo2 && target != CMD_Gazebo3);
+            do
+        {
+            ROS_INFO("Receiving Food......"); // 记录仿真中取到的物品
+        } while (target2 != CMD_Apple && target2 != CMD_Banana && target2 != CMD_Watermelon && target2 != CMD_pepper && target2 != CMD_Tomato && target2 != CMD_Potato && target2 != CMD_Milk && target2 != CMD_Cake && target2 != CMD_coke);
+
+    
+    nh_.setParam("target_tool", target);
+    ros::Duration(20).sleep();
     // 语音播报
     nh_.setParam("audio", 0);
     play_flag_client.call(_);
@@ -545,6 +718,9 @@ void OURSWITCH::Gazebo()
 void OURSWITCH::GotoD()
 {
     ROS_INFO("Entering GotoD state");
+    // goto_D0;
+    // while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
+    //     ros::spinOnce();
     goto_D1;
     while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
         ros::spinOnce();
@@ -561,7 +737,6 @@ void OURSWITCH::GotoD()
     while (current_color_ == 0 && (ros::Time::now() - start_time).toSec() < timeout && ros::ok())
     {   
         ROS_INFO("Waiting for color detection result...");
-        ros::Duration(0.5).sleep();
         ros::spinOnce();
     }
 
@@ -573,15 +748,17 @@ void OURSWITCH::GotoD()
     if (current_color_ == 1)  // 绿色
     {
         vision_getIntersection1 = 1;
-        target = CMD_Intersection1;
+        vision_getIntersection2 = 0;
+        nh_.setParam("target_tool", CMD_Intersection1);
         // 设置参数服务器值
         nh_.setParam("/vision_getIntersection1", 1);
         ROS_INFO("Detected green light (1), set /vision_getIntersection1=1");
     }
     else if (current_color_ == 2)  // 红色
     {
+        vision_getIntersection1 = 0;
         vision_getIntersection2 = 1;
-        target = CMD_Intersection2;
+        nh_.setParam("target_tool", CMD_Intersection2);
         // 设置参数服务器值
         nh_.setParam("/vision_getIntersection2", 1);
         ROS_INFO("Detected red light (2), set /vision_getIntersection2=1");
@@ -599,7 +776,6 @@ void OURSWITCH::GotoD()
     if (vision_getIntersection1 == 1)
     {   
         ROS_INFO("Proceeding through green light");
-        nh_.setParam("target_tool", target);
         
         // 语音播报
         nh_.setParam("audio", 0);
@@ -615,14 +791,17 @@ void OURSWITCH::GotoD()
     {
         ROS_INFO("Waiting for red light, then proceeding");
         goto_D2;
+        ROS_INFO("reaching D2");
         while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
             ros::spinOnce();
-            
-        nh_.setParam("target_tool", target);
+        ROS_INFO("reached D2");
+
+        
         nh_.setParam("audio", 0);
         play_flag_client.call(_);
         while (!nh_.param("audio", 0))
             ros::spinOnce();
+        ROS_INFO("yuyin");
             
         goto_E2;
         while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
@@ -635,36 +814,36 @@ void OURSWITCH::vision_line()
 {
     ROS_INFO("Entering vision_line state");
 
-    // 停止当前导航
+    // Stop current navigation
     cancel_pub.publish(cancel_msg);
     ros::Duration(0.5).sleep();
 
-    // 初始化参数
+    // Initialize parameters
     double target_x, target_y, target_yaw;
     double target_side_dist, target_back_dist;
     int circle_direction = 1;
-    int side_flag = 0;
+    int side_flag = 0;  // Lateral direction flag (1: right, -1: left)
 
-    // 设置目标参数
+    // Set target parameters (distinguish between two intersections)
     if (vision_getIntersection1 == 1)
     {
         target_x = 4.0;
-        target_y = 1.1;
-        target_yaw = -72.0 * M_PI / 180.0;
-        circle_direction = 1;
-        side_flag = 1;
-        target_side_dist = 0.29;
-        target_back_dist = 1.43;
+        target_y = 1.23;
+        target_yaw = -72.0 * M_PI / 180.0;  // Target heading angle (radians)
+        circle_direction = 1;               // Clockwise rotation
+        side_flag = 1;                      // Lateral adjustment references right distance
+        target_side_dist = 0.25;              // Target lateral distance
+        target_back_dist = 1.36;           // Target backward distance
     }
     else if (vision_getIntersection2 == 1)
     {
         target_x = 4.5;
-        target_y = 1.05;
-        target_yaw = -108.0 * M_PI / 180.0;
-        circle_direction = -1;
-        side_flag = -1;
-        target_side_dist = 0.30;
-        target_back_dist = 1.50;
+        target_y = 1.23;
+        target_yaw = -108.0 * M_PI / 180.0; // Target heading angle (radians)
+        circle_direction = -1;              // Counterclockwise rotation
+        side_flag = -1;                     // Lateral adjustment references left distance
+        target_side_dist = 0.25;            // Target lateral distance
+        target_back_dist = 1.36;           // Target backward distance
     }
     else
     {
@@ -672,70 +851,115 @@ void OURSWITCH::vision_line()
         return;
     }
 
-    // 初始化PID控制器
-    PID pid_side = {0.3, 0.01, 0.001, 0, 0, 0, 0};
-    PID pid_back = {0.3, 0.01, 0.001, 0, 0, 0, 0};
-    PID pid_angular_z = {0.3, 0.07, 0.02, 0, 0, 0, 0};
+    // Initialize PID controllers (shared across global stages)
+    PID pid_side = {0.3, 0.01, 0.001, 0, 0, 0, 0};         // Lateral distance PID
+    PID pid_back = {0.3, 0.01, 0.001, 0, 0, 0, 0};         // Backward distance PID
+    PID pid_angular_z0 = {1.0, 0.8, 0.02, 0, 0, 0, 0};
+    PID pid_angular_z = {0.3, 0.07, 0.02, 0, 0, 0, 0};     // Heading angle PID
 
-    // 控制参数
-    const double max_side_vel = 0.3;
-    const double max_back_vel = 0.3;
-    const double distance_tolerance = 0.03;
-    const double yaw_tolerance = 0.05;
 
-    // 状态机
-    enum Stage { DISTANCE_ADJUST, PID_CONTROL, CIRCLE_MOTION, ROTATION_STAGE, COMPLETE } current_stage = DISTANCE_ADJUST;
-    bool side_adjust_complete = false;
-    bool yaw_adjust_complete = false;
-    ros::Time circle_start_time;
+    // Control parameters (global constants)
+    const double max_side_vel = 0.3;       // Maximum lateral velocity
+    const double max_back_vel = 0.3;       // Maximum forward/backward velocity
+    const double distance_tolerance = 0.03; // Distance control tolerance (meters)
+    const double yaw_tolerance = 0.017;     // Heading angle control tolerance (0.05=3)
 
-    ros::Rate loop_rate(20);
+    // State machine definition
+    enum Stage { 
+        DISTANCE_ADJUST,   // Initial distance adjustment
+        PID_CONTROL,       // Precise position and heading control
+        CIRCLE_MOTION,     // Circular motion (with heading check)
+        YAW_ADJUST0,       // 转完小圈后校准一下
+        DISTANCE_ADJUST2,  // Secondary distance adjustment
+        YAW_ADJUST,        // Final heading adjustment
+        COMPLETE           // Completion
+    } current_stage = DISTANCE_ADJUST;
+    
+    // Global state variables (retained across stages)
+    bool side_adjust_complete = false;  // Initial lateral adjustment completion flag
+    bool yaw_adjust_complete = false;   // Initial heading adjustment completion flag
+    bool side2_complete = false;  // Local state flag (only valid for current stage)
+    ros::Time circle_start_time;        // Circle motion start time
+    int yaw_count = 0;                  // Heading达标计数
+    const double circle_max_duration = 6.0;  // Maximum circle time (seconds)
+
+    // Debug counter (controls print frequency)
+    int loop_count = 0;
+
+    ros::Rate loop_rate(50);  // Control loop frequency (50Hz)
     while (ros::ok() && current_stage != COMPLETE)
     {
-        // 获取当前状态
+        loop_count++;
+
+        // Get current state (position, heading, sensor data)
         double current_x = nh_.param("CarX", 0.0);
         double current_y = nh_.param("CarY", 0.0);
         double current_yaw = nh_.param("CarYaw", 0.0);
-        double dist_right = distance_you_y;
-        double dist_left = distance_zuo_y;
-        double dist_back = distance_hou_x;
+        double dist_right = distance_you_y;  // Right distance
+        double dist_left = distance_zuo_y;   // Left distance
+        double dist_back = distance_hou_x;   // Backward distance
+        double dist_front = distance_qian_x; // Forward distance
 
-        // 规范化航向角
+        // Normalize heading angle to [-π, π]
         if (current_yaw > M_PI) current_yaw -= 2 * M_PI;
         if (current_yaw < -M_PI) current_yaw += 2 * M_PI;
 
-        // 状态机逻辑
+        // State machine logic
         switch (current_stage)
         {
         case DISTANCE_ADJUST:
         {
+            // Select current lateral distance (based on side_flag)
             double current_side_dist = (side_flag == 1) ? dist_right : dist_left;
+            // Calculate lateral error (with direction correction)
             double side_err = (target_side_dist - current_side_dist) * side_flag;
+            // Calculate backward error
             double back_err = target_back_dist - dist_back;
 
             double y_vel = 0.0, x_vel = 0.0;
 
             if (!side_adjust_complete)
             {
+                // Lateral distance adjustment
                 y_vel = PID_Realize(&pid_side, side_err, max_side_vel, -max_side_vel);
+                
+                // Debug info (print every 10 cycles)
+                if (loop_count % 10 == 0) {
+                    ROS_INFO("[DISTANCE_ADJUST] Lateral velocity: %.3f m/s", y_vel);
+                    ROS_INFO("[DISTANCE_ADJUST] Current: %.3f, Target: %.3f, Tolerance: %.3f",
+                             current_side_dist, target_side_dist, distance_tolerance);
+                }
+
+                // Check if lateral adjustment is complete
                 if (fabs(target_side_dist - current_side_dist) <= distance_tolerance)
                 {
                     y_vel = 0.0;
                     side_adjust_complete = true;
-                    ROS_INFO("Side distance adjustment complete");
+                    ROS_INFO("Lateral distance adjustment completed");
                 }
             }
             else
             {
+                // Backward distance adjustment
                 x_vel = PID_Realize(&pid_back, back_err, max_back_vel, -max_back_vel);
+                
+                // Debug info
+                if (loop_count % 10 == 0) {
+                    ROS_INFO("[DISTANCE_ADJUST] Forward/backward velocity: %.3f m/s", x_vel);
+                    ROS_INFO("[DISTANCE_ADJUST] Current: %.3f, Target: %.3f, Tolerance: %.3f",
+                             dist_back, target_back_dist, distance_tolerance);
+                }
+
+                // Check if backward adjustment is complete
                 if (fabs(back_err) <= distance_tolerance)
                 {
                     current_stage = PID_CONTROL;
                     x_vel = 0.0;
-                    ROS_INFO("Back distance adjustment complete");
+                    ROS_INFO("Backward distance adjustment completed, entering PID_CONTROL stage");
                 }
             }
 
+            // Publish velocity command
             cmd_vel.linear.x = x_vel;
             cmd_vel.linear.y = y_vel;
             cmd_vel.angular.z = 0;
@@ -747,28 +971,42 @@ void OURSWITCH::vision_line()
         {
             if (!yaw_adjust_complete)
             {
+                // Disable vision control, focus on heading adjustment
                 nh_.setParam("/start_vision1", 0);
                 vision_control_active_ = false;
 
+                // Calculate heading error (with normalization)
                 double yaw_err = target_yaw - current_yaw;
                 if (yaw_err > M_PI) yaw_err -= 2 * M_PI;
                 if (yaw_err < -M_PI) yaw_err += 2 * M_PI;
                 
+                // Calculate rotation velocity
                 double angular_z = PID_Realize2(&pid_angular_z, yaw_err, 0.1, -0.1, 10);
                 
+                // Debug info
+                if (loop_count % 10 == 0) {
+                    ROS_INFO("[PID_CONTROL] Rotation velocity: %.3f rad/s", angular_z);
+                    ROS_INFO("[PID_CONTROL] Current heading: %.3f°, Target: %.3f°, Tolerance: %.3f°",
+                             current_yaw * 180/M_PI, target_yaw * 180/M_PI,
+                             yaw_tolerance * 180/M_PI);
+                }
+
+                // Check if heading adjustment is complete
                 if (fabs(yaw_err) < yaw_tolerance)
                 {
                     angular_z = 0.0;
                     yaw_adjust_complete = true;
-                    ROS_INFO("Yaw adjustment complete");
+                    ROS_INFO("Heading adjustment completed");
                 }
 
+                // Publish rotation command
                 cmd_vel.linear.x = 0.0;
                 cmd_vel.angular.z = angular_z;
                 cmd_vel_pub__.publish(cmd_vel);
             }
             else
             {
+                // Activate vision control to adjust Y position
                 if (!vision_control_active_)
                 {
                     nh_.setParam("/start_vision1", 1);
@@ -776,7 +1014,15 @@ void OURSWITCH::vision_line()
                     nh_.setParam("/target_y", target_y);
                 }
 
+                // Check Y position error
                 double dy = target_y - current_y;
+                if (loop_count % 10 == 0) {
+                    ROS_INFO("[PID_CONTROL] Y position error: %.3f", dy);
+                    ROS_INFO("[PID_CONTROL] Current Y: %.3f, Target Y: %.3f, Tolerance: 0.05",
+                             current_y, target_y);
+                }
+
+                // Enter circle phase after position is reached
                 if (fabs(dy) < 0.05)
                 {
                     nh_.setParam("/start_vision1", 0);
@@ -785,7 +1031,8 @@ void OURSWITCH::vision_line()
                     cmd_vel.linear.x = 0.0;
                     cmd_vel.angular.z = 0;
                     cmd_vel_pub__.publish(cmd_vel);
-                    circle_start_time = ros::Time::now();
+                    circle_start_time = ros::Time::now();  // Record circle start time
+                    ROS_INFO("Entering CIRCLE_MOTION stage");
                 }
             }
             break;
@@ -793,46 +1040,259 @@ void OURSWITCH::vision_line()
 
         case CIRCLE_MOTION:
         {
-            const double circle_radius = 0.55;
-            const double circle_linear = 0.3;
-            double circle_angular = circle_linear / circle_radius * circle_direction;
-            const double circle_max_duration = 2.0;
+            // Set target heading angle during circle motion (0 degrees or 180 degrees, depending on intersection)
+            double target_check_yaw = (vision_getIntersection1 == 1) ? 0 : M_PI;
+            
+            // Calculate heading error
+            double yaw_err = target_check_yaw - current_yaw;
+            if (yaw_err > M_PI) yaw_err -= 2 * M_PI;
+            if (yaw_err < -M_PI) yaw_err += 2 * M_PI;
+
+            // Check if heading is reached
+            bool yaw_reached = fabs(yaw_err) < yaw_tolerance;
+            // bool distance_reached = 0;
+            
+            // Debug info
+            if (loop_count % 10 == 0) {
+                ROS_INFO("[CIRCLE_MOTION] Current heading: %.3f°, Target: %.3f°, Tolerance: %.3f°",
+                         current_yaw * 180/M_PI, target_check_yaw * 180/M_PI,
+                         yaw_tolerance * 180/M_PI);
+                ROS_INFO("[CIRCLE_MOTION] Heading reached: %s, Count: %d",
+                         yaw_reached ? "Yes" : "No", yaw_count);
+            }
+
+            // if(vision_getIntersection1 = 1)
+            // {
+            //     if(distance_hou_x = 1.24)
+            //     {
+            //         distance_reached = 1;
+            //     }
+            // }
+            // if(vision_getIntersection2 = 1)
+            // {
+            //     if(distance_qian_x = 1.24)
+            //     {
+            //         distance_reached = 1;
+            //     }
+            // }
+
+            // Check if circle phase should exit
+            bool time_exceeded = (ros::Time::now() - circle_start_time).toSec() >= circle_max_duration;
+            
+            if ((yaw_reached || time_exceeded ) && yaw_count != 1)
+            {
+                yaw_count++;
+                ROS_INFO("Heading reached (%.2f°), Count: %d", current_yaw * 180 / M_PI, yaw_count);
+            }
+            
+            bool yaw_condition_met = (yaw_count >= 1);
+
+            if (yaw_condition_met)
+            {
+                // Stop circle motion
+                cmd_vel.linear.x = 0;
+                cmd_vel.angular.z = 0;
+                cmd_vel_pub__.publish(cmd_vel);
+                
+                // Output transition reason
+                if (yaw_condition_met)
+                {
+                    ROS_INFO("Heading condition satisfied, entering DISTANCE_ADJUST2 stage");
+                }
+                else
+                {
+                    ROS_WARN("Circle motion timed out, entering DISTANCE_ADJUST2 stage");
+                }
+                
+                current_stage = YAW_ADJUST0;
+                break;
+            }
+
+            // Continue circle motion (fixed radius and linear velocity)
+            const double circle_radius = 0.42;  // Circle radius
+            const double circle_linear = 0.15;   // Linear velocity
+            double circle_angular = circle_linear / circle_radius * circle_direction;  // Angular velocity
 
             cmd_vel.linear.x = circle_linear;
             cmd_vel.angular.z = circle_angular;
             cmd_vel_pub__.publish(cmd_vel);
-
-            if ((ros::Time::now() - circle_start_time).toSec() >= circle_max_duration)
-            {
-                current_stage = ROTATION_STAGE;
-                cmd_vel.linear.x = 0;
-                cmd_vel.angular.z = 0;
-                cmd_vel_pub__.publish(cmd_vel);
+            
+            // Circle motion status (print every 50 cycles)
+            if (loop_count % 50 == 0) {
+                ROS_INFO("[CIRCLE_MOTION] Linear velocity: %.3f m/s, Angular velocity: %.3f rad/s",
+                         circle_linear, circle_angular);
             }
             break;
         }
 
-        case ROTATION_STAGE:
-            goto_G2;
-            while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
-                ros::spinOnce();
-            current_stage = COMPLETE;
-            break;
+        case YAW_ADJUST0:
+        {
+            // Final target heading angle: -90 degrees (converted to radians)
+            double target_final_yaw = (vision_getIntersection1 == 1) ? 0 : M_PI;
+            // Calculate heading error (with normalization)
+            double yaw_err = target_final_yaw - current_yaw;
+            if (yaw_err > M_PI) yaw_err -= 2 * M_PI;
+            if (yaw_err < -M_PI) yaw_err += 2 * M_PI;
 
-        case COMPLETE:
+            // PID-controlled rotation velocity
+            double angular_z = PID_Realize2(&pid_angular_z0, yaw_err, 0.1, -0.1, 10);
+
+            // Debug info
+            if (loop_count % 10 == 0) {
+            ROS_INFO("[YAW_ADJUST0] Rotation velocity: %.3f rad/s", angular_z);
+            ROS_INFO("[YAW_ADJUST0] Current heading: %.3f°, Target: %.3f°, Tolerance: %.3f°",
+            current_yaw * 180/M_PI, target_final_yaw * 180/M_PI,
+            yaw_tolerance * 180/M_PI);
+            }
+
+            // Check if final heading adjustment is complete
+            if (fabs(yaw_err) < yaw_tolerance)
+            {
+            angular_z = 0.0;
+            current_stage = DISTANCE_ADJUST2;
+            ROS_INFO("Final heading adjusted to -90 degrees successfully");
+            }
+
+            // Publish rotation command
+            cmd_vel.linear.x = 0.0;
+            cmd_vel.angular.z = angular_z;
+            cmd_vel_pub__.publish(cmd_vel);
             break;
         }
 
-        ros::spinOnce();
-        loop_rate.sleep();
-    }
+        case DISTANCE_ADJUST2:
+        {
+            // Local PID controllers (reset each time stage is entered)
+            PID pid_side2 = {1.0, 0.04, 0.01, 0, 0, 0, 0};  // Secondary lateral PID
+            PID pid_dist2 = {0.5, 0.2, 0.01, 0, 0, 0, 0};  // Secondary forward/backward PID
+            
+            
+            // Target parameters and direction flags (based on intersection)
+            double target_side, current_side, target_dist, current_dist;
+            int dist_flag = 1;  // Forward/backward direction flag (independent of lateral)
+            
+            if (vision_getIntersection1 == 1)
+            {
+                target_side = 1.93;    // Target left distance
+                current_side = dist_left;
+                target_dist = 1.35;    // Target backward distance
+                current_dist = dist_back;
+                dist_flag = 1;       // Backward distance adjustment direction correction
+            }
+            else
+            {
+                target_side = 1.93;    // Target right distance
+                current_side = dist_right;
+                target_dist = 1.35;    // Target forward distance
+                current_dist = dist_front;
+                dist_flag = -1;        // Forward distance adjustment direction correction
+            }
 
-    vision_getIntersection1 = 0;
-    vision_getIntersection2 = 0;
-    // 清除参数服务器值
-    nh_.setParam("/vision_getIntersection1", 0);
-    nh_.setParam("/vision_getIntersection2", 0);
-    ROS_INFO("vision_line state complete");
+            // Initialize velocity command
+            cmd_vel.linear.x = 0;
+            cmd_vel.linear.y = 0;
+            cmd_vel.angular.z = 0;
+
+            if (!side2_complete)
+            {
+                // Secondary lateral distance adjustment
+                double side_err = (target_side - current_side) * -side_flag;  // With direction correction
+                cmd_vel.linear.y = PID_Realize(&pid_side2, side_err, max_side_vel, -max_side_vel);
+                
+                // Debug info
+                if (loop_count % 10 == 0) {
+                    ROS_INFO("[DISTANCE_ADJUST2] Lateral velocity: %.3f m/s", cmd_vel.linear.y);
+                    ROS_INFO("[DISTANCE_ADJUST2] Current lateral distance: %.3f, Target: %.3f, Tolerance: %.3f",
+                             current_side, target_side, distance_tolerance);
+                }
+
+                // Check if lateral adjustment is complete
+                if (fabs(target_side - current_side) <= distance_tolerance)
+                {
+                    cmd_vel.linear.y = 0;
+                    side2_complete = true;
+                    ROS_INFO("Secondary lateral distance adjustment completed");
+                }
+            }
+            else
+            {
+                // Secondary forward/backward distance adjustment
+                double dist_err = (target_dist - current_dist) * dist_flag;  // With direction correction
+                cmd_vel.linear.x = PID_Realize(&pid_dist2, dist_err, max_back_vel, -max_back_vel);
+                
+                // Debug info
+                if (loop_count % 10 == 0) {
+                    ROS_INFO("[DISTANCE_ADJUST2] Forward/backward velocity: %.3f m/s", cmd_vel.linear.x);
+                    ROS_INFO("[DISTANCE_ADJUST2] Current: %.3f, Target: %.3f, Tolerance: %.3f",
+                             current_dist, target_dist, distance_tolerance);
+                }
+
+                // Check if forward/backward adjustment is complete
+                if (fabs(target_dist - current_dist) <= distance_tolerance)
+                {
+                    cmd_vel.linear.x =0;
+                    current_stage = YAW_ADJUST;
+                    side2_complete = false; // Reset flag
+                    ROS_INFO("Secondary distance adjustment completed, entering YAW_ADJUST stage");
+                }
+            }
+
+                    // Publish velocity command
+            cmd_vel_pub__.publish(cmd_vel);
+            break;
+        }
+
+            case YAW_ADJUST:
+            {
+            // Final target heading angle: -90 degrees (converted to radians)
+            double target_final_yaw = -M_PI / 2;
+
+            // Calculate heading error (with normalization)
+            double yaw_err = target_final_yaw - current_yaw;
+            if (yaw_err > M_PI) yaw_err -= 2 * M_PI;
+            if (yaw_err < -M_PI) yaw_err += 2 * M_PI;
+
+            // PID-controlled rotation velocity
+            double angular_z = PID_Realize2(&pid_angular_z, yaw_err, 0.1, -0.1, 10);
+
+            // Debug info
+            if (loop_count % 10 == 0) {
+            ROS_INFO("[YAW_ADJUST] Rotation velocity: %.3f rad/s", angular_z);
+            ROS_INFO("[YAW_ADJUST] Current heading: %.3f°, Target: %.3f°, Tolerance: %.3f°",
+            current_yaw * 180/M_PI, target_final_yaw * 180/M_PI,
+            yaw_tolerance * 180/M_PI);
+            }
+
+            // Check if final heading adjustment is complete
+            if (fabs(yaw_err) < yaw_tolerance)
+            {
+            angular_z = 0.0;
+            current_stage = COMPLETE;
+            ROS_INFO("Final heading adjusted to -90 degrees successfully");
+            }
+
+            // Publish rotation command
+            cmd_vel.linear.x = 0.0;
+            cmd_vel.angular.z = angular_z;
+            cmd_vel_pub__.publish(cmd_vel);
+            break;
+            }
+
+            case COMPLETE:
+            break;
+            }
+
+            ros::spinOnce();
+            loop_rate.sleep();
+            }
+
+            // Reset intersection detection flags
+            vision_getIntersection1 = 0;
+            vision_getIntersection2 = 0;
+            // Clear parameter server values
+            nh_.setParam("/vision_getIntersection1", 0);
+            nh_.setParam("/vision_getIntersection2", 0);
+            ROS_INFO("vision_line state complete");
 }
 
 // 到达终点（含避障）
@@ -849,28 +1309,28 @@ void OURSWITCH::GotoF()
     const double target_front_dist = 0.30;
     const double side_tolerance = 0.03;
     const double front_tolerance = 0.08;
+    const double yaw_tolerance = 0.03; 
     const double max_y_vel = 0.1;
     const double max_x_vel = 0.1;
 
     // PID控制器
     PID pid_side = {0.3, 0.08, 0.01, 0, 0, 0, 0};
     PID pid_front = {0.3, 0.02, 0.01, 0, 0, 0, 0};
+    PID pid_angular_z = {1.0, 0.8, 0.02, 0, 0, 0, 0};
 
     // 状态机
-    enum Stage { SIDE_ADJUST, FRONT_ADJUST, NAVIGATE_GOAL, COMPLETE } current_stage = SIDE_ADJUST;
+    enum Stage { SIDE_ADJUST, FRONT_ADJUST, NAVIGATE_GOAL,LINE, LINE2,LINE3 ,COMPLETE } current_stage = SIDE_ADJUST;
     double current_x = 0.0, current_y = 0.0;
 
-    ros::Rate loop_rate(30);
+    int loop_count = 0;
+    ros::Rate loop_rate(50);
     while (ros::ok() && current_stage != COMPLETE)
     {
+        loop_count++;
         // 获取传感器数据
         double current_side = distance_you_y;
         double current_front = distance_qian_x;
-
-        geometry_msgs::Twist cmd;
-        cmd.linear.x = 0;
-        cmd.linear.y = 0;
-        cmd.angular.z = 0;
+        double current_yaw = nh_.param("CarYaw", 0.0);
 
         switch (current_stage)
         {
@@ -878,60 +1338,172 @@ void OURSWITCH::GotoF()
         {
             double side_err = target_side_dist - current_side;
             double y_vel = PID_Realize2(&pid_side, side_err, max_y_vel, -max_y_vel, 0.5);
-            cmd.linear.y = y_vel;
+            cmd_vel.linear.y = y_vel;
 
             if (fabs(target_side_dist - current_side) <= side_tolerance)
             {
-                cmd.linear.y = 0;
+                cmd_vel.linear.y = 0;
                 current_stage = FRONT_ADJUST;
                 ROS_INFO("Side adjustment complete");
             }
+            cmd_vel.linear.x = 0.0;
+            cmd_vel.angular.z = 0.0; 
+            cmd_vel_pub__.publish(cmd_vel);
             break;
         }
 
         case FRONT_ADJUST:
         {
+            if (!vision_control_active2_)
+            {
+                nh_.setParam("/start_vision2", 1);
+                vision_control_active2_ = true;
+                ROS_INFO("start");
+            }
+
             double front_err = target_front_dist - current_front;
-            double x_vel = -PID_Realize2(&pid_front, front_err, max_x_vel, -max_x_vel, 0.5);
-            cmd.linear.x = x_vel;
 
             if (fabs(front_err) <= front_tolerance)
             {
-                current_x = nh_.param("CarX", 0.0);
-                current_y = nh_.param("CarY", 0.0);
-                cmd.linear.x = 0;
+                nh_.setParam("/start_vision2", 0);
                 current_stage = NAVIGATE_GOAL;
+                vision_control_active2_ = false;
+                cmd_vel.linear.x = 0;
+                cmd_vel_pub__.publish(cmd_vel);
                 ROS_INFO("Front adjustment complete");
             }
-            break;
+        break;
         }
 
         case NAVIGATE_GOAL:
-            ROS_INFO("Navigating to final goal");
-            sendPos(current_x - 1.0, current_y, -0.707, 0.707);
-            while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
-                ros::spinOnce();
+        {
+           ROS_INFO("Navigating to final goal");
+            // goto_F;
+            // while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
+            //     ros::spinOnce();
 
-            sendPos(current_x - 1.0, current_y - 1.0, -0.707, 0.707);
-            while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
+            ros::Time rotate_start1 = ros::Time::now();
+            while (ros::Time::now() - rotate_start1 < ros::Duration(4))
+            {
+                cancel_pub.publish(cancel_msg);
+                cmd_vel.linear.x = 0.0;
+                cmd_vel.linear.y = -0.2;
+                cmd_vel.angular.z = 0.0;  
+                cmd_vel_pub__.publish(cmd_vel);
                 ros::spinOnce();
+            }
+
+            ros::Time rotate_start2 = ros::Time::now();
+            while (ros::Time::now() - rotate_start2 < ros::Duration(3.5))
+            {
+                cancel_pub.publish(cancel_msg);
+                cmd_vel.linear.x = 0.3;
+                cmd_vel.linear.y = 0.0;
+                cmd_vel.angular.z = 0.0;  
+                cmd_vel_pub__.publish(cmd_vel);
+                ros::spinOnce();
+            }
+            cmd_vel.linear.x = 0.0;
+            cmd_vel.linear.y = 0.0;
+            cmd_vel.angular.z = 0.0; 
+            cmd_vel_pub__.publish(cmd_vel);
             
-            sendPos(current_x, current_y - 1.0, -0.707, 0.707);
-            while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
-                ros::spinOnce();
-
-            goto_F;
-            while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
-                ros::spinOnce();
+            // 停止移动
+            cmd_vel.linear.x = 0.0;
+            cmd_vel_pub__.publish(cmd_vel);
                 
-            current_stage = COMPLETE;
+            current_stage = LINE;
             break;
+	}
+    case LINE:
+    {
+        // Local PID controllers (reset each time stage is entered)
+        PID pid_side3 = {1.0, 0.04, 0.01, 0, 0, 0, 0};  
+        // Target parameters and direction flags (based on intersection)
+        double target_side, current_side;
+        const double max_side_vel = 0.3;
+        const double distance_tolerance = 0.03;
+        target_side = 1.35;    // Target right distance
+        current_side = distance_you_y;
 
-        case COMPLETE:
-            break;
+        // Initialize velocity command
+        cmd_vel.linear.x = 0;
+        cmd_vel.linear.y = 0;
+        cmd_vel.angular.z = 0;
+
+        // Secondary lateral distance adjustment
+        double side_err = (target_side - current_side);
+        cmd_vel.linear.y = PID_Realize(&pid_side3, side_err, max_side_vel, -max_side_vel);
+        
+        // Debug info
+        if (loop_count % 10 == 0) {
+            ROS_INFO("[LINE] Lateral velocity: %.3f m/s", cmd_vel.linear.y);
+            ROS_INFO("[LINE] Current lateral distance: %.3f, Target: %.3f, Tolerance: %.3f",
+                        current_side, target_side, distance_tolerance);
         }
 
-        cmd_vel_pub__.publish(cmd);
+        // Check if lateral adjustment is complete
+        if (fabs(target_side - current_side) <= distance_tolerance)
+        {   
+            current_stage = LINE2;
+            cmd_vel.linear.y = 0;
+            ROS_INFO("LINE completed");
+        }
+        
+        cmd_vel_pub__.publish(cmd_vel);
+        break;
+    }
+
+    case LINE2:
+    {
+        // Final target heading angle: -90 degrees (converted to radians)
+        
+        double target_final_yaw = -M_PI / 2;
+
+        // Calculate heading error (with normalization)
+        double yaw_err = target_final_yaw - current_yaw;
+        if (yaw_err > M_PI) yaw_err -= 2 * M_PI;
+        if (yaw_err < -M_PI) yaw_err += 2 * M_PI;
+
+        // PID-controlled rotation velocity
+        double angular_z = PID_Realize(&pid_angular_z, yaw_err, 0.1, -0.1);
+
+        // Debug info
+        if (loop_count % 10 == 0) {
+        ROS_INFO("[YAW_ADJUST] Rotation velocity: %.3f rad/s", angular_z);
+        ROS_INFO("[YAW_ADJUST] Current heading: %.3f°, Target: %.3f°, Tolerance: %.3f°",
+        current_yaw * 180/M_PI, target_final_yaw * 180/M_PI,
+        yaw_tolerance * 180/M_PI);
+        }
+
+        // Check if final heading adjustment is complete
+        if (fabs(yaw_err) < yaw_tolerance)
+        {
+        angular_z = 0.0;
+        current_stage = LINE3;
+        ROS_INFO("Final heading adjusted to -90 degrees successfully");
+        }
+
+        // Publish rotation command
+        cmd_vel.linear.x = 0.0;
+        cmd_vel.angular.z = angular_z;
+        cmd_vel_pub__.publish(cmd_vel);
+        break;
+    }
+    case LINE3:
+    {
+        goto_F;
+        ac_.waitForResult();
+        while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED))
+            ros::spinOnce();
+        current_stage = COMPLETE;
+        break;
+    }
+
+    case COMPLETE:
+        break;
+    }
+
         ros::spinOnce();
         loop_rate.sleep();
     }
@@ -957,22 +1529,28 @@ void OURSWITCH::END()
 void OURSWITCH::getZbarCallback(const std_msgs::String::ConstPtr &msg)
 {
     std::string received_msg = msg->data;
-    
-    if (received_msg == "Fruit") {
+    if(Zbar_flag == 1)
+    {
+        if (received_msg == "Fruit") {
         nh_.setParam("target_class", CMD_Fruits);
-        ROS_INFO("Received: Fruit");
-    } 
-    else if (received_msg == "Vegetable") {
-        nh_.setParam("target_class", CMD_Vegetables);
-        ROS_INFO("Received: Vegetable");
-    } 
-    else if (received_msg == "Dessert") {
-        nh_.setParam("target_class", CMD_sweet);
-        ROS_INFO("Received: Dessert");
-    } 
-    else {
-        ROS_WARN("Received unknown message: %s", received_msg.c_str());
+        Zbar_flag = 0;
+        // ROS_INFO("Received: Fruit");
+        } 
+        else if (received_msg == "Vegetable") {
+            nh_.setParam("target_class", CMD_Vegetables);
+            Zbar_flag = 0;
+            // ROS_INFO("Received: Vegetable");
+        } 
+        else if (received_msg == "Dessert") {
+            nh_.setParam("target_class", CMD_sweet);
+            Zbar_flag = 0;
+            // ROS_INFO("Received: Dessert");
+        } 
+        else {
+            ROS_WARN("Received unknown message: %s", received_msg.c_str());
+        }
     }
+    
 }
 
 // 视觉角度回调
@@ -993,15 +1571,18 @@ void OURSWITCH::visionAngleCallback(const std_msgs::Float32MultiArray::ConstPtr&
 // 仿真房间号回调
 void OURSWITCH::getGzeboRoomCallback(const std_msgs::Int32::ConstPtr &msg) 
 {
-    target = msg->data;
-    ROS_INFO("Received room number: %d", target);
+    if(gazebo_flag = 1)
+    {
+        target = msg->data;
+    }
+    
 }
 
 // 仿真食物号回调
 void OURSWITCH::getGzeboFoodCallback(const std_msgs::Int32::ConstPtr &msg) 
 {
     target2 = msg->data;
-    ROS_INFO("Received food number: %d", target2);
+    // ROS_INFO("Received food number: %d", target2);
 }
 
 // 超声波数据回调
@@ -1017,12 +1598,12 @@ void OURSWITCH::UltrasoundCallback(const pcl_work::ultrasoundConstPtr &msg)
 void OURSWITCH::colorResultCallback(const std_msgs::Int32::ConstPtr& msg)
 {
     current_color_ = msg->data;
-    ROS_INFO("Received color result: %d (1=green, 2=red)", current_color_);
+    // ROS_INFO("Received color result: %d (1=green, 2=red)", current_color_);
     
     // 验证结果有效性
     if (current_color_ != 1 && current_color_ != 2)
     {
-        ROS_WARN("Invalid color value: %d (expected 1 or 2)", current_color_);
+        // ROS_WARN("Invalid color value: %d (expected 1 or 2)", current_color_);
         current_color_ = 0; // 标记为无效
     }
 }
@@ -1037,9 +1618,10 @@ int main(int argc, char **argv)
     ros::AsyncSpinner spinner(1);     
     spinner.start();
 
-    ros::Rate loop_rate(10);
+    ros::Rate loop_rate(50);
     while (ros::ok())
-    {
+    {   
+    	
         switch (ucar.current_state)
         {
         case TEST_:
