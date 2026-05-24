@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+from dataclasses import dataclass, field
 from enum import Enum
 
 import cv2
@@ -26,15 +27,74 @@ class ProcessState(Enum):
     TRACKING2 = 7  # 转弯后继续循迹
 
 
+@dataclass
+class ImageProcessConfig:
+    """集中管理 ImageProcess 的所有可调参数"""
+
+    # ---- 预处理 ----
+    preprocess_max_h: int = 240
+    preprocess_max_w: int = 320
+
+    # ---- 边线搜索 ----
+    x_continual: int = 15
+    y_continual: int = 5
+    search_offset: int = 30  # 起始搜索偏移量
+    init_stable_count: int = 5
+    miss_threshold: int = 3
+    up_ratio: float = 0.55
+    down_ratio: float = 0.90
+    search_range_wide: int = 50  # 动态搜索窗口最大宽度
+    search_range_narrow: int = 30  # 动态搜索窗口最小宽度
+    search_range_threshold: float = 0.75  # 搜索窗口宽度调整阈值
+
+    # ---- 拐点检测 ----
+    corner_angle_high: int = 135
+    corner_angle_low: int = 45
+    corner_y_ratio: float = 0.75
+
+    # ---- 停止线检测 ----
+    stop_roi_y0: float = 0.55
+    stop_roi_y1: float = 0.80
+    stop_roi_x0: float = 0.30
+    stop_roi_x1: float = 0.70
+    stop_kernel_w: int = 15
+    stop_min_width: int = 20
+
+    # ---- 转弯判断 ----
+    turning_enter_y_thresh: float = 0.78
+    turning_end_x_diff: int = 20  # 转弯结束时两边线末端 x 坐标差异阈值
+
+    # ---- 多项式拟合（分段线性） ----
+    fit_angle_thresh: float = 15.0
+    fit_max_offset: int = 40  # 近端最大横向偏移量
+
+    # ---- 插值 & 填充 ----
+    interp_dx_thresh: int = 6
+    interp_dy_thresh: int = 3
+    fill_down_ratio: float = 0.90
+
+    # ---- 透视变换矩阵 ----
+    perspective_matrix: list = field(
+        default_factory=lambda: [
+            [-0.498345, -1.637252, 251.246087],
+            [-0.021773, 0.349689, -81.638093],
+            [-0.000241, -0.009225, 1.000000],
+        ]
+    )
+
+
 class ImageProcess:
-    def __init__(self, img_path=None, img=None):
+    def __init__(self, img_path=None, img=None, config=None):
         """
         初始化图像处理对象
 
         Args:
             img_path: 图片路径，如果提供则从图片读取
-            use_camera: 是否使用摄像头，默认False
+            img: 图片数据
+            config: ImageProcessConfig 实例，为 None 时使用默认参数
         """
+
+        self.cfg = config or ImageProcessConfig()
 
         self.img_path = img_path
         self.frame = img
@@ -56,20 +116,8 @@ class ImageProcess:
         self.prev_supple_left_line = _empty.copy()
         self.prev_supple_right_line = _empty.copy()
 
-        self.x_continual = 15
-        self.y_continual = 5
-
-        # 搜索配置参数
-        # self.search_range = 100  # 搜索范围（像素），向左/右搜索的最大距离
-        self.search_offset = 30  # 搜索偏移量（像素）
-        self.init_stable_count = 5  # 初始连续点数阈值
-
         self.perspective_matrix = np.array(
-            [
-                [-0.498345, -1.637252, 251.246087],
-                [-0.021773, 0.349689, -81.638093],
-                [-0.000241, -0.009225, 1.000000],
-            ]
+            self.cfg.perspective_matrix, dtype=np.float64
         )
 
     def preprocess(self, frame):
@@ -83,10 +131,14 @@ class ImageProcess:
 
             if frame is not None:
                 # 如果图片太大，按比例缩小
-                if frame.shape[0] >= 240 or frame.shape[1] >= 320:
-                    # 将图片按比例缩小，使宽和高都不超过640和480
+                if (
+                    frame.shape[0] >= self.cfg.preprocess_max_h
+                    or frame.shape[1] >= self.cfg.preprocess_max_w
+                ):
                     h, w = frame.shape[:2]
-                    scale = min(240 / h, 320 / w)
+                    scale = min(
+                        self.cfg.preprocess_max_h / h, self.cfg.preprocess_max_w / w
+                    )
                     new_h = int(h * scale)
                     new_w = int(w * scale)
                     frame = cv2.resize(
@@ -252,9 +304,9 @@ class ImageProcess:
         prev_x = int(prev_line[best_idx, 0])
 
         if is_left:
-            start_x = prev_x + self.search_offset
+            start_x = prev_x + self.cfg.search_offset
         else:
-            start_x = prev_x - self.search_offset
+            start_x = prev_x - self.cfg.search_offset
         return max(0, min(start_x, img_width - 1))
 
     def _add_point_with_stable_start(
@@ -288,7 +340,7 @@ class ImageProcess:
                 and abs(stable_buf[-1][1] - point[1]) < y_thresh
             ):
                 stable_buf.append(point)
-                if len(stable_buf) >= self.init_stable_count:
+                if len(stable_buf) >= self.cfg.init_stable_count:
                     line.extend(stable_buf)
                     stable_buf.clear()
                     stable[0] = True
@@ -329,7 +381,9 @@ class ImageProcess:
         dx = np.abs(p2[:, 0] - p1[:, 0])
         dy = np.abs(p2[:, 1] - p1[:, 1])
 
-        need_interp = (dx > 6) | (dy > 3)
+        need_interp = (dx > self.cfg.interp_dx_thresh) | (
+            dy > self.cfg.interp_dy_thresh
+        )
 
         result = []
 
@@ -360,7 +414,7 @@ class ImageProcess:
         result.append(tuple(pts[-1]))
         return np.array(result, dtype=np.int32).reshape(-1, 2)
 
-    def _fill_boundary(self, left_line, right_line, img_shape, down_ratio=0.90):
+    def _fill_boundary(self, left_line, right_line, img_shape):
         """将边线延伸到指定y位置，处理丢线情况
 
         三种情况：
@@ -371,13 +425,12 @@ class ImageProcess:
             left_line: 左边线 numpy数组 (N, 2)
             right_line: 右边线 numpy数组 (N, 2)
             img_shape: 图像形状 (height, width)
-            down_ratio: 填充到的y坐标比例（归一化），默认0.90
 
         Returns:
             (填充后的左边线, 填充后的右边线) 均为 numpy数组
         """
         img_h, img_w = img_shape[0], img_shape[1]
-        bottom_y_limit = int(down_ratio * img_h)
+        bottom_y_limit = int(self.cfg.fill_down_ratio * img_h)
 
         # 两边都有线：插值 + 填充到底部
         if len(left_line) > 0 and len(right_line) > 0:
@@ -519,13 +572,11 @@ class ImageProcess:
             angle = self.get_angle_k(k_near, k_far)
 
             offset = 0
-            angle_thresh = 15.0  # 度
-            max_offset = 20  # 最大偏移像素
 
-            if angle > angle_thresh:
-                # k_far < 0 → 远端斜向右上 → 正偏移(右)
-                # k_far > 0 → 远端斜向左上 → 负偏移(左)
-                offset = int(-np.sign(k_far) * min(angle / 45.0, 1.0) * max_offset)
+            if angle > self.cfg.fit_angle_thresh:
+                offset = int(
+                    -np.sign(k_far) * min(angle / 45.0, 1.0) * self.cfg.fit_max_offset
+                )
 
             # 生成近端拟合点（含偏移）
             near_ys = np.arange(
@@ -575,12 +626,11 @@ class ImageProcess:
         except Exception as e:
             logging.error(f"Error occurred during polynomial fitting: {e}")
 
-    def judge_enter_cross_state(self, img_shape, y_ratio=0.75):
+    def judge_enter_cross_state(self, img_shape):
         """判断是否满足进入 CROSS 状态的条件
 
         Args:
             img_shape: 图像形状 (height, width)
-            y_ratio: y 坐标阈值比例，默认 0.75
 
         Returns:
             bool: 满足条件返回 True，否则 False
@@ -588,15 +638,17 @@ class ImageProcess:
         if self.left_c is None or self.right_c is None:
             return False
         img_h = img_shape[0]
-        return self.left_c[1] >= img_h * y_ratio or self.right_c[1] >= img_h * y_ratio
+        return (
+            self.left_c[1] >= img_h * self.cfg.corner_y_ratio
+            or self.right_c[1] >= img_h * self.cfg.corner_y_ratio
+        )
 
-    def judge_enter_turning(self, stop_mid, img_shape, y_thresh=0.78):
+    def judge_enter_turning(self, stop_mid, img_shape):
         """判断是否应该进入 TURNING 状态
 
         Args:
             stop_mid: 停止线中点坐标 (x, y) 或 None
             img_shape: 图像形状 (h, w, ...)
-            y_thresh: y 坐标阈值（归一化），默认 0.78
 
         Returns:
             bool: True 表示应该进入 TURNING 状态
@@ -605,14 +657,13 @@ class ImageProcess:
             return False
 
         y_norm = stop_mid[1] / img_shape[0]
-        return y_norm > y_thresh
+        return y_norm > self.cfg.turning_enter_y_thresh
 
-    def judge_turning_end(self, img_shape, y_thresh=0.60, miss_line=[False]):
+    def judge_turning_end(self, img_shape, miss_line=[False]):
         """判断转弯是否结束：一开始两边都不丢线，然后一边丢线一边不丢线，最后两边都不丢线
 
         Args:
             img_shape: 图像形状 (h, w, ...)
-            y_thresh: y 坐标阈值（归一化），默认 0.70
             miss_line: 转弯期间是否丢线
 
         Returns:
@@ -623,10 +674,10 @@ class ImageProcess:
             return False
 
         x_diff = abs(int(self.right_line[-1, 0]) - int(self.left_line[-1, 0]))
-        if miss_line[0] and x_diff <= 20:
+        if miss_line[0] and x_diff <= self.cfg.turning_end_x_diff:
             return True
 
-        if x_diff <= 20:
+        if x_diff <= self.cfg.turning_end_x_diff:
             miss_line[0] = True
             return False
 
@@ -648,16 +699,16 @@ class ImageProcess:
         h, w = binary_img.shape[:2]
 
         # 计算 ROI 边界
-        roi_y0 = int(h * 0.55)
-        roi_y1 = int(h * 0.80)
-        roi_x0 = int(w * 0.30)
-        roi_x1 = int(w * 0.70)
+        roi_y0 = int(h * self.cfg.stop_roi_y0)
+        roi_y1 = int(h * self.cfg.stop_roi_y1)
+        roi_x0 = int(w * self.cfg.stop_roi_x0)
+        roi_x1 = int(w * self.cfg.stop_roi_x1)
         roi = binary_img[roi_y0 : roi_y1 + 1, roi_x0 : roi_x1 + 1]
 
         logging.debug(f"ROI: y=[{roi_y0}, {roi_y1}], x=[{roi_x0}, {roi_x1}]")
 
         # 横向形态学削弱斜线
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (self.cfg.stop_kernel_w, 1))
         roi = cv2.morphologyEx(roi, cv2.MORPH_OPEN, kernel)
 
         contours = cv2.findContours(roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
@@ -676,7 +727,7 @@ class ImageProcess:
 
         x, y, w, h = cv2.boundingRect(best)
 
-        if w <= 20:
+        if w <= self.cfg.stop_min_width:
             return None
         # 还原到原图像
         x += roi_x0
@@ -724,9 +775,7 @@ class ImageProcess:
         result[:, 0] += offset
         return result
 
-    def get_side_line_task_1(
-        self, img, canvas, is_draw=False, up_ratio=0.55, down_ratio=0.90
-    ):
+    def get_side_line_task_1(self, img, canvas, is_draw=False):
         """从图像的中线往两边搜索，获取赛道边线
 
         使用同帧逐行递推决定搜索起点，搜索窗口越往上越窄。
@@ -750,7 +799,6 @@ class ImageProcess:
             # miss 计数（只在 stable 后计数）
             left_miss_count = 0
             right_miss_count = 0
-            miss_threshold = 3
 
             # 稳定点缓冲区及标志
             left_stable_buf = []
@@ -760,19 +808,25 @@ class ImageProcess:
 
             diff = np.diff(img == 0, axis=1)  # 计算行内黑白跳变  右-左
 
-            for y in range(int(img_h * down_ratio), int(img_h * up_ratio), -1):
+            for y in range(
+                int(img_h * self.cfg.down_ratio), int(img_h * self.cfg.up_ratio), -1
+            ):
                 row_diff = diff[y]
 
                 # 动态搜索窗口：二段阶梯
                 y_norm = y / img_h
-                cur_range = 50 if y_norm > 0.6 else 30
+                cur_range = (
+                    self.cfg.search_range_wide
+                    if y_norm > self.cfg.search_range_threshold
+                    else self.cfg.search_range_narrow
+                )
 
                 # --- 左侧赛道线 ---
                 if left_stable[0]:
                     search_start_left = min(prev_row_left_x + cur_range, img_w - 1)
                     search_end_left = max(0, prev_row_left_x - cur_range)
                 else:
-                    search_start_left = mid_x - self.search_offset
+                    search_start_left = mid_x - self.cfg.search_offset
                     search_end_left = 0
 
                 if is_draw:
@@ -790,8 +844,8 @@ class ImageProcess:
                         (x, y),
                         left_stable_buf,
                         left_stable,
-                        self.x_continual,
-                        self.y_continual,
+                        self.cfg.x_continual,
+                        self.cfg.y_continual,
                     )
                     # 如果当前行的点没有被加入正式边线，则下一行的搜索起点不更新；反之才更新
                     if left_added:
@@ -803,8 +857,8 @@ class ImageProcess:
                 else:
                     left_miss_count = 0
 
-                if left_miss_count >= miss_threshold:
-                    prev_row_left_x = mid_x - self.search_offset
+                if left_miss_count >= self.cfg.miss_threshold:
+                    prev_row_left_x = mid_x - self.cfg.search_offset
                     left_miss_count = 0
 
                 # --- 右侧赛道线 ---
@@ -814,7 +868,7 @@ class ImageProcess:
                     )
                     search_end_right = min(img_w - 1, prev_row_right_x + cur_range)
                 else:
-                    search_start_right = mid_x + self.search_offset
+                    search_start_right = mid_x + self.cfg.search_offset
                     search_end_right = img_w - 1
 
                 if is_draw:
@@ -832,8 +886,8 @@ class ImageProcess:
                         (x, y),
                         right_stable_buf,
                         right_stable,
-                        self.x_continual,
-                        self.y_continual,
+                        self.cfg.x_continual,
+                        self.cfg.y_continual,
                     )
                     if right_added:
                         prev_row_right_x = x
@@ -844,8 +898,8 @@ class ImageProcess:
                 else:
                     right_miss_count = 0
 
-                if right_miss_count >= miss_threshold:
-                    prev_row_right_x = mid_x + self.search_offset
+                if right_miss_count >= self.cfg.miss_threshold:
+                    prev_row_right_x = mid_x + self.cfg.search_offset
                     right_miss_count = 0
 
             # 转换为 numpy 数组
@@ -891,8 +945,6 @@ class ImageProcess:
         canvas,
         is_draw=False,
         find_corner=False,
-        up_ratio=0.55,
-        down_ratio=0.90,
     ):
         """从图像的中线往两边搜索，获取赛道边线
 
@@ -903,10 +955,6 @@ class ImageProcess:
             find_corner: 是否搜寻拐点
         """
         # 从图像中间向两边搜索，获取边线
-
-        # 拐点检测角度阈值
-        angle_high_thresh = 135
-        angle_low_thresh = 45
 
         # 拐点检测
         left_nxt_p, left_cur_p, left_pre_p = None, None, None
@@ -930,7 +978,6 @@ class ImageProcess:
             # miss 计数（只在 stable 后计数）
             left_miss_count = 0
             right_miss_count = 0
-            miss_threshold = 3
 
             # 稳定点缓冲区及标志
             left_stable_buf = []
@@ -943,13 +990,19 @@ class ImageProcess:
 
             # 从图像下方（靠近车辆）开始搜索
             for y in range(
-                int(img.shape[0] * down_ratio), int(img.shape[0] * up_ratio), -1
+                int(img.shape[0] * self.cfg.down_ratio),
+                int(img.shape[0] * self.cfg.up_ratio),
+                -1,
             ):
                 row_diff = diff[y]
 
                 # 动态搜索窗口：二段阶梯
                 y_norm = y / img_h
-                cur_range = 50 if y_norm > 0.6 else 30
+                cur_range = (
+                    self.cfg.search_range_wide
+                    if y_norm > self.cfg.search_range_threshold
+                    else self.cfg.search_range_narrow
+                )
 
                 # --- 左侧赛道线 ---
                 if left_stable[0]:
@@ -957,7 +1010,7 @@ class ImageProcess:
                     search_end_left = max(0, prev_row_left_x - cur_range)
                 # 默认从中间偏左一直搜索到左边界
                 else:
-                    search_start_left = mid_x - self.search_offset
+                    search_start_left = mid_x - self.cfg.search_offset
                     search_end_left = 0
 
                 if is_draw:
@@ -978,8 +1031,8 @@ class ImageProcess:
                         (x, y),
                         left_stable_buf,
                         left_stable,
-                        self.x_continual,
-                        self.y_continual,
+                        self.cfg.x_continual,
+                        self.cfg.y_continual,
                     )
 
                     # 如果当前行的点没有被加入正式边线，则下一行的搜索起点不更新；反之才更新
@@ -995,7 +1048,11 @@ class ImageProcess:
                                 logging.debug(
                                     f"left line angle: {angle} , pre_p: {left_pre_p},  cur_p: {left_cur_p} , nxt_p: {left_nxt_p}"
                                 )
-                                if angle_low_thresh < angle < angle_high_thresh:
+                                if (
+                                    self.cfg.corner_angle_low
+                                    < angle
+                                    < self.cfg.corner_angle_high
+                                ):
                                     logging.debug(
                                         f"slope mutation , angle: {angle} ,pre_p:{left_pre_p} , cur_p: {left_cur_p} , nxt_p: {left_nxt_p} "
                                     )
@@ -1011,8 +1068,8 @@ class ImageProcess:
                     else:
                         left_miss_count = 0
 
-                    if left_miss_count >= miss_threshold:
-                        prev_row_left_x = mid_x - self.search_offset
+                    if left_miss_count >= self.cfg.miss_threshold:
+                        prev_row_left_x = mid_x - self.cfg.search_offset
                         left_miss_count = 0
 
                 # 右线
@@ -1022,7 +1079,7 @@ class ImageProcess:
                     )
                     search_end_right = min(img_w - 1, prev_row_right_x + cur_range)
                 else:
-                    search_start_right = mid_x + self.search_offset
+                    search_start_right = mid_x + self.cfg.search_offset
                     search_end_right = img_w - 1
 
                 if is_draw:
@@ -1042,8 +1099,8 @@ class ImageProcess:
                         (x, y),
                         right_stable_buf,
                         right_stable,
-                        self.x_continual,
-                        self.y_continual,
+                        self.cfg.x_continual,
+                        self.cfg.y_continual,
                     )
                     if right_added:
                         prev_row_right_x = x
@@ -1054,8 +1111,8 @@ class ImageProcess:
                         else:
                             right_miss_count = 0
 
-                        if right_miss_count >= miss_threshold:
-                            prev_row_right_x = mid_x + self.search_offset
+                        if right_miss_count >= self.cfg.miss_threshold:
+                            prev_row_right_x = mid_x + self.cfg.search_offset
                             right_miss_count = 0
 
                         # 只有稳定点才参与拐点检测
@@ -1068,7 +1125,11 @@ class ImageProcess:
                                 logging.debug(
                                     f"right line angle: {angle} , pre_p: {right_pre_p},  cur_p: {right_cur_p} , nxt_p: {right_nxt_p}"
                                 )
-                                if angle_low_thresh < angle < angle_high_thresh:
+                                if (
+                                    self.cfg.corner_angle_low
+                                    < angle
+                                    < self.cfg.corner_angle_high
+                                ):
                                     logging.debug(
                                         f"slope mutation , angle: {angle} ,pre_p:{right_pre_p} cur_p: {right_cur_p} , nxt_p: {right_nxt_p} "
                                     )
@@ -1528,7 +1589,7 @@ def main_video():
 
                     # CORNER 状态：处理完毕后检查是否进入 CROSS
                     if state == ProcessState.CORNER:
-                        if imgprocess.judge_enter_cross_state(binary_img.shape, 0.75):
+                        if imgprocess.judge_enter_cross_state(binary_img.shape):
                             state = ProcessState.CROSS
                             logging.info(
                                 "State: CORNER -> CROSS (dual corner detected)"
@@ -1799,7 +1860,7 @@ def main():
 
                     # CORNER 状态：处理完毕后检查是否进入 CROSS
                     if state == ProcessState.CORNER:
-                        if imgprocess.judge_enter_cross_state(binary_img.shape, 0.75):
+                        if imgprocess.judge_enter_cross_state(binary_img.shape):
                             state = ProcessState.CROSS
                             logging.info(
                                 "State: CORNER -> CROSS (dual corner detected)"
