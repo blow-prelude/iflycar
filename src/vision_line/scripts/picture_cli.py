@@ -1,4 +1,5 @@
 import logging
+import math
 import socket
 import threading
 import time
@@ -25,14 +26,11 @@ class ImageSender:
         self.host = host
         self.port = port
         self.cli_socket = None
-        self.send_thread = None
+        self.send_threads = []
         self.running = None
         self.img_queues = None  # 改为队列列表
         self.num_images = None  # 添加图片数量字段
         self._is_closed = False
-
-        self.thread_t_log = 0
-        self.thread_t_sum = 0
 
     def connect(self):
         """创建UDP socket（无需连接）"""
@@ -90,27 +88,32 @@ class ImageSender:
             logging.error(f"UDP send failed: {e}")
             raise
 
-    def _send_worker(self, queues: list[Queue], running_flag: list[bool]) -> None:
-        """发送线程工作函数：轮询所有队列并发送"""
+    def _send_worker(
+        self, thread_queues: list[tuple[int, Queue]], running_flag: list[bool]
+    ) -> None:
+        """发送线程工作函数：轮询分配的队列并发送
+
+        Args:
+            thread_queues: 分配给此线程的 (img_id, Queue) 列表
+            running_flag: 运行标志列表，running_flag[0]为True时继续运行
+        """
         thread_t_log = 0
         thread_cur_t, thread_pre_t, thread_t_sum = 0.0, 0.0, 0.0
         while running_flag[0]:
             try:
-                # 测速
                 thread_cur_t = time.perf_counter()
                 thread_t_log += 1
                 thread_t_sum += thread_cur_t - thread_pre_t
                 if thread_t_log % 10 == 0:
                     thread_t_log = 0
-                    logging.info(
+                    logging.debug(
                         f"send thread frequence:{1 / (thread_t_sum / 10):.6f} Hz"
                     )
                     thread_t_sum = 0.0
                 thread_pre_t = thread_cur_t
 
-                # 轮询所有队列
                 any_sent = False
-                for img_id, queue in enumerate(queues):
+                for img_id, queue in thread_queues:
                     if not queue.empty():
                         try:
                             img, img_name = queue.get_nowait()
@@ -119,21 +122,28 @@ class ImageSender:
                             queue.task_done()
                             any_sent = True
                         except Empty:
-                            pass  # 队列为空继续
+                            pass
 
                 if not any_sent:
-                    time.sleep(0.001)  # 所有队列都为空时才休眠
+                    time.sleep(0.001)
 
             except Exception as e:
                 logging.error(f"Error in send worker: {e}")
                 continue
 
-    def start_sending(self, num_images: int = 3, queue_size: int = 45) -> None:
+    def start_sending(
+        self, num_images: int = 3, queue_size: int = 45, images_per_thread: int = None
+    ) -> None:
         """启动发送线程
 
         Args:
             num_images: 图片数量（同时发送的图像流数量）
             queue_size: 每个队列的大小
+            images_per_thread: 每个线程处理的图片数，默认等于num_images（单线程）
+
+        Raises:
+            RuntimeError: 如果发送器已关闭或未连接
+            ValueError: 如果num_images或images_per_thread不合法
         """
         if self._is_closed:
             raise RuntimeError("Sender is already closed.")
@@ -144,18 +154,27 @@ class ImageSender:
         if not (1 <= num_images <= 255):
             raise ValueError(f"num_images must be in range 1-255, got {num_images}")
 
-        # 创建多个图片队列
+        ipt = images_per_thread if images_per_thread is not None else num_images
+        if not isinstance(ipt, int) or ipt < 1:
+            raise ValueError(f"images_per_thread must be a positive integer, got {ipt}")
+
         self.num_images = num_images
         self.img_queues = [Queue(maxsize=queue_size) for _ in range(num_images)]
         self.running = [True]
 
-        # 启动发送线程
-        self.send_thread = threading.Thread(
-            target=self._send_worker, args=(self.img_queues, self.running)
-        )
-        self.send_thread.daemon = True
-        self.send_thread.start()
-        logging.info(f"Send thread started for {num_images} images.")
+        num_threads = math.ceil(num_images / ipt)
+        self.send_threads = []
+        for t in range(num_threads):
+            start_id = t * ipt
+            end_id = min((t + 1) * ipt, num_images)
+            thread_queues = [(i, self.img_queues[i]) for i in range(start_id, end_id)]
+            thread = threading.Thread(
+                target=self._send_worker, args=(thread_queues, self.running)
+            )
+            thread.daemon = True
+            thread.start()
+            self.send_threads.append(thread)
+        logging.info(f"{num_threads} send thread(s) started for {num_images} images.")
 
     def enqueue_image(
         self, img: cv2.typing.MatLike, img_id: int = 0, img_name: str = ""
@@ -187,16 +206,13 @@ class ImageSender:
 
         self._is_closed = True
 
-        # 停止发送线程
         if self.running is not None:
             self.running[0] = False
 
-        # 等待线程结束
-        if self.send_thread is not None:
-            self.send_thread.join(timeout=2)
-            self.send_thread = None
+        for thread in self.send_threads:
+            thread.join(timeout=2)
+        self.send_threads = []
 
-        # 关闭套接字
         if self.cli_socket is not None:
             self.cli_socket.close()
             self.cli_socket = None
@@ -271,7 +287,7 @@ class CameraCapture:
 
 
 if __name__ == "__main__":
-    host = "127.0.0.1"
+    host = "192.168.10.105"
     port = 12345
     main_t_log = 0
     main_t_sum = 0
@@ -280,7 +296,7 @@ if __name__ == "__main__":
     try:
         with CameraCapture(0) as camera, ImageSender(host, port) as sender:
             sender.connect()
-            sender.start_sending(num_images=5)  # 启动3个图像流
+            sender.start_sending(num_images=5, images_per_thread=2)  # 3个发送线程
 
             # cap = cv2.VideoCapture("test2.avi")
 
@@ -291,7 +307,7 @@ if __name__ == "__main__":
                     main_t_log += 1
                     if main_t_log % 10 == 0:
                         main_t_log = 0
-                        logging.info(
+                        logging.debug(
                             f"main thread frequence:{1 / (main_t_sum / 10):6f} Hz"
                         )
                         main_t_sum = 0

@@ -7,14 +7,12 @@ import time
 import cv2
 import numpy as np
 import rospy
-from camera_capture import CameraCapture
 from coco_utils import COCO_test_helper
 from cv_bridge import CvBridge, CvBridgeError
 from rknn_executor import RKNN_model_container
 from rknnlite.api import RKNNLite
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
-
 
 OBJ_THRESH = 0.25
 NMS_THRESH = 0.45
@@ -23,16 +21,13 @@ NMS_THRESH = 0.45
 # OBJ_THRESH = 0.001
 # NMS_THRESH = 0.65
 
-IMG_SIZE = (640, 480)  # (width, height), such as (1280, 736)
+IMG_SIZE = (640, 640)  # (width, height), such as (1280, 736)
 
 CLASSES = ("stop", "straight", "right", "left")
 
-coco_id_list = [
-    1,
-    2,
-    3,
-    4,
-]
+
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
 
 
 def filter_boxes(boxes, box_confidences, box_class_probs):
@@ -87,21 +82,25 @@ def nms_boxes(boxes, scores):
 
 
 def dfl(position):
-    # Distribution Focal Loss (DFL) - NumPy implementation
-    x = position.astype(np.float32)
+    # Distribution Focal Loss (DFL) - pure numpy implementation
+    x = position.astype(np.float32)  # already numpy array
     n, c, h, w = x.shape
     p_num = 4
     mc = c // p_num
     y = x.reshape(n, p_num, mc, h, w)
 
-    # Softmax along the mc dimension (axis=2)
-    exp_y = np.exp(y - np.max(y, axis=2, keepdims=True))
-    y = exp_y / np.sum(exp_y, axis=2, keepdims=True)
+    # softmax along mc axis (axis=2) for numerical stability
+    y_max = np.max(y, axis=2, keepdims=True)
+    y_exp = np.exp(y - y_max)
+    y_softmax = y_exp / np.sum(y_exp, axis=2, keepdims=True)
 
-    # Weighted sum using cumulative indices
-    acc_matrix = np.arange(mc).astype(np.float32).reshape(1, 1, mc, 1, 1)
-    y = np.sum(y * acc_matrix, axis=2)
-    return y
+    # create accumulation matrix [0, 1, 2, ..., mc-1]
+    acc_metrix = np.arange(mc, dtype=np.float32).reshape(1, 1, mc, 1, 1)
+
+    # weighted sum along mc axis
+    result = (y_softmax * acc_metrix).sum(2)
+
+    return result
 
 
 def box_process(position):
@@ -123,55 +122,63 @@ def box_process(position):
 
 
 def post_process(input_data):
-    num_branches = 3
-    pair_per_branch = len(input_data) // num_branches
+    boxes, scores, classes_conf = [], [], []
+    defualt_branch = 3
+    pair_per_branch = len(input_data) // defualt_branch
+    # Python 忽略 score_sum 输出
+    for i in range(defualt_branch):
+        boxes.append(box_process(input_data[pair_per_branch * i]))
+        classes_conf.append(input_data[pair_per_branch * i + 1])
+        scores.append(
+            np.ones_like(
+                input_data[pair_per_branch * i + 1][:, :1, :, :], dtype=np.float32
+            )
+        )
 
-    # 处理每个检测分支: box回归 + 类别置信度
-    box_parts, conf_parts = [], []
-    for i in range(num_branches):
-        box_parts.append(box_process(input_data[pair_per_branch * i]))
-        conf_parts.append(input_data[pair_per_branch * i + 1])
+    def sp_flatten(_in):
+        ch = _in.shape[1]
+        _in = _in.transpose(0, 2, 3, 1)
+        return _in.reshape(-1, ch)
 
-    # (1, C, H, W) -> (H*W, C)
-    def flatten_hw(x):
-        return x.transpose(0, 2, 3, 1).reshape(-1, x.shape[1])
+    boxes = [sp_flatten(_v) for _v in boxes]
+    classes_conf = [sp_flatten(_v) for _v in classes_conf]
+    scores = [sp_flatten(_v) for _v in scores]
 
-    boxes = np.concatenate([flatten_hw(b) for b in box_parts])
-    classes_conf = np.concatenate([flatten_hw(c) for c in conf_parts])
+    boxes = np.concatenate(boxes)
+    classes_conf = np.concatenate(classes_conf)
+    scores = np.concatenate(scores)
 
-    # box_confidence 全为1，实际置信度来自 class_max_score * 1
-    box_confidences = np.ones((boxes.shape[0], 1), dtype=np.float32)
+    # filter according to threshold
+    boxes, classes, scores = filter_boxes(boxes, scores, classes_conf)
 
-    # 按阈值过滤
-    boxes, classes, scores = filter_boxes(boxes, box_confidences, classes_conf)
-
-    if boxes is None or len(boxes) == 0:
-        return None, None, None
-
-    # 按类别做NMS
+    # nms
     nboxes, nclasses, nscores = [], [], []
-    for cls_id in np.unique(classes):
-        mask = classes == cls_id
-        cls_boxes = boxes[mask]
-        cls_scores = scores[mask]
-        keep = nms_boxes(cls_boxes, cls_scores)
+    for c in set(classes):
+        inds = np.where(classes == c)
+        b = boxes[inds]
+        c = classes[inds]
+        s = scores[inds]
+        keep = nms_boxes(b, s)
 
-        if len(keep) > 0:
-            idx = np.where(mask)[0][keep]
-            nboxes.append(boxes[idx])
-            nclasses.append(classes[idx])
-            nscores.append(scores[idx])
+        if len(keep) != 0:
+            nboxes.append(b[keep])
+            nclasses.append(c[keep])
+            nscores.append(s[keep])
 
-    if not nboxes:
+    if not nclasses and not nscores:
         return None, None, None
 
-    return np.concatenate(nboxes), np.concatenate(nclasses), np.concatenate(nscores)
+    boxes = np.concatenate(nboxes)
+    classes = np.concatenate(nclasses)
+    scores = np.concatenate(nscores)
+
+    return boxes, classes, scores
 
 
 def draw(image, boxes, scores, classes):
     for box, score, cl in zip(boxes, scores, classes):
         top, left, right, bottom = [int(_b) for _b in box]
-        print(
+        rospy.loginfo(
             "%s @ (%d %d %d %d) %.3f" % (CLASSES[cl], top, left, right, bottom, score)
         )
         cv2.rectangle(image, (top, left), (right, bottom), (255, 0, 0), 2)
@@ -192,7 +199,7 @@ def setup_model(model_path, target="rk3588", device_id=RKNNLite.NPU_CORE_0_1):
         model = RKNN_model_container(model_path, target, device_id)
     else:
         raise ValueError(f"no model in {model_path}")
-    print("Model-{} is {} model, starting val".format(model_path, platform))
+    rospy.loginfo("Model-{} is {} model, starting val".format(model_path, platform))
     return model, platform
 
 
@@ -220,26 +227,22 @@ def inference_worker(
             time1 = time.perf_counter()
             outputs = model.run([img_rgb])
             time2 = time.perf_counter()
-            # rospy.logdebug(f"Worker-{worker_id} inference time: {time2 - time1:.4f} s")
+            rospy.logdebug(f"Worker-{worker_id} inference time: {time2 - time1:.4f} s")
 
             # 后处理
             boxes, classes, scores = post_process(outputs)
-            # rospy.logdebug(
-            #     f"Worker-{worker_id} post-process time: {time.perf_counter() - time2:.4f} s"
-            # )
+            rospy.logdebug(
+                f"Worker-{worker_id} post-process time: {time.perf_counter() - time2:.4f} s"
+            )
 
-            # 绘制结果
-            canvas = cv2.cvtColor(img_rgb.copy(), cv2.COLOR_RGB2BGR)
-            if boxes is not None:
-                draw(canvas, co_helper.get_real_box(boxes), scores, classes)
-
-            # 放入结果队列
+            # 将推理结果放入队列（不进行绘制）
             result = {
-                "canvas": canvas,
-                "inference_time": time2 - time1,
-                "worker_id": worker_id,
+                "img_rgb": img_rgb,  # 原始RGB图像
+                "boxes": boxes,
                 "classes": classes,
                 "scores": scores,
+                "inference_time": time2 - time1,
+                "worker_id": worker_id,
             }
             output_queue.put(result)
 
@@ -322,6 +325,7 @@ def main():
     try:
         # 跳过 ROS 的 fileConfig（与 Python 3.9 不兼容）
         import logging.config
+
         _orig_fileConfig = logging.config.fileConfig
         logging.config.fileConfig = lambda *a, **kw: None
         rospy.init_node("judge_light", anonymous=True)
@@ -351,7 +355,9 @@ def main():
             except CvBridgeError as e:
                 rospy.logerr(f"CvBridge conversion failed: {e}")
 
-        rospy.Subscriber(image_topic, Image, image_callback, queue_size=1, buff_size=2**24)
+        rospy.Subscriber(
+            image_topic, Image, image_callback, queue_size=1, buff_size=2**24
+        )
         rospy.loginfo(f"Subscribed image topic: {image_topic}")
 
         co_helper = COCO_test_helper(enable_letter_box=True)
@@ -390,32 +396,32 @@ def main():
             # 从输出队列获取结果并显示
             try:
                 result = output_queue.get(timeout=0.1)
-                canvas = result["canvas"]
-                inference_time = result["inference_time"]
-                worker_id = result["worker_id"]
+                img_rgb = result["img_rgb"]
+                boxes = result["boxes"]
                 classes = result["classes"]
                 scores = result["scores"]
-                best_score = (
-                    scores.max() if scores is not None and len(scores) > 0 else 0
-                )
-                best_class = (
-                    classes[scores.argmax()]
-                    if classes is not None and scores is not None and len(classes) > 0
-                    else None
-                )
+                inference_time = result["inference_time"]
+                worker_id = result["worker_id"]
 
                 rospy.loginfo(
-                    f"worker-{worker_id}: class: {best_class}, scores: {best_score} ,inference time: {inference_time:.4f} s"
+                    f"worker-{worker_id}: class: {classes}, scores: {scores} ,inference time: {inference_time:.4f} s"
                 )
 
                 # 发布检测到的方向到 /vision_line_direction 话题
-                if best_class is not None and best_score >= OBJ_THRESH:
-                    direction_name = CLASSES[best_class]
+                if classes is not None and scores >= OBJ_THRESH:
+                    direction_name = CLASSES[classes]
                     direction_pub.publish(String(direction_name))
-                    rospy.loginfo(f"Detected direction: {direction_name}, shutting down...")
+                    rospy.loginfo(
+                        f"Detected direction: {direction_name}, shutting down..."
+                    )
                     # 等待消息被消费，避免订阅者未收到就退出
                     time.sleep(1.0)
                     break
+
+                # 在主线程中绘制结果
+                canvas = img_src.copy()
+                if boxes is not None:
+                    draw(canvas, co_helper.get_real_box(boxes), scores, classes)
 
                 # 统计FPS
                 current_time = time.perf_counter()
@@ -436,15 +442,16 @@ def main():
             except queue.Empty:
                 # 队列为空时继续显示原始图像，使用上次的FPS
                 img_processor.draw_fps(img_src)
-                cv2.imshow("img_src", img_src)
+                cv2.imshow("predict", img_src)
                 cv2.waitKey(1)
             except Exception as e:
                 rospy.logerr(f"Error displaying result: {e}")
 
     except KeyboardInterrupt:
         rospy.loginfo("Interrupt by user, exiting...")
-    except Exception as e:
+    except Exception:
         import traceback
+
         traceback.print_exc()
     finally:
         # 停止所有工作线程
@@ -454,54 +461,12 @@ def main():
 
         # 释放资源
         cv2.destroyAllWindows()
-        if model0: model0.release()
-        if model1: model1.release()
-        if model2: model2.release()
-
-
-def main_test():
-    FILE_DIR = os.path.dirname(os.path.abspath(__file__))
-    MODEL_PATH = os.path.join(FILE_DIR, "..", "models", "bestfp.rknn")
-    img_path = os.path.join(FILE_DIR, "..", "pictures", "006_0018.jpg")
-
-    try:
-        # init model
-        model, _ = setup_model(MODEL_PATH, device_id=RKNNLite.NPU_CORE_0)
-    except Exception as e:
-        rospy.logerr(f"occur err when setup model: {e}")
-
-    try:
-        co_helper = COCO_test_helper(enable_letter_box=True)
-
-        pad_color = (0, 0, 0)
-
-        img_src = cv2.imread(img_path)
-        # 将图像等比例缩放并填充到制指定尺寸
-        img = co_helper.letter_box(
-            im=img_src.copy(), new_shape=(IMG_SIZE[1], IMG_SIZE[0]), pad_color=pad_color
-        )
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        # 将红灯stop的状态也发布
-        time1 = time.perf_counter()
-        outputs = model.run([img])
-        time2 = time.perf_counter()
-        rospy.loginfo(f"inference take {time2 - time1:.6f}s")
-        boxes, classes, scores = post_process(outputs)
-        rospy.loginfo(f"post process takes {time.perf_counter() - time2:.6f}s")
-
-        canvas = cv2.cvtColor(img.copy(), cv2.COLOR_RGB2BGR)
-        if boxes is not None:
-            draw(canvas, co_helper.get_real_box(boxes), scores, classes)
-
-        cv2.imshow("predict", canvas)
-        cv2.waitKey(0)
-    except KeyboardInterrupt:
-        rospy.loginfo("Interrupt by user,exiting...")
-    except Exception as e:
-        rospy.logerr(f"occur err when inference: {e}")
-    finally:
-        cv2.destroyAllWindows()
-        model.release()
+        if model0:
+            model0.release()
+        if model1:
+            model1.release()
+        if model2:
+            model2.release()
 
 
 if __name__ == "__main__":

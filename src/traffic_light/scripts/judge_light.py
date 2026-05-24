@@ -12,6 +12,7 @@ from rknn_executor import RKNN_model_container
 from rknnlite.api import RKNNLite
 
 # Configure logging
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -30,12 +31,9 @@ IMG_SIZE = (640, 640)  # (width, height), such as (1280, 736)
 
 CLASSES = ("stop", "straight", "right", "left")
 
-coco_id_list = [
-    1,
-    2,
-    3,
-    4,
-]
+
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
 
 
 def filter_boxes(boxes, box_confidences, box_class_probs):
@@ -90,21 +88,25 @@ def nms_boxes(boxes, scores):
 
 
 def dfl(position):
-    # Distribution Focal Loss (DFL) - NumPy implementation
-    x = position.astype(np.float32)
+    # Distribution Focal Loss (DFL) - pure numpy implementation
+    x = position.astype(np.float32)  # already numpy array
     n, c, h, w = x.shape
     p_num = 4
     mc = c // p_num
     y = x.reshape(n, p_num, mc, h, w)
 
-    # Softmax along the mc dimension (axis=2)
-    exp_y = np.exp(y - np.max(y, axis=2, keepdims=True))
-    y = exp_y / np.sum(exp_y, axis=2, keepdims=True)
+    # softmax along mc axis (axis=2) for numerical stability
+    y_max = np.max(y, axis=2, keepdims=True)
+    y_exp = np.exp(y - y_max)
+    y_softmax = y_exp / np.sum(y_exp, axis=2, keepdims=True)
 
-    # Weighted sum using cumulative indices
-    acc_matrix = np.arange(mc).astype(np.float32).reshape(1, 1, mc, 1, 1)
-    y = np.sum(y * acc_matrix, axis=2)
-    return y
+    # create accumulation matrix [0, 1, 2, ..., mc-1]
+    acc_metrix = np.arange(mc, dtype=np.float32).reshape(1, 1, mc, 1, 1)
+
+    # weighted sum along mc axis
+    result = (y_softmax * acc_metrix).sum(2)
+
+    return result
 
 
 def box_process(position):
@@ -182,7 +184,7 @@ def post_process(input_data):
 def draw(image, boxes, scores, classes):
     for box, score, cl in zip(boxes, scores, classes):
         top, left, right, bottom = [int(_b) for _b in box]
-        print(
+        logging.info(
             "%s @ (%d %d %d %d) %.3f" % (CLASSES[cl], top, left, right, bottom, score)
         )
         cv2.rectangle(image, (top, left), (right, bottom), (255, 0, 0), 2)
@@ -239,18 +241,14 @@ def inference_worker(
                 f"Worker-{worker_id} post-process time: {time.perf_counter() - time2:.4f} s"
             )
 
-            # 绘制结果
-            canvas = cv2.cvtColor(img_rgb.copy(), cv2.COLOR_RGB2BGR)
-            if boxes is not None:
-                draw(canvas, co_helper.get_real_box(boxes), scores, classes)
-
-            # 放入结果队列
+            # 将推理结果放入队列（不进行绘制）
             result = {
-                "canvas": canvas,
-                "inference_time": time2 - time1,
-                "worker_id": worker_id,
+                "img_rgb": img_rgb,  # 原始RGB图像
+                "boxes": boxes,
                 "classes": classes,
                 "scores": scores,
+                "inference_time": time2 - time1,
+                "worker_id": worker_id,
             }
             output_queue.put(result)
 
@@ -370,23 +368,21 @@ def main():
             # 从输出队列获取结果并显示
             try:
                 result = output_queue.get(timeout=0.1)
-                canvas = result["canvas"]
-                inference_time = result["inference_time"]
-                worker_id = result["worker_id"]
+                img_rgb = result["img_rgb"]
+                boxes = result["boxes"]
                 classes = result["classes"]
                 scores = result["scores"]
-                best_score = (
-                    scores.max() if scores is not None and len(scores) > 0 else 0
-                )
-                best_class = (
-                    classes[scores.argmax()]
-                    if classes is not None and scores is not None and len(classes) > 0
-                    else None
-                )
+                inference_time = result["inference_time"]
+                worker_id = result["worker_id"]
 
                 logging.info(
-                    f"worker-{worker_id}: class: {best_class}, scores: {best_score} ,inference time: {inference_time:.4f} s"
+                    f"worker-{worker_id}: class: {classes}, scores: {scores} ,inference time: {inference_time:.4f} s"
                 )
+
+                # 在主线程中绘制结果
+                canvas = img_src.copy()
+                if boxes is not None:
+                    draw(canvas, co_helper.get_real_box(boxes), scores, classes)
 
                 # 统计FPS
                 current_time = time.perf_counter()
@@ -402,7 +398,9 @@ def main():
 
                 img_processor.draw_fps(canvas)
                 cv2.imshow("predict", canvas)
-                cv2.waitKey(1)
+                if cv2.waitKey(1) & 0xFF == ord(" "):
+                    cv2.imwrite(f"capture_{int(time.time())}.jpg", canvas)
+                    logging.info("Saved current frame to disk.")
 
             except queue.Empty:
                 # 队列为空时继续显示原始图像，使用上次的FPS
@@ -432,8 +430,8 @@ def main():
 
 def main_test():
     FILE_DIR = os.path.dirname(os.path.abspath(__file__))
-    MODEL_PATH = os.path.join(FILE_DIR, "..", "models", "besti8.rknn")
-    img_path = os.path.join(FILE_DIR, "..", "pictures", "006_0018.jpg")
+    MODEL_PATH = os.path.join(FILE_DIR, "..", "models", "bestfp.rknn")
+    img_path = os.path.join(FILE_DIR, "..", "pictures", "capture_1779365603.jpg")
 
     try:
         # init model
@@ -443,24 +441,32 @@ def main_test():
 
     try:
         co_helper = COCO_test_helper(enable_letter_box=True)
+        img_processor = ImgProcessor(co_helper)
 
         pad_color = (0, 0, 0)
 
         img_src = cv2.imread(img_path)
-        # 将图像等比例缩放并填充到制指定尺寸
-        img = co_helper.letter_box(
-            im=img_src.copy(), new_shape=(IMG_SIZE[1], IMG_SIZE[0]), pad_color=pad_color
-        )
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = img_processor.preprocess(img_src)
+        # cv2.imshow("input", img)
 
         time1 = time.perf_counter()
         outputs = model.run([img])
         time2 = time.perf_counter()
         logging.info(f"inference take {time2 - time1:.6f}s")
+        cls = outputs[1]
+
+        idx = np.unravel_index(np.argmax(cls), cls.shape)
+
+        print("max idx =", idx)
+        print("max val =", cls[idx])
+        n, c, h, w = idx
+
+        print(cls[0, :, h, w])
+
         boxes, classes, scores = post_process(outputs)
         logging.info(f"post process takes {time.perf_counter() - time2:.6f}s")
 
-        canvas = cv2.cvtColor(img.copy(), cv2.COLOR_RGB2BGR)
+        canvas = img_src.copy()
         if boxes is not None:
             draw(canvas, co_helper.get_real_box(boxes), scores, classes)
 
@@ -470,10 +476,20 @@ def main_test():
         logging.info("Interrupt by user,exiting...")
     except Exception as e:
         logging.error(f"occur err when inference: {e}")
+        import traceback
+
+        traceback.print_exc()
     finally:
-        cv2.destroyAllWindows()
-        model.release()
+        try:
+            cv2.destroyAllWindows()
+        except Exception as destroy_err:
+            logging.debug(f"Error destroying windows: {destroy_err}")
+        try:
+            model.release()
+        except Exception as release_err:
+            logging.debug(f"Error releasing model: {release_err}")
 
 
 if __name__ == "__main__":
     main()
+    # main_test()

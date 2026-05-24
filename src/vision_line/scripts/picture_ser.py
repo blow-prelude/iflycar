@@ -1,8 +1,10 @@
 # picture_ser_pyqt5.py
 import logging
+import math
 import socket
 import threading
 import time
+from queue import Empty, Queue
 from typing import List, Optional, Tuple
 
 import cv2
@@ -42,17 +44,22 @@ class UDPImageReceiver(QObject):
         self.num_images = 0
         self._packet_count = 0
         self._fps = 0.0
+        self._images_per_thread = 0
+        self._decode_queues: list = []
+        self._decode_threads: list = []
 
         self._init_socket()
 
-    def start(self, num_images: int):
+    def start(self, num_images: int, images_per_thread: int = None):
         """启动接收线程
 
         Args:
             num_images: 预期接收的图片数量
+            images_per_thread: 每个解码线程处理的图片数
 
         Raises:
-            RuntimeError: 如果socket未初始化
+            RuntimeError: 如果socket未初始化或线程已在运行
+            ValueError: 如果images_per_thread不合法
         """
         if self.socket is None:
             raise RuntimeError("Socket is not initialized.")
@@ -65,13 +72,30 @@ class UDPImageReceiver(QObject):
         self._packet_count = 0
         self._fps = 0.0
 
+        ipt = images_per_thread if images_per_thread is not None else num_images
+        if not isinstance(ipt, int) or ipt < 1:
+            raise ValueError(f"images_per_thread must be a positive integer, got {ipt}")
+        self._images_per_thread = ipt
+
+        num_decode_threads = math.ceil(num_images / ipt)
+        self._decode_queues = [Queue(maxsize=100) for _ in range(num_decode_threads)]
+
+        self._decode_threads = []
+        for t in range(num_decode_threads):
+            thread = threading.Thread(target=self._decode_worker, args=(t,))
+            thread.daemon = True
+            thread.start()
+            self._decode_threads.append(thread)
+
         self.receive_thread = threading.Thread(
             target=self._receive_worker,
             args=(self.socket, self.running),
         )
         self.receive_thread.daemon = True
         self.receive_thread.start()
-        logging.info("Receive thread started.")
+        logging.info(
+            f"Receive thread started with {num_decode_threads} decode thread(s)."
+        )
 
     def _init_socket(self):
         """初始化UDP socket并绑定到指定地址"""
@@ -81,11 +105,11 @@ class UDPImageReceiver(QObject):
         logging.info(f"UDP server listening on {self.host}:{self.port}...")
 
     def _receive_worker(self, sock: socket.socket, running_flag: List[bool]) -> None:
-        """接收并处理图片的工作线程
+        """接收线程：接收UDP包并分发到解码队列
 
         Args:
             sock: UDP socket对象
-            running_flag: 运行标志列表，running_flag[0]为True时继续运行
+            running_flag: 运行标志列表
         """
         cur_t, pre_t, t_sum = 0.0, time.perf_counter(), 0.0
         t_log = 0
@@ -94,31 +118,33 @@ class UDPImageReceiver(QObject):
                 try:
                     img_id, img_name, img_byte = self.handle_connect(sock)
 
-                    # 处理接收失败（包括超时）
                     if img_id is None or img_byte is None:
                         continue
 
                     self._packet_count += 1
                     logging.debug(f"Received image {img_id} name={img_name!r}")
 
-                    # 测速：仅在实际收到图片时计数
                     cur_t = time.perf_counter()
                     t_sum += cur_t - pre_t
                     pre_t = cur_t
                     t_log += 1
                     if t_log % 10 == 0:
                         fps = 1 / (t_sum / 10) if t_sum > 0 else 0.0
+                        logging.debug(f"Receive thread frequence: {fps:.6f} Hz")
                         self._fps = fps
                         self.stats_updated.emit(fps, self._packet_count)
                         t_sum = 0.0
                         t_log = 0
 
-                    img = self.process_image(img_byte)
-                    qimage = self._array_to_qimage(img)
-                    self.image_received.emit(img_id, qimage, img_name)
+                    queue_idx = img_id // self._images_per_thread
+                    if queue_idx >= len(self._decode_queues):
+                        logging.warning(
+                            f"queue_idx {queue_idx} out of range for img_id {img_id}"
+                        )
+                        continue
+                    self._decode_queues[queue_idx].put((img_id, img_name, img_byte))
 
                 except socket.timeout:
-                    # 超时是正常的，继续循环检查running_flag
                     continue
                 except RuntimeError as e:
                     logging.error(f"Runtime error in receive_worker: {e}")
@@ -126,12 +152,56 @@ class UDPImageReceiver(QObject):
         except Exception as e:
             logging.error(f"Unexpected error in receive_worker: {e}")
 
+    def _decode_worker(self, thread_idx: int) -> None:
+        """解码线程：从队列取数据，解码并emit信号
+
+        Args:
+            thread_idx: 此线程的索引
+        """
+        t_sum, pre_t, t_log = 0.0, time.perf_counter(), 0
+        while self.running[0]:
+            try:
+                cur_t = time.perf_counter()
+                t_sum += cur_t - pre_t
+                pre_t = cur_t
+                t_log += 1
+                if t_log % 10 == 0:
+                    fps = 1 / (t_sum / 10) if t_sum > 0 else 0.0
+                    logging.debug(f"Decode thread frequence: {fps:.6f} Hz")
+
+                    t_sum = 0.0
+                    t_log = 0
+
+                img_id, img_name, img_byte = self._decode_queues[thread_idx].get(
+                    timeout=0.04
+                )
+                # 丢弃旧帧，只保留最新帧
+                while True:
+                    try:
+                        img_id, img_name, img_byte = self._decode_queues[
+                            thread_idx
+                        ].get_nowait()
+                    except Empty:
+                        break
+                img = self.process_image(img_byte)
+                qimage = self._array_to_qimage(img)
+                self.image_received.emit(img_id, qimage, img_name)
+            except Empty:
+                continue
+            except Exception as e:
+                logging.error(f"Error in decode worker {thread_idx}: {e}")
+                time.sleep(0.001)
+
     def stop(self):
         """停止接收"""
         self.running[0] = False
         if self.receive_thread is not None:
             self.receive_thread.join(timeout=2)
             self.receive_thread = None
+        for thread in self._decode_threads:
+            thread.join(timeout=2)
+        self._decode_threads = []
+        self._decode_queues = []
 
     def close(self):
         """关闭socket"""
@@ -313,7 +383,7 @@ class ImageDisplayWidget(QMainWindow):
 
             painter = QPainter(scaled)
             painter.setPen(QColor(255, 0, 255))
-            painter.setFont(QFont("Monospace", 10))
+            painter.setFont(QFont("Monospace", 20))
             painter.drawText(5, 15, img_name)
             painter.end()
 
@@ -343,7 +413,12 @@ class PyQt5ImageReceiver:
     """组合器：组合UDPImageReceiver和ImageDisplayWidget，提供简单的接收显示API"""
 
     def __init__(
-        self, host: str = "0.0.0.0", port: int = 12345, rows: int = 1, cols: int = 3
+        self,
+        host: str = "0.0.0.0",
+        port: int = 12345,
+        rows: int = 1,
+        cols: int = 3,
+        images_per_thread: int = None,
     ):
         """初始化接收器
 
@@ -352,25 +427,23 @@ class PyQt5ImageReceiver:
             port: 监听端口
             rows: 显示网格行数
             cols: 显示网格列数
+            images_per_thread: 每个解码线程处理的图片数，默认等于num_images
         """
         self.host = host
         self.port = port
         self.rows = rows
         self.cols = cols
+        self._images_per_thread = images_per_thread
         self._is_closed = False
 
-        # 创建QApplication（如果尚未存在）
         self.app = QApplication.instance()
         if self.app is None:
             self.app = QApplication([])
 
-        # 创建UDP接收器
         self.receiver = UDPImageReceiver(host, port)
 
-        # 创建显示窗口
         self.widget = ImageDisplayWidget(rows, cols, host, port)
 
-        # 连接信号
         self.receiver.image_received.connect(self.widget.set_image)
         self.receiver.stats_updated.connect(self.widget.update_stats)
 
@@ -383,17 +456,19 @@ class PyQt5ImageReceiver:
         if self._is_closed:
             raise RuntimeError("Receiver is already closed.")
 
-        # 启动UDP接收器
-        self.receiver.start(num_images)
+        ipt = (
+            self._images_per_thread
+            if self._images_per_thread is not None
+            else num_images
+        )
+        self.receiver.start(num_images, images_per_thread=ipt)
 
-        # 显示窗口
         self.widget.show()
 
         logging.info(
             f"PyQt5ImageReceiver started, waiting for {num_images} images on {self.host}:{self.port}"
         )
 
-        # 运行Qt事件循环
         self.app.exec_()
 
     def close(self) -> None:
@@ -430,8 +505,10 @@ if __name__ == "__main__":
     port = 12345
 
     try:
-        with PyQt5ImageReceiver(host, port, rows=1, cols=2) as img_rec:
-            img_rec.receive_picture(num_images=2)
+        with PyQt5ImageReceiver(
+            host, port, rows=2, cols=3, images_per_thread=2
+        ) as img_rec:
+            img_rec.receive_picture(num_images=5)
     except KeyboardInterrupt:
         logging.info("Interrupted by user.")
     except RuntimeError as e:
