@@ -1,0 +1,17 @@
+float64 left_x
+float64 left_y
+float64 right_x
+float64 right_y
+float64 center_x
+float64 center_y
+float64 distance
+float64 pp
+float64 distance_qian_x
+float64 distance_qian_y
+float64 distance_you_x
+float64 distance_you_y
+float64 distance_hou_x
+float64 distance_hou_y
+float64 distance_zuo_x
+float64 distance_zuo_y
+uint32 flag_not_found

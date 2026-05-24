@@ -1,0 +1,18 @@
+%YAML:1.0
+# camera parameter
+# lens is either pinhole or fisheye
+
+lens: fisheye
+
+fx: 389.98274196
+fy: 389.34802749
+cx: 312.05972942
+cy: 236.69521752
+
+k1: 0.10217227
+k2: -0.00104826
+p1/k3: -0.0015226
+p2/k4: -0.02000126
+
+
+

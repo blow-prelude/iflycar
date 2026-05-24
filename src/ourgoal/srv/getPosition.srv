@@ -1,0 +1,7 @@
+bool ask
+---
+float64 px
+float64 py
+float64 ow
+float64 oz
+int32 fusion_size
