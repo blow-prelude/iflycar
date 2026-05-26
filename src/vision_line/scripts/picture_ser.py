@@ -506,9 +506,9 @@ if __name__ == "__main__":
 
     try:
         with PyQt5ImageReceiver(
-            host, port, rows=2, cols=3, images_per_thread=2
+            host, port, rows=1, cols=2, images_per_thread=1
         ) as img_rec:
-            img_rec.receive_picture(num_images=5)
+            img_rec.receive_picture(num_images=2)
     except KeyboardInterrupt:
         logging.info("Interrupted by user.")
     except RuntimeError as e:
