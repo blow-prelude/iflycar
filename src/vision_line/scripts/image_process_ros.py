@@ -33,10 +33,10 @@ class ImageProcessConfig:
     preprocess_max_w: int = 320
 
     # ---- 边线搜索 ----
-    x_continual: int = 15
+    x_continual: int = 10
     y_continual: int = 5
     search_offset: int = 30
-    init_stable_count: int = 5
+    init_stable_count: int = 10
     miss_threshold: int = 3
     up_ratio: float = 0.55
     down_ratio: float = 0.90
@@ -50,21 +50,21 @@ class ImageProcessConfig:
     corner_y_ratio: float = 0.70
 
     # ---- 停止线检测 ----
-    stop_roi_y0: float = 0.55
-    stop_roi_y1: float = 0.80
+    stop_roi_y0: float = 0.70
+    stop_roi_y1: float = 0.85
     stop_roi_x0: float = 0.30
     stop_roi_x1: float = 0.70
     stop_kernel_w: int = 15
     stop_min_width: int = 20
 
     # ---- 转弯判断 ----
-    turning_enter_y_thresh: float = 0.65
+    turning_enter_y_thresh: float = 0.80
     turning_end_x_diff: int = 20
     turning_end_y_diff: int = 30
 
     # ---- 多项式拟合（分段线性） ----
     fit_angle_thresh: float = 15.0
-    fit_max_offset: int = 40
+    fit_max_offset: int = 30
     fit_y_div_far_w: float = 0.3
     fit_y_div_near_w: float = 0.7
 
@@ -92,7 +92,7 @@ class RuntimeConfig:
     target_y: float = 400.0
     turning_target_y: float = 360.0
     loop_rate: int = 60
-    img_sender_ip: str = "192.168.208.45"
+    img_sender_ip: str = "192.168.10.105"
     img_sender_port: int = 12345
 
 
@@ -749,7 +749,7 @@ class ImageProcess:
         mid_x = x + w // 2
         mid_y = y + h // 2
 
-        rospy.logdebug(f"find stop line ,mid:({mid_x}, {mid_y})")
+        rospy.loginfo(f"find stop line ,mid:({mid_x}, {mid_y})")
 
         # 显示ROI区域（如果需要）
         # if is_draw:
@@ -1262,10 +1262,10 @@ class ImageProcess:
             # 绘制中线
             cv2.line(
                 canvas,
-                (0, canvas.shape[0] // 2),
-                (canvas.shape[1] - 1, canvas.shape[0] // 2),
+                (canvas.shape[1] // 2 - 1, 0),
+                (canvas.shape[1] // 2 - 1, canvas.shape[0] - 1),
                 (255, 0, 127),
-                2,
+                1,
             )
             # 绘制优化后的边线和中线
             for pt in self.supple_left_line.tolist():
@@ -1563,7 +1563,7 @@ def build_vision_line_msg(line_points, processed_shape, original_shape, target_y
 
 
 def build_vision_line_msg_by_index(
-    line_points, processed_shape, original_shape, index=-1
+    line_points, processed_shape, original_shape, index=10
 ):
     """构造 /vision_line 消息，格式为 [x_error, y_pixel]。选择 line_points 的第 index 个点。"""
     msg = Float32MultiArray()
@@ -1575,6 +1575,7 @@ def build_vision_line_msg_by_index(
         or original_shape is None
         or len(processed_shape) < 2
         or len(original_shape) < 2
+        or len(line_points) < index + 1
     ):
         msg.data = [0.0, -1.0]
         return msg
@@ -1651,7 +1652,7 @@ def run_ros_topic_mode():
     }
 
     # 允许通过参数服务器设置初始方向
-    initial_direction = rospy.get_param("~initial_direction", None)
+    initial_direction = rospy.get_param("~initial_direction", "straight")
     _valid_dirs = {"straight", "right", "left", "stop"}
     if initial_direction in _valid_dirs:
         direction_state["straight"] = initial_direction == "straight"
@@ -1773,11 +1774,11 @@ def run_ros_topic_mode():
                     imgprocess.get_side_line_task_2(
                         binary_img,
                         canvas,
-                        is_draw=True,
+                        is_draw=False,
                         find_corner=find_corner,
                     )
 
-                    imgprocess.fit_polynomial2()
+                    imgprocess.fit_polynomial()
 
                     if state == ProcessState.CORNER:
                         if imgprocess.judge_enter_cross_state(binary_img.shape):
@@ -1806,15 +1807,23 @@ def run_ros_topic_mode():
                     if state == ProcessState.TURNING:
                         # 转弯一直转到两侧都不丢线，则继续巡线
                         # 从开始转弯到停止转弯，是一个从不丢线到一边丢线一边不丢线再到两边都不丢线的过程，进入巡线状态
-                        if imgprocess.judge_turning_end(
+
+                        # 条件1: C++ 固定转弯完成，设 start_vision_line2=0
+                        if rospy.get_param(turning_flag_param, 0) == 0:
+                            state = ProcessState.TRACKING2
+                            rospy.loginfo(
+                                "State: TURNING -> TRACKING2 (start_vision_line2 cleared by C++)"
+                            )
+                        # 条件2: 视觉检转弯结束
+                        elif imgprocess.judge_turning_end(
                             binary_img.shape, miss_line=miss_line
                         ):
                             if miss_line[0]:
-                                turning_mid_msg = build_vision_line_msg(
+                                turning_mid_msg = build_vision_line_msg_by_index(
                                     imgprocess.fit_mid_line,
                                     binary_img.shape,
                                     original_shape,
-                                    target_y=rt_cfg.turning_target_y,
+                                    10,
                                 )
                                 x_error, y_pixel = (
                                     turning_mid_msg.data[0],
@@ -1839,11 +1848,11 @@ def run_ros_topic_mode():
                     if state == ProcessState.TRACKING2:
                         imgprocess.fit_polynomial()
 
-                    vision_msg = build_vision_line_msg(
+                    vision_msg = build_vision_line_msg_by_index(
                         imgprocess.fit_mid_line,
                         binary_img.shape,
                         original_shape,
-                        target_y=rt_cfg.target_y,
+                        10,
                     )
                     vision_line_pub.publish(vision_msg)
 
@@ -1859,11 +1868,11 @@ def run_ros_topic_mode():
                     imgprocess.get_side_line_task_1(binary_img, canvas, is_draw=False)
                     imgprocess.fit_polynomial()
 
-                    vision_msg = build_vision_line_msg(
+                    vision_msg = build_vision_line_msg_by_index(
                         imgprocess.fit_mid_line,
                         binary_img.shape,
                         original_shape,
-                        target_y=rt_cfg.target_y,
+                        10,
                     )
                     vision_line_pub.publish(vision_msg)
 

@@ -15,8 +15,8 @@ private:
     const double MIN_LINEAR_VEL = 0.05;    // 最小线速度 (m/s)
     const int PIXEL_ERROR_THRESHOLD = 10;  // x 误差收敛阈值
     const int STABLE_COUNT_THRESHOLD = 5;  // 误差稳定计数阈值
-    const int Y_LOWER_BOUND = 340;         // y 值有效范围下限
-    const int Y_UPPER_BOUND = 420;         // y 值有效范围上限
+    const int Y_LOWER_BOUND = 320;         // y 值有效范围下限
+    const int Y_UPPER_BOUND = 460;         // y 值有效范围上限
     const double X_REFERENCE = 0.0;        // x 方向参考值
     const double Y_ERROR_TOLERANCE = 0.05; // y方向位置误差容忍值 (m)
     const double LOOP_RATE = 50.0;         // 主循环频率 (Hz)
@@ -81,7 +81,7 @@ private:
     void initPID()
     {
         // 角速度PID参数
-        angular_pid_ = {0.005, 0.0, 0.008, 0, 0, 0, MAX_ANGULAR_VEL};
+        angular_pid_ = {0.008, 0.0, 0.008, 0, 0, 0, MAX_ANGULAR_VEL};
         // 线速度PID参数
         linear_pid_ = {0.5, 0.01, 0.05, 0, 0, 0, MAX_LINEAR_VEL};
     }
@@ -332,7 +332,8 @@ public:
                 turning_mode_ = false;
                 stable_count_ = 0;
                 current_error_ = 0.0;
-                ROS_INFO("TURNING finished: fixed rotate done");
+                nh_.setParam("/start_vision_line2", 0);
+                ROS_INFO("TURNING finished: fixed rotate done, set start_vision_line2=0");
             }
             else
             {
@@ -389,7 +390,7 @@ public:
             // {
             //     cmd.linear.x = 0.0;
             // }
-            cmd.linear.x = 0.3; // 恒定速度
+            cmd.linear.x = 0.5; // 恒定速度
             // 发布速度指令
             cmd_vel_pub_.publish(cmd);
 
