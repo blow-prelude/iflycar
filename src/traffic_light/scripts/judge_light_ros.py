@@ -1818,11 +1818,11 @@ def run_ros_topic_mode():
                             binary_img.shape, miss_line=miss_line
                         ):
                             if miss_line[0]:
-                                turning_mid_msg = build_vision_line_msg(
+                                turning_mid_msg = build_vision_line_msg_by_index(
                                     imgprocess.fit_mid_line,
                                     binary_img.shape,
                                     original_shape,
-                                    target_y=rt_cfg.turning_target_y,
+                                    10,
                                 )
                                 x_error, y_pixel = (
                                     turning_mid_msg.data[0],
@@ -1847,11 +1847,11 @@ def run_ros_topic_mode():
                     if state == ProcessState.TRACKING2:
                         imgprocess.fit_polynomial()
 
-                    vision_msg = build_vision_line_msg(
+                    vision_msg = build_vision_line_msg_by_index(
                         imgprocess.fit_mid_line,
                         binary_img.shape,
                         original_shape,
-                        target_y=rt_cfg.target_y,
+                        10,
                     )
                     vision_line_pub.publish(vision_msg)
 
@@ -1867,11 +1867,11 @@ def run_ros_topic_mode():
                     imgprocess.get_side_line_task_1(binary_img, canvas, is_draw=False)
                     imgprocess.fit_polynomial()
 
-                    vision_msg = build_vision_line_msg(
+                    vision_msg = build_vision_line_msg_by_index(
                         imgprocess.fit_mid_line,
                         binary_img.shape,
                         original_shape,
-                        target_y=rt_cfg.target_y,
+                        10,
                     )
                     vision_line_pub.publish(vision_msg)
 
