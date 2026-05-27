@@ -1715,7 +1715,7 @@ def run_ros_topic_mode():
     }
 
     # 允许通过参数服务器设置初始方向
-    initial_direction = rospy.get_param("~initial_direction", "right")
+    initial_direction = rospy.get_param("~initial_direction", "left")
     _valid_dirs = {"straight", "right", "left", "stop"}
     if initial_direction in _valid_dirs:
         direction_state["straight"] = initial_direction == "straight"
@@ -1816,14 +1816,14 @@ def run_ros_topic_mode():
                     rospy.set_param("/start_vision1", 1)
                     rospy.loginfo("State: IDLE -> LEFT_TRACKING (left received)")
             else:
-                imgprocess.frame = frame
-
-                binary_img = imgprocess.preprocess()
-
                 if state not in (
                     ProcessState.RIGHT_TRACKING,
                     ProcessState.LEFT_TRACKING,
                 ):
+                    imgprocess.frame = frame
+
+                    binary_img = imgprocess.preprocess()
+
                     if state == ProcessState.STRAIGHT_TRACKING and t0 is not None:
                         if time.perf_counter() - t0 >= corner_delay_s:
                             state = ProcessState.CROSS
@@ -1926,6 +1926,9 @@ def run_ros_topic_mode():
                     img_sender.enqueue_image(canvas, img_id=1, img_name="process")
 
                 elif state in (ProcessState.RIGHT_TRACKING, ProcessState.LEFT_TRACKING):
+                    imgprocess.frame = frame
+
+                    binary_img = imgprocess.preprocess()
                     canvas = imgprocess.return_frame()
 
                     imgprocess.get_side_line_task_1(binary_img, canvas, is_draw=False)
@@ -1937,6 +1940,7 @@ def run_ros_topic_mode():
                         original_shape,
                         imgprocess.cfg.left_target_p_index,
                     )
+
                     vision_line_pub.publish(vision_msg)
 
                     canvas = imgprocess.draw_line(canvas, fps, state)
