@@ -1,6 +1,7 @@
 #include <ros/ros.h>
 #include "geometry_msgs/Twist.h"
 #include "std_msgs/Float32MultiArray.h"
+#include "std_msgs/String.h"
 #include <vector>
 #include <cmath>
 #include <mutex>
@@ -14,11 +15,29 @@ private:
     const double MIN_LINEAR_VEL = 0.05;    // 最小线速度 (m/s)
     const int PIXEL_ERROR_THRESHOLD = 10;  // x 误差收敛阈值
     const int STABLE_COUNT_THRESHOLD = 5;  // 误差稳定计数阈值
-    const int Y_LOWER_BOUND = 340;         // y 值有效范围下限
-    const int Y_UPPER_BOUND = 420;         // y 值有效范围上限
+    const int Y_LOWER_BOUND = 280;         // y 值有效范围下限
+    const int Y_UPPER_BOUND = 460;         // y 值有效范围上限
     const double X_REFERENCE = 0.0;        // x 方向参考值
     const double Y_ERROR_TOLERANCE = 0.05; // y方向位置误差容忍值 (m)
     const double LOOP_RATE = 50.0;         // 主循环频率 (Hz)
+
+    // 方向机动状态机
+    enum class ManeuverState
+    {
+        IDLE,
+        FORWARD,
+        ROTATE,
+        DONE
+    };
+    ManeuverState maneuver_state_ = ManeuverState::IDLE;
+    ros::Time maneuver_start_time_;
+    double maneuver_direction_; // 1=left(逆时针), -1=right(顺时针)
+    bool needs_rotate_;         // straight 不需要旋转
+    double forward_duration_;   // 0.35 / 0.3 ≈ 1.167s
+    double rotate_duration_;    // (75° * π/180) / angular_vel
+    ros::Subscriber direction_sub_;
+    ros::Publisher direction_pub_;
+    std::string last_direction_; // 存储收到的方向，供转发
 
     // PID 控制器结构体
     struct PIDController
@@ -56,13 +75,13 @@ private:
     double turning_angular_vel_;
     ros::Time turn_start_time_;
     std::mutex data_mutex_;
-    const double FIXED_TURN_DURATION = 1.57; // 固定旋转时长 (s)
+    const double FIXED_TURN_DURATION = 1.85; // 固定旋转时长 (s)
 
     // 初始化PID参数
     void initPID()
     {
         // 角速度PID参数
-        angular_pid_ = {0.005, 0.0, 0.008, 0, 0, 0, MAX_ANGULAR_VEL};
+        angular_pid_ = {0.008, 0.0, 0.008, 0, 0, 0, MAX_ANGULAR_VEL};
         // 线速度PID参数
         linear_pid_ = {0.5, 0.01, 0.05, 0, 0, 0, MAX_LINEAR_VEL};
     }
@@ -120,6 +139,49 @@ private:
         return output;
     }
 
+    // 方向指令回调函数
+    void directionCallback(const std_msgs::String::ConstPtr &msg)
+    {
+        if (maneuver_state_ != ManeuverState::IDLE)
+            return;
+        std::string dir = msg->data;
+        if (dir == "left")
+        {
+            maneuver_direction_ = 1.0;
+            needs_rotate_ = true;
+            last_direction_ = "left";
+        }
+        else if (dir == "right")
+        {
+            maneuver_direction_ = -1.0;
+            needs_rotate_ = true;
+            last_direction_ = "right";
+        }
+        else if (dir == "straight")
+        {
+            maneuver_direction_ = 0.0;
+            needs_rotate_ = false;
+            last_direction_ = "straight";
+        }
+        else if (dir == "stop")
+        {
+            last_direction_ = "stop";
+            maneuver_state_ = ManeuverState::DONE;
+            std_msgs::String dir_msg;
+            dir_msg.data = last_direction_;
+            direction_pub_.publish(dir_msg);
+            ROS_INFO("Maneuver: IDLE -> DONE (stop)");
+            return;
+        }
+        else
+        {
+            return;
+        }
+        maneuver_state_ = ManeuverState::FORWARD;
+        maneuver_start_time_ = ros::Time::now();
+        ROS_INFO("Maneuver: IDLE -> FORWARD (direction=%s)", dir.c_str());
+    }
+
     // 视觉数据回调函数
     void visionCallback(const std_msgs::Float32MultiArray::ConstPtr &msg)
     {
@@ -158,9 +220,13 @@ public:
         // 创建发布者和订阅者
         cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>("/cmd_vel", 10);
         vision_sub_ = nh_.subscribe("/vision_line", 10, &VisionErrorController::visionCallback, this);
+        direction_sub_ = nh_.subscribe("/vision_line_direction", 10, &VisionErrorController::directionCallback, this);
+        direction_pub_ = nh_.advertise<std_msgs::String>("/vision_line_direction_out", 10);
 
         // 读取参数服务器配置
         turning_angular_vel_ = nh_.param("/turning_angular_vel", 0.5);
+        forward_duration_ = 0.35 / 0.3;
+        rotate_duration_ = (75.0 * M_PI / 180.0) / turning_angular_vel_;
         initPID();
 
         // 打印初始化信息
@@ -182,6 +248,62 @@ public:
         // 检查启动标志
         nh_.getParam("/start_vision1", start_vision_);
         nh_.getParam("/start_vision_line2", start_vision_line2_);
+
+        // DONE 状态：停车等待 /start_vision1 == 1
+        if (maneuver_state_ == ManeuverState::DONE)
+        {
+            if (start_vision_ == 1)
+            {
+                maneuver_state_ = ManeuverState::IDLE;
+                turning_mode_ = false;
+                stable_count_ = 0;
+                current_error_ = 0.0;
+                ROS_INFO("Maneuver: DONE -> IDLE (start_vision1 == 1)");
+            }
+            cmd_vel_pub_.publish(cmd);
+            return;
+        }
+
+        // FORWARD 状态：前进0.35m
+        if (maneuver_state_ == ManeuverState::FORWARD)
+        {
+            cmd.linear.x = 0.3;
+            cmd_vel_pub_.publish(cmd);
+            if ((ros::Time::now() - maneuver_start_time_).toSec() >= forward_duration_)
+            {
+                if (needs_rotate_)
+                {
+                    maneuver_state_ = ManeuverState::ROTATE;
+                    maneuver_start_time_ = ros::Time::now();
+                    ROS_INFO("Maneuver: FORWARD -> ROTATE");
+                }
+                else
+                {
+                    maneuver_state_ = ManeuverState::DONE;
+                    std_msgs::String dir_msg;
+                    dir_msg.data = last_direction_;
+                    direction_pub_.publish(dir_msg);
+                    ROS_INFO("Maneuver: FORWARD -> DONE (straight)");
+                }
+            }
+            return;
+        }
+
+        // ROTATE 状态：旋转75度
+        if (maneuver_state_ == ManeuverState::ROTATE)
+        {
+            cmd.angular.z = turning_angular_vel_ * maneuver_direction_;
+            cmd_vel_pub_.publish(cmd);
+            if ((ros::Time::now() - maneuver_start_time_).toSec() >= rotate_duration_)
+            {
+                maneuver_state_ = ManeuverState::DONE;
+                std_msgs::String dir_msg;
+                dir_msg.data = last_direction_;
+                direction_pub_.publish(dir_msg);
+                ROS_INFO("Maneuver: ROTATE -> DONE");
+            }
+            return;
+        }
 
         if (!start_vision_)
         {
@@ -210,7 +332,8 @@ public:
                 turning_mode_ = false;
                 stable_count_ = 0;
                 current_error_ = 0.0;
-                ROS_INFO("TURNING finished: fixed rotate done");
+                nh_.setParam("/start_vision_line2", 0);
+                ROS_INFO("TURNING finished: fixed rotate done, set start_vision_line2=0");
             }
             else
             {
@@ -267,7 +390,7 @@ public:
             // {
             //     cmd.linear.x = 0.0;
             // }
-            cmd.linear.x = 0.3; // 恒定速度
+            cmd.linear.x = 0.5; // 恒定速度
             // 发布速度指令
             cmd_vel_pub_.publish(cmd);
 

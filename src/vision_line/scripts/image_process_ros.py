@@ -1795,7 +1795,7 @@ def run_ros_topic_mode():
                         find_corner=find_corner,
                     )
 
-                    imgprocess.fit_polynomial2()
+                    imgprocess.fit_polynomial()
 
                     if state == ProcessState.CORNER:
                         if imgprocess.judge_enter_cross_state(binary_img.shape):
