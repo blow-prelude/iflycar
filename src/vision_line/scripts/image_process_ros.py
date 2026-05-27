@@ -43,6 +43,7 @@ class ImageProcessConfig:
     search_range_wide: int = 50  # y_norm > threshold 时的搜索范围
     search_range_narrow: int = 30  # y_norm <= threshold 时的搜索范围
     search_range_threshold: float = 0.6
+    min_left_right_distance: int = 30  # 左右边线最小间距阈值，过小则认为是噪点
 
     # ---- 拐点检测 ----
     corner_angle_high: int = 135
@@ -55,7 +56,7 @@ class ImageProcessConfig:
     stop_roi_x0: float = 0.30
     stop_roi_x1: float = 0.70
     stop_kernel_w: int = 15
-    stop_min_width: int = 20
+    stop_min_width: int = 80
 
     # ---- 转弯判断 ----
     turning_enter_y_thresh: float = 0.80
@@ -74,7 +75,8 @@ class ImageProcessConfig:
     fill_down_ratio: float = 0.90
 
     #
-    target_p_index = -10
+    straight_target_p_index = -10
+    left_target_p_index = -15
 
     # ---- 透视变换矩阵 ----
     perspective_matrix: list = field(
@@ -809,8 +811,8 @@ class ImageProcess:
             _empty = np.empty((0, 2), dtype=np.int32)
 
             # 逐行递推的搜索起点（初始为 mid_x）
-            prev_row_left_x = mid_x
-            prev_row_right_x = mid_x
+            pre_lx = mid_x
+            pre_rx = mid_x
 
             # miss 计数（只在 stable 后计数）
             left_miss_count = 0
@@ -839,8 +841,8 @@ class ImageProcess:
 
                 # --- 左侧赛道线 ---
                 if left_stable[0]:
-                    search_start_left = min(prev_row_left_x + cur_range, img_w - 1)
-                    search_end_left = max(0, prev_row_left_x - cur_range)
+                    search_start_left = min(pre_lx + cur_range, img_w - 1)
+                    search_end_left = max(0, pre_lx - cur_range)
                 else:
                     search_start_left = mid_x - self.cfg.search_offset
                     search_end_left = 0
@@ -854,10 +856,10 @@ class ImageProcess:
                 ]
                 left_added = False
                 if len(candidates) > 0:
-                    x = search_end_left + candidates[-1]
+                    lx = search_end_left + candidates[-1]
                     left_added = self._add_point_with_stable_start(
                         local_left_line,
-                        (x, y),
+                        (lx, y),
                         left_stable_buf,
                         left_stable,
                         self.cfg.x_continual,
@@ -865,7 +867,7 @@ class ImageProcess:
                     )
                     # 如果当前行的点没有被加入正式边线，则下一行的搜索起点不更新；反之才更新
                     if left_added:
-                        prev_row_left_x = x
+                        pre_lx = lx
 
                 # miss 计数（只在 stable 后）
                 if left_stable[0] and not left_added:
@@ -874,15 +876,13 @@ class ImageProcess:
                     left_miss_count = 0
 
                 if left_miss_count >= self.cfg.miss_threshold:
-                    prev_row_left_x = mid_x - self.cfg.search_offset
+                    pre_lx = mid_x - self.cfg.search_offset
                     left_miss_count = 0
 
                 # --- 右侧赛道线 ---
                 if right_stable[0]:
-                    search_start_right = max(
-                        0, min(prev_row_right_x - cur_range, img_w - 1)
-                    )
-                    search_end_right = min(img_w - 1, prev_row_right_x + cur_range)
+                    search_start_right = max(0, min(pre_rx - cur_range, img_w - 1))
+                    search_end_right = min(img_w - 1, pre_rx + cur_range)
                 else:
                     search_start_right = mid_x + self.cfg.search_offset
                     search_end_right = img_w - 1
@@ -896,17 +896,17 @@ class ImageProcess:
                 )[0]
                 right_added = False
                 if len(candidates) > 0:
-                    x = search_start_right + candidates[0]
+                    rx = search_start_right + candidates[0]
                     right_added = self._add_point_with_stable_start(
                         local_right_line,
-                        (x, y),
+                        (rx, y),
                         right_stable_buf,
                         right_stable,
                         self.cfg.x_continual,
                         self.cfg.y_continual,
                     )
                     if right_added:
-                        prev_row_right_x = x
+                        pre_rx = rx
 
                 # miss 计数（只在 stable 后）
                 if right_stable[0] and not right_added:
@@ -915,8 +915,27 @@ class ImageProcess:
                     right_miss_count = 0
 
                 if right_miss_count >= self.cfg.miss_threshold:
-                    prev_row_right_x = mid_x + self.cfg.search_offset
+                    pre_rx = mid_x + self.cfg.search_offset
                     right_miss_count = 0
+
+                # 检查左右边线距离，如果太小则认为是噪点，移除这对点
+                if left_added and right_added:
+                    rx_minus_lx = rx - lx
+                    if rx_minus_lx <= self.cfg.min_left_right_distance:
+                        # 移除最后添加的左右点
+                        if len(local_left_line) > 0:
+                            local_left_line.pop()
+                            left_stable[0] = False
+                            left_stable_buf.clear()
+                            pre_lx = mid_x - self.cfg.search_offset
+                        if len(local_right_line) > 0:
+                            local_right_line.pop()
+                            right_stable[0] = False
+                            right_stable_buf.clear()
+                            pre_rx = mid_x + self.cfg.search_offset
+                        rospy.logdebug(
+                            f"Removed noisy point pair at y={y}: lx={lx}, rx={rx}, distance={rx_minus_lx}"
+                        )
 
             # 转换为 numpy 数组
             self.left_line = (
@@ -1037,14 +1056,15 @@ class ImageProcess:
                     0
                 ]
                 left_added = False
+                lx = None  # 保存左边线的x坐标，用于后续距离检查
 
                 if len(candidates) > 0:
-                    x = candidates[-1] + search_end_left
+                    lx = candidates[-1] + search_end_left
 
                     # 先进行稳定点检测
                     left_added = self._add_point_with_stable_start(
                         local_left_line,
-                        (x, y),
+                        (lx, y),
                         left_stable_buf,
                         left_stable,
                         self.cfg.x_continual,
@@ -1053,10 +1073,10 @@ class ImageProcess:
 
                     # 如果当前行的点没有被加入正式边线，则下一行的搜索起点不更新；反之才更新
                     if left_added:
-                        prev_row_left_x = x
+                        prev_row_left_x = lx
                         # 只有稳定点才参与拐点检测
                         if find_corner and not find_left_corner:
-                            left_nxt_p = (x, y)
+                            left_nxt_p = (lx, y)
                             if left_cur_p is not None and left_pre_p is not None:
                                 angle = self.get_angle_p(
                                     left_nxt_p, left_cur_p, left_pre_p
@@ -1106,20 +1126,22 @@ class ImageProcess:
                     row_diff[search_start_right:search_end_right] == 1
                 )[0]
                 right_added = False
+                rx = None  # 保存右边线的x坐标，用于距离检查
+
                 if len(candidates) > 0:
-                    x = candidates[0] + search_start_right
+                    rx = candidates[0] + search_start_right
 
                     # 先进行稳定点检测
                     right_added = self._add_point_with_stable_start(
                         local_right_line,
-                        (x, y),
+                        (rx, y),
                         right_stable_buf,
                         right_stable,
                         self.cfg.x_continual,
                         self.cfg.y_continual,
                     )
                     if right_added:
-                        prev_row_right_x = x
+                        prev_row_right_x = rx
 
                         # miss 计数（只在 stable 后）
                         if right_stable[0] and not right_added:
@@ -1131,9 +1153,30 @@ class ImageProcess:
                             prev_row_right_x = mid_x + self.cfg.search_offset
                             right_miss_count = 0
 
+                    # 检查左右边线距离，如果太小则认为是噪点，移除这对点
+                    if left_added and right_added:
+                        # lx 和 rx 已经在前面定义了
+                        if lx is not None and rx is not None:
+                            rx_minus_lx = rx - lx
+                            if rx_minus_lx <= self.cfg.min_left_right_distance:
+                                # 移除最后添加的左右点
+                                if len(local_left_line) > 0:
+                                    local_left_line.pop()
+                                    left_stable[0] = False
+                                    left_stable_buf.clear()
+                                    prev_row_left_x = mid_x - self.cfg.search_offset
+                                if len(local_right_line) > 0:
+                                    local_right_line.pop()
+                                    right_stable[0] = False
+                                    right_stable_buf.clear()
+                                    prev_row_right_x = mid_x + self.cfg.search_offset
+                                rospy.logdebug(
+                                    f"Removed noisy point pair at y={y}: lx={lx}, rx={rx}, distance={rx_minus_lx}"
+                                )
+
                         # 只有稳定点才参与拐点检测
                         if find_corner and find_right_corner is False:
-                            right_nxt_p = (x, y)
+                            right_nxt_p = (rx, y)
                             if right_cur_p is not None and right_pre_p is not None:
                                 angle = self.get_angle_p(
                                     right_nxt_p, right_cur_p, right_pre_p
@@ -1281,10 +1324,10 @@ class ImageProcess:
                 cv2.circle(canvas, pt, 2, (255, 255, 255), -1)
 
             # 绘制目标点
-            if len(self.fit_mid_line) > abs(self.cfg.target_p_index) + 1:
+            if len(self.fit_mid_line) > abs(self.cfg.left_target_p_index) + 1:
                 cv2.circle(
                     canvas,
-                    self.fit_mid_line[self.cfg.target_p_index],
+                    self.fit_mid_line[self.cfg.left_target_p_index],
                     3,
                     (0, 255, 0),
                     -1,
@@ -1603,6 +1646,9 @@ def build_vision_line_msg_by_index(
     scale_x = float(orig_w) / float(proc_w)
     scale_y = float(orig_h) / float(proc_h)
 
+    if len(line_points) < abs(index) + 1:
+        best_x, best_y = int(line_points[-1, 0]), int(line_points[-1, 1])
+
     best_x, best_y = int(line_points[index, 0]), int(line_points[index, 1])
 
     x_raw = best_x * scale_x
@@ -1669,7 +1715,7 @@ def run_ros_topic_mode():
     }
 
     # 允许通过参数服务器设置初始方向
-    initial_direction = rospy.get_param("~initial_direction", "straight")
+    initial_direction = rospy.get_param("~initial_direction", "left")
     _valid_dirs = {"straight", "right", "left", "stop"}
     if initial_direction in _valid_dirs:
         direction_state["straight"] = initial_direction == "straight"
@@ -1770,14 +1816,14 @@ def run_ros_topic_mode():
                     rospy.set_param("/start_vision1", 1)
                     rospy.loginfo("State: IDLE -> LEFT_TRACKING (left received)")
             else:
-                imgprocess.frame = frame
-
-                binary_img = imgprocess.preprocess()
-
                 if state not in (
                     ProcessState.RIGHT_TRACKING,
                     ProcessState.LEFT_TRACKING,
                 ):
+                    imgprocess.frame = frame
+
+                    binary_img = imgprocess.preprocess()
+
                     if state == ProcessState.STRAIGHT_TRACKING and t0 is not None:
                         if time.perf_counter() - t0 >= corner_delay_s:
                             state = ProcessState.CROSS
@@ -1795,7 +1841,7 @@ def run_ros_topic_mode():
                         find_corner=find_corner,
                     )
 
-                    imgprocess.fit_polynomial()
+                    imgprocess.fit_polynomial2()
 
                     if state == ProcessState.CORNER:
                         if imgprocess.judge_enter_cross_state(binary_img.shape):
@@ -1840,7 +1886,7 @@ def run_ros_topic_mode():
                                     imgprocess.fit_mid_line,
                                     binary_img.shape,
                                     original_shape,
-                                    imgprocess.cfg.target_p_index,
+                                    imgprocess.cfg.straight_target_p_index,
                                 )
                                 x_error, y_pixel = (
                                     turning_mid_msg.data[0],
@@ -1869,7 +1915,7 @@ def run_ros_topic_mode():
                         imgprocess.fit_mid_line,
                         binary_img.shape,
                         original_shape,
-                        imgprocess.cfg.target_p_index,
+                        imgprocess.cfg.straight_target_p_index,
                     )
                     vision_line_pub.publish(vision_msg)
 
@@ -1880,6 +1926,9 @@ def run_ros_topic_mode():
                     img_sender.enqueue_image(canvas, img_id=1, img_name="process")
 
                 elif state in (ProcessState.RIGHT_TRACKING, ProcessState.LEFT_TRACKING):
+                    imgprocess.frame = frame
+
+                    binary_img = imgprocess.preprocess()
                     canvas = imgprocess.return_frame()
 
                     imgprocess.get_side_line_task_1(binary_img, canvas, is_draw=False)
@@ -1889,8 +1938,9 @@ def run_ros_topic_mode():
                         imgprocess.fit_mid_line,
                         binary_img.shape,
                         original_shape,
-                        imgprocess.cfg.target_p_index,
+                        imgprocess.cfg.left_target_p_index,
                     )
+
                     vision_line_pub.publish(vision_msg)
 
                     canvas = imgprocess.draw_line(canvas, fps, state)
