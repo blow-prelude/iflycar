@@ -15,7 +15,7 @@ private:
     const double MIN_LINEAR_VEL = 0.05;    // 最小线速度 (m/s)
     const int PIXEL_ERROR_THRESHOLD = 10;  // x 误差收敛阈值
     const int STABLE_COUNT_THRESHOLD = 5;  // 误差稳定计数阈值
-    const int Y_LOWER_BOUND = 320;         // y 值有效范围下限
+    const int Y_LOWER_BOUND = 280;         // y 值有效范围下限
     const int Y_UPPER_BOUND = 460;         // y 值有效范围上限
     const double X_REFERENCE = 0.0;        // x 方向参考值
     const double Y_ERROR_TOLERANCE = 0.05; // y方向位置误差容忍值 (m)
@@ -75,7 +75,7 @@ private:
     double turning_angular_vel_;
     ros::Time turn_start_time_;
     std::mutex data_mutex_;
-    const double FIXED_TURN_DURATION = 1.57; // 固定旋转时长 (s)
+    const double FIXED_TURN_DURATION = 1.85; // 固定旋转时长 (s)
 
     // 初始化PID参数
     void initPID()
