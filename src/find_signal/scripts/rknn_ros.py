@@ -13,7 +13,7 @@ from rknn_det import TextDetector
 from rknn_rec import TextRecognizer
 from rknnlite.api import RKNNLite
 from sensor_msgs.msg import Image
-from std_msgs.msg import String
+from std_msgs.msg import String, Int32, Float32MultiArray
 
 # Configure logging
 
@@ -215,9 +215,8 @@ def main():
         rospy.init_node("find_signal", anonymous=True)
         logging.config.fileConfig = _orig_fileConfig
 
-        signal_center_pub = rospy.Publisher("/signal_center", Point32, queue_size=10)
-        signal_text_pub = rospy.Publisher("/signal_text", String, queue_size=10)
-        signal_box_pub = rospy.Publisher("/signal_box", Point32, queue_size=10)
+        signal_pub = rospy.Publisher('/signal_detection', Float32MultiArray, queue_size=10)
+        signal_class_pub = rospy.Publisher("/signal_class", Int32, queue_size=10)
         rospy.Subscriber("/ucar_camera/image_raw", Image, image_callback, queue_size=1)
 
         det_model0 = TextDetector(target="rk3588", device_id=RKNNLite.NPU_CORE_0_1)
@@ -296,29 +295,44 @@ def main():
                 rospy.loginfo(f"Center point: {center}")
                 cv2.polylines(canvas, [det_output], True, (0, 255, 0), 2)
 
-                # 发布 center
-                pt = Point32()
-                pt.x = float(center[0])
-                pt.y = float(center[1])
-                pt.z = 0.0
-                signal_center_pub.publish(pt)
+                # # 发布 center
+                # pt = Point32()
+                # pt.x = float(center[0])
+                # pt.y = float(center[1])
+                # pt.z = 0.0
+                # signal_center_pub.publish(pt)
 
-                # 发布 box_x_l, box_x_r
-                box_msg = Point32()
-                box_msg.x = float(box_x_l)
-                box_msg.y = float(box_x_r)
-                box_msg.z = 0.0
-                signal_box_pub.publish(box_msg)
+                # # 发布 box_x_l, box_x_r
+                # box_msg = Point32()
+                # box_msg.x = float(box_x_l)
+                # box_msg.y = float(box_x_r)
+                # box_msg.z = 0.0
+                # signal_box_pub.publish(box_msg)
+
+                data = [float(center[0]), float(center[1]), float(box_x_l), float(box_x_r)]
+                msg = Float32MultiArray(data=data)
+                signal_pub.publish(msg)
 
                 rec_output = rec_output_queue.get(timeout=0.1)  # 获取识别结果
                 rospy.loginfo(f"Recognition result: {rec_output}")
 
+                def classfy(text):
+                    if any(kw in text for kw in ["食品", "食"]):
+                        return 0
+                    if any(kw in text for kw in ["日用品", "日", "用品"]):
+                        return 1
+                    if any(kw in text for kw in ["电子产品", "电子", "电", "生产"]):
+                        return 2
+                    return -1
+
                 # 发布 rec_output
                 if rec_output and len(rec_output) > 0:
-                    text = rec_output[0][0]
-                    msg = String()
-                    msg.data = text
-                    signal_text_pub.publish(msg)
+                    text = rec_output[0][0]          # 识别出的字符串，如 "电子产品生产车间"
+                    class_id = classfy(text)         # 调用分类得到 2
+                    rospy.loginfo(f"text: {text}")
+                    msg = Int32()
+                    msg.data = class_id
+                    signal_class_pub.publish(msg)
 
             except queue.Empty:
                 pass
