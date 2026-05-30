@@ -169,10 +169,11 @@ def inference_worker(
             time1 = time.perf_counter()
             det_output = det_model.run(img)
             logging.debug(f"det inference time: {time.perf_counter() - time1:.4f} s")
+            biggest_box = get_biggest_box(det_output)
+            if biggest_box is not None:
+                det_output_queue.put([biggest_box.astype(np.int32)])
 
-            cropped, corners = crop_text_region(img, det_output)
-            if corners is not None:
-                det_output_queue.put([corners.astype(np.int32)])
+            cropped = crop_roi(img, biggest_box)
             if cropped is not None:
                 cropped = cv2.resize(cropped, (REC_INPUT_SHAPE[1], REC_INPUT_SHAPE[0]))
                 time1 = time.perf_counter()
