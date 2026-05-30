@@ -10,11 +10,11 @@ import numpy as np
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from geometry_msgs.msg import Point32
-from sensor_msgs.msg import Image
-from std_msgs.msg import String
 from rknn_det import TextDetector
 from rknn_rec import TextRecognizer
 from rknnlite.api import RKNNLite
+from sensor_msgs.msg import Image
+from std_msgs.msg import String
 
 # Configure logging
 logging.basicConfig(
@@ -26,6 +26,7 @@ logging.basicConfig(
 IMG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test.jpg")
 DET_INPUT_SHAPE = [480, 480]
 REC_INPUT_SHAPE = [48, 320]
+DISP_SHAPE = [480, 640]
 
 ros_image = None
 bridge = CvBridge()
@@ -90,6 +91,20 @@ class img_processor:
 
         return im, ratio, (dw, dh)
 
+    def transform_to_display(
+        self, det_output, lb_ratio, lb_padding, orig_shape, disp_shape=DISP_SHAPE
+    ):
+        """将letterboxed坐标(480x480)转换到display坐标(640x480)"""
+        dw, dh = lb_padding
+        pts = det_output.reshape(-1, 2).astype(np.float64)
+        # 反向letterbox: 去padding, 去缩放
+        pts[:, 0] = (pts[:, 0] - dw) / lb_ratio
+        pts[:, 1] = (pts[:, 1] - dh) / lb_ratio
+        # 缩放到display尺寸
+        pts[:, 0] *= disp_shape[1] / orig_shape[1]
+        pts[:, 1] *= disp_shape[0] / orig_shape[0]
+        return pts.astype(np.int32).reshape(det_output.shape)
+
 
 def get_center_point(box):
     box = np.array(box).reshape(-1, 2)
@@ -98,32 +113,51 @@ def get_center_point(box):
     return (x_mid, y_mid)
 
 
-def crop_text_region(img, output):
-    max_area = 0
-    max_box = None
-    for box in output:
-        box = np.array(box)
-        x_coords = box[:, 0]
-        y_coords = box[:, 1]
-        x_min, x_max = int(x_coords.min()), int(x_coords.max())
-        y_min, y_max = int(y_coords.min()), int(y_coords.max())
-        area = (x_max - x_min) * (y_max - y_min)
-        if area > max_area:
-            max_area = area
-            max_box = box
+def get_biggest_box(boxes):
+    # 1. 转换为 3D 数组，形状为 (N, 顶点数, 2)
+    boxes = np.asarray(boxes)
 
-    if max_box is not None:
-        x_min = int(max_box[:, 0].min())
-        x_max = int(max_box[:, 0].max())
-        y_min = int(max_box[:, 1].min())
-        y_max = int(max_box[:, 1].max())
+    # 2. 沿着轴 1 一次性求出所有 box 的最小/最大坐标
+    # mins 和 maxs 的形状均为 (N, 2)，对应每行 [x_min/x_max, y_min/y_max]
+    mins = boxes.min(axis=1).astype(int)
+    maxs = boxes.max(axis=1).astype(int)
+
+    # 3. 向量化计算所有面积
+    areas = (maxs[:, 0] - mins[:, 0]) * (maxs[:, 1] - mins[:, 1])
+
+    # 4. 获取最大面积的索引并取出对应的 box
+    max_idx = np.argmax(areas) if len(areas) > 0 else None
+    max_box = boxes[max_idx] if max_idx is not None else None
+    ordered_box = order_corners(max_box) if max_box is not None else None
+    return ordered_box
+
+
+def order_corners(det_output):
+    """返回检测框4个角点，顺序: 左上、右上、右下、左下"""
+    pts = det_output.reshape(-1, 2).astype(np.float64)
+    center = pts.mean(axis=0)
+    tl = pts[(pts[:, 0] < center[0]) & (pts[:, 1] < center[1])]
+    tr = pts[(pts[:, 0] >= center[0]) & (pts[:, 1] < center[1])]
+    br = pts[(pts[:, 0] >= center[0]) & (pts[:, 1] >= center[1])]
+    bl = pts[(pts[:, 0] < center[0]) & (pts[:, 1] >= center[1])]
+    return np.array([tl[0], tr[0], br[0], bl[0]], dtype=np.int32)
+
+
+def crop_roi(img, roi):
+    # roi按照左上，右上，右下，左下的顺序排列
+
+    if roi is not None:
+        x_min = int(roi[:, 0].min())
+        x_max = int(roi[:, 0].max())
+        y_min = int(roi[:, 1].min())
+        y_max = int(roi[:, 1].max())
         cropped = img[y_min:y_max, x_min:x_max]
         logging.debug(
             f"Largest box: ({x_min}, {y_min}, {x_max}, {y_max}), size: {x_max - x_min}x{y_max - y_min}"
         )
     else:
         cropped = None
-    return cropped, max_box
+    return cropped
 
 
 def inference_worker(
@@ -152,10 +186,10 @@ def inference_worker(
 
 
 def main():
-    rospy.init_node('find_signal')
+    rospy.init_node("find_signal")
 
-    signal_center_pub = rospy.Publisher('/signal_center', Point32, queue_size=10)
-    signal_text_pub = rospy.Publisher('/signal_text', String, queue_size=10)
+    signal_center_pub = rospy.Publisher("/signal_center", Point32, queue_size=10)
+    signal_text_pub = rospy.Publisher("/signal_text", String, queue_size=10)
     rospy.Subscriber("/ucar_camera/image_raw", Image, image_callback, queue_size=1)
 
     input_queue = queue.Queue(maxsize=10)  # 图像队列
@@ -210,9 +244,12 @@ def main():
                 continue
 
             frame = ros_image.copy()
-            frame = img_proc.letter_box(frame, DET_INPUT_SHAPE)[0]
-            img_proc.queue_img(frame, input_queue)
+            orig_shape = frame.shape[:2]
+            lb_frame, lb_ratio, lb_padding = img_proc.letter_box(frame, DET_INPUT_SHAPE)
+            canvas = cv2.resize(frame, (DISP_SHAPE[1], DISP_SHAPE[0]))
 
+            # cv2.imshow("before detection", frame)
+            img_proc.queue_img(lb_frame, input_queue)
             try:
                 cur_t = time.perf_counter()
                 elapsed += cur_t - pre_t
@@ -225,10 +262,23 @@ def main():
                     elapsed = 0
                     frame_count = 0
 
-                det_output = det_output_queue.get(timeout=0.15)  # 获取检测结果
-                det_output = np.array(det_output).astype(np.int32)
+                det_output = det_output_queue.get_nowait()
+
+                det_output = np.array(det_output)
+
+                # logging.debug(f"Detection box: {det_output}")
+
+                det_output = np.array(det_output)
+                det_output = img_proc.transform_to_display(
+                    det_output, lb_ratio, lb_padding, orig_shape
+                )
+                box_x_l = det_output[:, 0].min()
+                box_x_r = det_output[:, 0].max()
+                logging.info(f"box_x_l: {box_x_l}, box_x_r: {box_x_r}")
                 center = get_center_point(det_output)
+                logging.debug(f"Drawing box: {det_output}")
                 logging.info(f"Center point: {center}")
+                cv2.polylines(canvas, [det_output], True, (0, 255, 0), 2)
 
                 # 发布 center
                 pt = Point32()

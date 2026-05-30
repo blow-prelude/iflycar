@@ -107,7 +107,7 @@ class ImageProcess:
         self.mid_line = _empty.copy()
         self.fit_mid_line = _empty.copy()
 
-        self.left_c = None  # 本帧左边线拐点 (x, y)，未检测到时为 None
+        self.lefmt_c = None  # 本帧左边线拐点 (x, y)，未检测到时为 None
         self.right_c = None  # 本帧右边线拐点 (x, y)，未检测到时为 None
 
         # 上一帧的边线信息（用于指导当前帧搜索）
@@ -121,51 +121,45 @@ class ImageProcess:
         )
 
     def preprocess(self, frame):
-        try:
-            if self.img_path is not None:
-                # 从图片文件读取
-                frame = cv2.imread(self.img_path)
 
-            if self.frame is not None:
-                frame = self.frame
+        if self.img_path is not None:
+            # 从图片文件读取
+            frame = cv2.imread(self.img_path)
 
-            if frame is not None:
-                # 如果图片太大，按比例缩小
-                if (
-                    frame.shape[0] >= self.cfg.preprocess_max_h
-                    or frame.shape[1] >= self.cfg.preprocess_max_w
-                ):
-                    h, w = frame.shape[:2]
-                    scale = min(
-                        self.cfg.preprocess_max_h / h, self.cfg.preprocess_max_w / w
-                    )
-                    new_h = int(h * scale)
-                    new_w = int(w * scale)
-                    frame = cv2.resize(
-                        frame, (new_w, new_h), interpolation=cv2.INTER_AREA
-                    )
-                    self.frame = frame.copy()
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if self.frame is not None:
+            frame = self.frame
 
-                # 大尺寸高斯模糊获取背景光照分布
-                # 核大小应根据图像尺寸调整，通常为图像宽度的1/5到1/3
-                kernel_size = (gray.shape[1] // 5 | 1, gray.shape[0] // 5 | 1)
-                background = cv2.GaussianBlur(gray, kernel_size, 0)
+        if frame is not None:
+            # 如果图片太大，按比例缩小
+            if (
+                frame.shape[0] >= self.cfg.preprocess_max_h
+                or frame.shape[1] >= self.cfg.preprocess_max_w
+            ):
+                h, w = frame.shape[:2]
+                scale = min(
+                    self.cfg.preprocess_max_h / h, self.cfg.preprocess_max_w / w
+                )
+                new_h = int(h * scale)
+                new_w = int(w * scale)
+                frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                self.frame = frame.copy()
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-                # 原图减去背景，得到滤除光照后的特征
-                diff = cv2.subtract(gray, background)
+            # 大尺寸高斯模糊获取背景光照分布
+            # 核大小应根据图像尺寸调整，通常为图像宽度的1/5到1/3
+            kernel_size = (gray.shape[1] // 5 | 1, gray.shape[0] // 5 | 1)
+            background = cv2.GaussianBlur(gray, kernel_size, 0)
 
-                # 二值化（使用Otsu自适应阈值）
-                binary = cv2.threshold(
-                    diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-                )[1]
-                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-                close = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=3)
-                return close
-            else:
-                raise ValueError("Failed to load image for preprocessing")
-        except Exception as e:
-            raise RuntimeError(f"Error during preprocessing: {e}")
+            # 原图减去背景，得到滤除光照后的特征
+            diff = cv2.subtract(gray, background)
+
+            # 二值化（使用Otsu自适应阈值）
+            binary = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            close = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=3)
+            return close
+        else:
+            raise ValueError("Failed to load image for preprocessing")
 
     def return_frame(self):
         """获取用于绘制的画布（当前帧的副本）

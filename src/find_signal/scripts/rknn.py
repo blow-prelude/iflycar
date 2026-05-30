@@ -257,12 +257,14 @@ def main():
                     elapsed = 0
                     frame_count = 0
 
-                # 清空队列，只保留最新结果
-                det_output = None
-                while not det_output_queue.empty():
-                    det_output = det_output_queue.get_nowait()
-                if det_output is None:
-                    raise queue.Empty
+                # # 清空队列，只保留最新结果
+                # det_output = None
+                # while not det_output_queue.empty():
+                #     det_output = det_output_queue.get_nowait()
+                # if det_output is None:
+                #     raise queue.Empty
+
+                det_output = det_output_queue.get_nowait()
 
                 det_output = np.array(det_output)
 
