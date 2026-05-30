@@ -75,13 +75,13 @@ private:
     double turning_angular_vel_;
     ros::Time turn_start_time_;
     std::mutex data_mutex_;
-    const double FIXED_TURN_DURATION = 1.85; // 固定旋转时长 (s)
+    const double FIXED_TURN_DURATION = 1.6; // 固定旋转时长 (s)
 
     // 初始化PID参数
     void initPID()
     {
         // 角速度PID参数
-        angular_pid_ = {0.008, 0.0, 0.008, 0, 0, 0, MAX_ANGULAR_VEL};
+        angular_pid_ = {0.007, 0.0, 0.007, 0, 0, 0, MAX_ANGULAR_VEL};
         // 线速度PID参数
         linear_pid_ = {0.5, 0.01, 0.05, 0, 0, 0, MAX_LINEAR_VEL};
     }
