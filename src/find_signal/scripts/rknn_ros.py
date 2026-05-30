@@ -1,4 +1,4 @@
-import logging
+#!/home/ucar/venv3.9/bin/python3
 import os
 import queue
 import threading
@@ -16,11 +16,6 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 
 IMG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test.jpg")
 DET_INPUT_SHAPE = [480, 480]
@@ -113,22 +108,34 @@ def get_center_point(box):
 
 
 def get_biggest_box(boxes):
-    # 1. 转换为 3D 数组，形状为 (N, 顶点数, 2)
+    # 转换为 numpy 数组
     boxes = np.asarray(boxes)
 
-    # 2. 沿着轴 1 一次性求出所有 box 的最小/最大坐标
-    # mins 和 maxs 的形状均为 (N, 2)，对应每行 [x_min/x_max, y_min/y_max]
+    # 如果没有检测到任何框，或者形状不符合预期，直接返回 None
+    if boxes.size == 0 or boxes.ndim < 2:
+        return None
+
+    # 如果输入是二维数组 (N, M)，但期望是 (N, 顶点数, 2)，可以尝试 reshape
+    # 这里假设每个框由 8 个值组成 (4 个点 × 2 坐标)
+    if boxes.ndim == 2:
+        # 如果最后一个维度不是 2，尝试重塑
+        if boxes.shape[-1] != 2:
+            boxes = boxes.reshape(boxes.shape[0], -1, 2)
+    # 如果是一维的单个框，也重塑为 (1, -1, 2)
+    elif boxes.ndim == 1:
+        boxes = boxes.reshape(1, -1, 2)
+
+    # 现在 boxes 应该是 (N, 顶点数, 2)，可以安全使用 axis=1
     mins = boxes.min(axis=1).astype(int)
     maxs = boxes.max(axis=1).astype(int)
 
-    # 3. 向量化计算所有面积
     areas = (maxs[:, 0] - mins[:, 0]) * (maxs[:, 1] - mins[:, 1])
-
-    # 4. 获取最大面积的索引并取出对应的 box
     max_idx = np.argmax(areas) if len(areas) > 0 else None
     max_box = boxes[max_idx] if max_idx is not None else None
-    ordered_box = order_corners(max_box) if max_box is not None else None
-    return ordered_box
+
+    if max_box is not None:
+        return order_corners(max_box)
+    return None
 
 
 def order_corners(det_output):
@@ -151,9 +158,9 @@ def crop_roi(img, roi):
         y_min = int(roi[:, 1].min())
         y_max = int(roi[:, 1].max())
         cropped = img[y_min:y_max, x_min:x_max]
-        logging.debug(
-            f"Largest box: ({x_min}, {y_min}, {x_max}, {y_max}), size: {x_max - x_min}x{y_max - y_min}"
-        )
+        # logging.debug(
+        #     f"Largest box: ({x_min}, {y_min}, {x_max}, {y_max}), size: {x_max - x_min}x{y_max - y_min}"
+        # )
     else:
         cropped = None
     return cropped
@@ -167,7 +174,7 @@ def inference_worker(
             img = input_queue.get(timeout=1)  # 等待图像输入
             time1 = time.perf_counter()
             det_output = det_model.run(img)
-            logging.debug(f"det inference time: {time.perf_counter() - time1:.4f} s")
+            # logging.debug(f"det inference time: {time.perf_counter() - time1:.4f} s")
             biggest_box = get_biggest_box(det_output)
             if biggest_box is not None:
                 det_output_queue.put([biggest_box.astype(np.int32)])
@@ -177,21 +184,16 @@ def inference_worker(
                 cropped = cv2.resize(cropped, (REC_INPUT_SHAPE[1], REC_INPUT_SHAPE[0]))
                 time1 = time.perf_counter()
                 rec_output = rec_model.run(cropped)
-                logging.debug(
-                    f"rec inference time: {time.perf_counter() - time1:.4f} s"
-                )
+                # logging.debug(
+                #     f"rec inference time: {time.perf_counter() - time1:.4f} s"
+                # )
                 rec_output_queue.put(rec_output)
         except queue.Empty:
             continue  # 没有图像输入，继续等待
 
 
 def main():
-    rospy.init_node("find_signal")
-
-    signal_center_pub = rospy.Publisher("/signal_center", Point32, queue_size=10)
-    signal_text_pub = rospy.Publisher("/signal_text", String, queue_size=10)
-    signal_box_pub = rospy.Publisher("/signal_box", Point32, queue_size=10)
-    rospy.Subscriber("/ucar_camera/image_raw", Image, image_callback, queue_size=1)
+    
 
     input_queue = queue.Queue(maxsize=10)  # 图像队列
     det_output_queue, rec_output_queue = (
@@ -205,13 +207,26 @@ def main():
     frame_count = 0
 
     try:
+
+        import logging.config
+
+        _orig_fileConfig = logging.config.fileConfig
+        logging.config.fileConfig = lambda *a, **kw: None
+        rospy.init_node("find_signal", anonymous=True)
+        logging.config.fileConfig = _orig_fileConfig
+
+        signal_center_pub = rospy.Publisher("/signal_center", Point32, queue_size=10)
+        signal_text_pub = rospy.Publisher("/signal_text", String, queue_size=10)
+        signal_box_pub = rospy.Publisher("/signal_box", Point32, queue_size=10)
+        rospy.Subscriber("/ucar_camera/image_raw", Image, image_callback, queue_size=1)
+
         det_model0 = TextDetector(target="rk3588", device_id=RKNNLite.NPU_CORE_0_1)
         rec_model0 = TextRecognizer(target="rk3588", device_id=RKNNLite.NPU_CORE_0_1)
         det_model1 = TextDetector(target="rk3588", device_id=RKNNLite.NPU_CORE_2)
         rec_model1 = TextRecognizer(target="rk3588", device_id=RKNNLite.NPU_CORE_2)
         # det_model2 = TextDetector(target="rk3588", device_id=RKNNLite.NPU_CORE_2)
         # rec_model2 = TextRecognizer(target="rk3588", device_id=RKNNLite.NPU_CORE_2)
-        logging.info("Models initialized successfully")
+        rospy.loginfo("Models initialized successfully")
 
         img_proc = img_processor()
 
@@ -220,7 +235,7 @@ def main():
         workers = []
 
     except Exception as e:
-        logging.error(f"Error init: {e}")
+        rospy.logerr(f"Error init: {e}")
         exit(1)
 
     try:
@@ -275,10 +290,10 @@ def main():
                 )
                 box_x_l = det_output[:, 0].min()
                 box_x_r = det_output[:, 0].max()
-                logging.info(f"box_x_l: {box_x_l}, box_x_r: {box_x_r}")
+                rospy.loginfo(f"box_x_l: {box_x_l}, box_x_r: {box_x_r}")
                 center = get_center_point(det_output)
-                logging.debug(f"Drawing box: {det_output}")
-                logging.info(f"Center point: {center}")
+                # logging.debug(f"Drawing box: {det_output}")
+                rospy.loginfo(f"Center point: {center}")
                 cv2.polylines(canvas, [det_output], True, (0, 255, 0), 2)
 
                 # 发布 center
@@ -296,7 +311,7 @@ def main():
                 signal_box_pub.publish(box_msg)
 
                 rec_output = rec_output_queue.get(timeout=0.1)  # 获取识别结果
-                logging.info(f"Recognition result: {rec_output}")
+                rospy.loginfo(f"Recognition result: {rec_output}")
 
                 # 发布 rec_output
                 if rec_output and len(rec_output) > 0:
