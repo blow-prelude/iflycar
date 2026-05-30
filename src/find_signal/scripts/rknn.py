@@ -156,6 +156,16 @@ def crop_roi(img, roi):
     return cropped
 
 
+def classfy(text):
+    if any(kw in text for kw in ["食品", "食"]):
+        return 0
+    if any(kw in text for kw in ["日用品", "日"]):
+        return 1
+    if any(kw in text for kw in ["电子产品", "电子", "电", "生产"]):
+        return 2
+    return -1
+
+
 def inference_worker(
     det_model, rec_model, input_queue, det_output_queue, rec_output_queue
 ):
@@ -290,8 +300,8 @@ def main():
                 while not rec_output_queue.empty():
                     rec_output = rec_output_queue.get_nowait()
                 if rec_output is not None:
-                    logging.info(f"Recognition result: {rec_output}")
-                logging.info(f"Recognition result: {rec_output}")
+                    class_id = classfy(rec_output)
+                    logging.info(f"Recognition result: {rec_output},class: {class_id}")
 
             except queue.Empty:
                 img_proc.draw_fps(canvas)
