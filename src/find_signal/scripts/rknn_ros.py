@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import queue
@@ -191,6 +190,7 @@ def main():
 
     signal_center_pub = rospy.Publisher("/signal_center", Point32, queue_size=10)
     signal_text_pub = rospy.Publisher("/signal_text", String, queue_size=10)
+    signal_box_pub = rospy.Publisher("/signal_box", Point32, queue_size=10)
     rospy.Subscriber("/ucar_camera/image_raw", Image, image_callback, queue_size=1)
 
     input_queue = queue.Queue(maxsize=10)  # 图像队列
@@ -288,14 +288,21 @@ def main():
                 pt.z = 0.0
                 signal_center_pub.publish(pt)
 
+                # 发布 box_x_l, box_x_r
+                box_msg = Point32()
+                box_msg.x = float(box_x_l)
+                box_msg.y = float(box_x_r)
+                box_msg.z = 0.0
+                signal_box_pub.publish(box_msg)
+
                 rec_output = rec_output_queue.get(timeout=0.1)  # 获取识别结果
                 logging.info(f"Recognition result: {rec_output}")
 
                 # 发布 rec_output
                 if rec_output and len(rec_output) > 0:
-                    text, conf = rec_output[0]
+                    text = rec_output[0][0]
                     msg = String()
-                    msg.data = json.dumps({"text": text, "confidence": float(conf)})
+                    msg.data = text
                     signal_text_pub.publish(msg)
 
             except queue.Empty:
