@@ -92,31 +92,45 @@ class img_processor:
     ):
         """将letterboxed坐标(480x480)转换到display坐标(640x480)"""
         dw, dh = lb_padding
-        pts = det_output.reshape(-1, 2).astype(np.float64)
+        pts = np.array(det_output).astype(np.float64)
+
+        # 处理嵌套结构：如果是3D数组 (N, M, 2)，提取第一个框
+        if pts.ndim == 3 and pts.shape[0] == 1:
+            pts = pts[0]  # (1, 4, 2) -> (4, 2)
+
         # 反向letterbox: 去padding, 去缩放
         pts[:, 0] = (pts[:, 0] - dw) / lb_ratio
         pts[:, 1] = (pts[:, 1] - dh) / lb_ratio
         # 缩放到display尺寸
         pts[:, 0] *= disp_shape[1] / orig_shape[1]
         pts[:, 1] *= disp_shape[0] / orig_shape[0]
-        return pts.astype(np.int32).reshape(det_output.shape)
+        return pts.astype(np.int32)
 
 
 def get_center_point(box):
-    box = np.array(box).reshape(-1, 2)
     x_mid = int((box[:, 0].min() + box[:, 0].max()) / 2)
     y_mid = int((box[:, 1].min() + box[:, 1].max()) / 2)
     return (x_mid, y_mid)
 
 
 def get_biggest_box(boxes):
-    # 1. 转换为 3D 数组，形状为 (N, 顶点数, 2)
+    # 转换为数组并检查是否为空
     boxes = np.asarray(boxes)
 
-    # 2. 沿着轴 1 一次性求出所有 box 的最小/最大坐标
+    # 如果数组为空或维度不足（无检测结果），直接返回 None
+    if boxes.size == 0 or boxes.ndim < 2:
+        return None
+
+    boxes = boxes.astype(np.int32)
+
+    # 确保至少是3D数组：如果是2D数组(单个框)，添加一个维度
+    if boxes.ndim == 2:
+        boxes = boxes[np.newaxis, :]  # (4, 2) -> (1, 4, 2)
+
+    # 沿着轴 1 一次性求出所有 box 的最小/最大坐标
     # mins 和 maxs 的形状均为 (N, 2)，对应每行 [x_min/x_max, y_min/y_max]
-    mins = boxes.min(axis=1).astype(int)
-    maxs = boxes.max(axis=1).astype(int)
+    mins = boxes.min(axis=1)
+    maxs = boxes.max(axis=1)
 
     # 3. 向量化计算所有面积
     areas = (maxs[:, 0] - mins[:, 0]) * (maxs[:, 1] - mins[:, 1])
@@ -130,13 +144,11 @@ def get_biggest_box(boxes):
 
 def order_corners(det_output):
     """返回检测框4个角点，顺序: 左上、右上、右下、左下"""
-    pts = det_output.reshape(-1, 2).astype(np.float64)
-    center = pts.mean(axis=0)
-    tl = pts[(pts[:, 0] < center[0]) & (pts[:, 1] < center[1])]
-    tr = pts[(pts[:, 0] >= center[0]) & (pts[:, 1] < center[1])]
-    br = pts[(pts[:, 0] >= center[0]) & (pts[:, 1] >= center[1])]
-    bl = pts[(pts[:, 0] < center[0]) & (pts[:, 1] >= center[1])]
-    return np.array([tl[0], tr[0], br[0], bl[0]], dtype=np.int32)
+    tl = det_output[np.argmin(det_output[:, 0] + det_output[:, 1])]
+    br = det_output[np.argmax(det_output[:, 0] + det_output[:, 1])]
+    tr = det_output[np.argmax(det_output[:, 0] - det_output[:, 1])]
+    bl = det_output[np.argmin(det_output[:, 0] - det_output[:, 1])]
+    return np.array([tl, tr, br, bl])
 
 
 def crop_roi(img, roi):
@@ -156,7 +168,8 @@ def crop_roi(img, roi):
     return cropped
 
 
-def classfy(text):
+def classfy(rec_output):
+    text = rec_output[0][0].strip()  # 获取识别结果字符串并去除空白
     if any(kw in text for kw in ["食品", "食"]):
         return 0
     if any(kw in text for kw in ["日用品", "日"]):
@@ -177,7 +190,7 @@ def inference_worker(
             logging.debug(f"det inference time: {time.perf_counter() - time1:.4f} s")
             biggest_box = get_biggest_box(det_output)
             if biggest_box is not None:
-                det_output_queue.put([biggest_box.astype(np.int32)])
+                det_output_queue.put([biggest_box])
 
             cropped = crop_roi(img, biggest_box)
             if cropped is not None:
@@ -275,15 +288,15 @@ def main():
                 #     raise queue.Empty
 
                 det_output = det_output_queue.get_nowait()
+                logging.info(f"Detection result: {det_output}")
 
                 det_output = np.array(det_output)
 
-                # logging.debug(f"Detection box: {det_output}")
-
-                det_output = np.array(det_output)
                 det_output = img_proc.transform_to_display(
                     det_output, lb_ratio, lb_padding, orig_shape
                 )
+
+                logging.info(f"Transformed box: {det_output}")
                 box_x_l = det_output[:, 0].min()
                 box_x_r = det_output[:, 0].max()
                 logging.info(f"box_x_l: {box_x_l}, box_x_r: {box_x_r}")
@@ -297,8 +310,7 @@ def main():
                 cv2.waitKey(1)
 
                 rec_output = None
-                while not rec_output_queue.empty():
-                    rec_output = rec_output_queue.get_nowait()
+                rec_output = rec_output_queue.get_nowait()
                 if rec_output is not None:
                     class_id = classfy(rec_output)
                     logging.info(f"Recognition result: {rec_output},class: {class_id}")
@@ -318,11 +330,11 @@ def main():
 
     finally:
         cv2.destroyAllWindows()
-        cap.close()
         for det_model in det_models:
             det_model.release()
         for rec_model in rec_models:
             rec_model.release()
+        cap.close()
 
 
 if __name__ == "__main__":

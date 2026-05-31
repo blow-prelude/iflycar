@@ -8,12 +8,11 @@ import cv2
 import numpy as np
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
-from geometry_msgs.msg import Point32
 from rknn_det import TextDetector
 from rknn_rec import TextRecognizer
 from rknnlite.api import RKNNLite
 from sensor_msgs.msg import Image
-from std_msgs.msg import String, Int32, Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Int32
 
 # Configure logging
 
@@ -53,6 +52,18 @@ class img_processor:
         if fps > 0.0:
             self.cur_fps = fps
 
+    def draw_fps(self, img):
+        if self.cur_fps > 0.0:
+            cv2.putText(
+                img,
+                "FPS: {:.1f}".format(self.cur_fps),
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 255, 0),
+                2,
+            )
+
     def letter_box(
         self,
         im,
@@ -90,7 +101,11 @@ class img_processor:
     ):
         """将letterboxed坐标(480x480)转换到display坐标(640x480)"""
         dw, dh = lb_padding
-        pts = det_output.reshape(-1, 2).astype(np.float64)
+        pts = np.array(det_output).astype(np.float64)
+
+        # 处理嵌套结构：如果是3D数组 (N, M, 2)，提取第一个框
+        if pts.ndim == 3 and pts.shape[0] == 1:
+            pts = pts[0]  # (1, 4, 2) -> (4, 2)
         # 反向letterbox: 去padding, 去缩放
         pts[:, 0] = (pts[:, 0] - dw) / lb_ratio
         pts[:, 1] = (pts[:, 1] - dh) / lb_ratio
@@ -101,62 +116,57 @@ class img_processor:
 
 
 def get_center_point(box):
-    box = np.array(box).reshape(-1, 2)
     x_mid = int((box[:, 0].min() + box[:, 0].max()) / 2)
     y_mid = int((box[:, 1].min() + box[:, 1].max()) / 2)
     return (x_mid, y_mid)
 
 
 def get_biggest_box(boxes):
-    # 转换为 numpy 数组
+    # 转换为数组并检查是否为空
     boxes = np.asarray(boxes)
 
-    # 如果没有检测到任何框，或者形状不符合预期，直接返回 None
+    # 如果数组为空或维度不足（无检测结果），直接返回 None
     if boxes.size == 0 or boxes.ndim < 2:
         return None
 
-    # 如果输入是二维数组 (N, M)，但期望是 (N, 顶点数, 2)，可以尝试 reshape
-    # 这里假设每个框由 8 个值组成 (4 个点 × 2 坐标)
+    boxes = boxes.astype(np.int32)
+
+    # 确保至少是3D数组：如果是2D数组(单个框)，添加一个维度
     if boxes.ndim == 2:
-        # 如果最后一个维度不是 2，尝试重塑
-        if boxes.shape[-1] != 2:
-            boxes = boxes.reshape(boxes.shape[0], -1, 2)
-    # 如果是一维的单个框，也重塑为 (1, -1, 2)
-    elif boxes.ndim == 1:
-        boxes = boxes.reshape(1, -1, 2)
+        boxes = boxes[np.newaxis, :]  # (4, 2) -> (1, 4, 2)
 
-    # 现在 boxes 应该是 (N, 顶点数, 2)，可以安全使用 axis=1
-    mins = boxes.min(axis=1).astype(int)
-    maxs = boxes.max(axis=1).astype(int)
+    # 沿着轴 1 一次性求出所有 box 的最小/最大坐标
+    # mins 和 maxs 的形状均为 (N, 2)，对应每行 [x_min/x_max, y_min/y_max]
+    mins = boxes.min(axis=1)
+    maxs = boxes.max(axis=1)
 
+    # 3. 向量化计算所有面积
     areas = (maxs[:, 0] - mins[:, 0]) * (maxs[:, 1] - mins[:, 1])
+
+    # 4. 获取最大面积的索引并取出对应的 box
     max_idx = np.argmax(areas) if len(areas) > 0 else None
     max_box = boxes[max_idx] if max_idx is not None else None
-
-    if max_box is not None:
-        return order_corners(max_box)
-    return None
+    ordered_box = order_corners(max_box) if max_box is not None else None
+    return ordered_box
 
 
 def order_corners(det_output):
     """返回检测框4个角点，顺序: 左上、右上、右下、左下"""
-    pts = det_output.reshape(-1, 2).astype(np.float64)
-    center = pts.mean(axis=0)
-    tl = pts[(pts[:, 0] < center[0]) & (pts[:, 1] < center[1])]
-    tr = pts[(pts[:, 0] >= center[0]) & (pts[:, 1] < center[1])]
-    br = pts[(pts[:, 0] >= center[0]) & (pts[:, 1] >= center[1])]
-    bl = pts[(pts[:, 0] < center[0]) & (pts[:, 1] >= center[1])]
-    return np.array([tl[0], tr[0], br[0], bl[0]], dtype=np.int32)
+    tl = det_output[np.argmin(det_output[:, 0] + det_output[:, 1])]
+    br = det_output[np.argmax(det_output[:, 0] + det_output[:, 1])]
+    tr = det_output[np.argmin(det_output[:, 0] - det_output[:, 1])]
+    bl = det_output[np.argmax(det_output[:, 0] - det_output[:, 1])]
+    return np.array([tl, tr, br, bl])
 
 
 def crop_roi(img, roi):
     # roi按照左上，右上，右下，左下的顺序排列
 
     if roi is not None:
-        x_min = int(roi[:, 0].min())
-        x_max = int(roi[:, 0].max())
-        y_min = int(roi[:, 1].min())
-        y_max = int(roi[:, 1].max())
+        x_min = roi[:, 0].min()
+        x_max = roi[:, 0].max()
+        y_min = roi[:, 1].min()
+        y_max = roi[:, 1].max()
         cropped = img[y_min:y_max, x_min:x_max]
         # logging.debug(
         #     f"Largest box: ({x_min}, {y_min}, {x_max}, {y_max}), size: {x_max - x_min}x{y_max - y_min}"
@@ -164,6 +174,16 @@ def crop_roi(img, roi):
     else:
         cropped = None
     return cropped
+
+
+def classfy(text):
+    if any(kw in text for kw in ["食品", "食"]):
+        return 0
+    if any(kw in text for kw in ["日用品", "日", "用品"]):
+        return 1
+    if any(kw in text for kw in ["电子产品", "电子", "电", "生产"]):
+        return 2
+    return -1
 
 
 def inference_worker(
@@ -177,7 +197,7 @@ def inference_worker(
             # logging.debug(f"det inference time: {time.perf_counter() - time1:.4f} s")
             biggest_box = get_biggest_box(det_output)
             if biggest_box is not None:
-                det_output_queue.put([biggest_box.astype(np.int32)])
+                det_output_queue.put([biggest_box])
 
             cropped = crop_roi(img, biggest_box)
             if cropped is not None:
@@ -193,7 +213,6 @@ def inference_worker(
 
 
 def main():
-    
 
     input_queue = queue.Queue(maxsize=10)  # 图像队列
     det_output_queue, rec_output_queue = (
@@ -207,7 +226,6 @@ def main():
     frame_count = 0
 
     try:
-
         import logging.config
 
         _orig_fileConfig = logging.config.fileConfig
@@ -215,22 +233,24 @@ def main():
         rospy.init_node("find_signal", anonymous=True)
         logging.config.fileConfig = _orig_fileConfig
 
-        signal_pub = rospy.Publisher('/signal_detection', Float32MultiArray, queue_size=10)
+        signal_pub = rospy.Publisher(
+            "/signal_detection", Float32MultiArray, queue_size=10
+        )
         signal_class_pub = rospy.Publisher("/signal_class", Int32, queue_size=10)
         rospy.Subscriber("/ucar_camera/image_raw", Image, image_callback, queue_size=1)
 
-        det_model0 = TextDetector(target="rk3588", device_id=RKNNLite.NPU_CORE_0_1)
-        rec_model0 = TextRecognizer(target="rk3588", device_id=RKNNLite.NPU_CORE_0_1)
-        det_model1 = TextDetector(target="rk3588", device_id=RKNNLite.NPU_CORE_2)
-        rec_model1 = TextRecognizer(target="rk3588", device_id=RKNNLite.NPU_CORE_2)
-        # det_model2 = TextDetector(target="rk3588", device_id=RKNNLite.NPU_CORE_2)
-        # rec_model2 = TextRecognizer(target="rk3588", device_id=RKNNLite.NPU_CORE_2)
+        det_model0 = TextDetector(target="rk3588", device_id=RKNNLite.NPU_CORE_0)
+        rec_model0 = TextRecognizer(target="rk3588", device_id=RKNNLite.NPU_CORE_0)
+        det_model1 = TextDetector(target="rk3588", device_id=RKNNLite.NPU_CORE_1)
+        rec_model1 = TextRecognizer(target="rk3588", device_id=RKNNLite.NPU_CORE_1)
+        det_model2 = TextDetector(target="rk3588", device_id=RKNNLite.NPU_CORE_2)
+        rec_model2 = TextRecognizer(target="rk3588", device_id=RKNNLite.NPU_CORE_2)
         rospy.loginfo("Models initialized successfully")
 
         img_proc = img_processor()
 
-        det_models = [det_model0, det_model1]
-        rec_models = [rec_model0, rec_model1]
+        det_models = [det_model0, det_model1, det_model2]
+        rec_models = [rec_model0, rec_model1, rec_model2]
         workers = []
 
     except Exception as e:
@@ -281,9 +301,6 @@ def main():
 
                 det_output = np.array(det_output)
 
-                # logging.debug(f"Detection box: {det_output}")
-
-                det_output = np.array(det_output)
                 det_output = img_proc.transform_to_display(
                     det_output, lb_ratio, lb_padding, orig_shape
                 )
@@ -295,6 +312,9 @@ def main():
                 rospy.loginfo(f"Center point: {center}")
                 cv2.polylines(canvas, [det_output], True, (0, 255, 0), 2)
 
+                img_proc.draw_fps(canvas)
+                cv2.imshow("Detection Result", canvas)
+                cv2.waitKey(1)
                 # # 发布 center
                 # pt = Point32()
                 # pt.x = float(center[0])
@@ -309,38 +329,38 @@ def main():
                 # box_msg.z = 0.0
                 # signal_box_pub.publish(box_msg)
 
-                data = [float(center[0]), float(center[1]), float(box_x_l), float(box_x_r)]
+                data = [
+                    float(center[0]),
+                    float(center[1]),
+                    float(box_x_l),
+                    float(box_x_r),
+                ]
                 msg = Float32MultiArray(data=data)
                 signal_pub.publish(msg)
 
-                rec_output = rec_output_queue.get(timeout=0.1)  # 获取识别结果
+                rec_output = rec_output_queue.get_nowait()  # 获取识别结果
                 rospy.loginfo(f"Recognition result: {rec_output}")
-
-                def classfy(text):
-                    if any(kw in text for kw in ["食品", "食"]):
-                        return 0
-                    if any(kw in text for kw in ["日用品", "日", "用品"]):
-                        return 1
-                    if any(kw in text for kw in ["电子产品", "电子", "电", "生产"]):
-                        return 2
-                    return -1
 
                 # 发布 rec_output
                 if rec_output and len(rec_output) > 0:
-                    text = rec_output[0][0]          # 识别出的字符串，如 "电子产品生产车间"
-                    class_id = classfy(text)         # 调用分类得到 2
-                    rospy.loginfo(f"text: {text}")
+                    text = rec_output[0][0]  # 识别出的字符串，如 "电子产品生产车间"
+                    class_id = classfy(text)  # 调用分类得到 2
+                    rospy.loginfo(f"text: {text}, class_id: {class_id}")
                     msg = Int32()
-                    msg.data = class_id
-                    signal_class_pub.publish(msg)
+                    if class_id != -1:
+                        msg.data = class_id
+                        signal_class_pub.publish(msg)
 
             except queue.Empty:
-                pass
+                img_proc.draw_fps(canvas)
+                cv2.imshow("Detection Results", canvas)
+                cv2.waitKey(1)
 
     except rospy.ROSInterruptException:
         pass
 
     finally:
+        rospy.loginfo("Shutting down, releasing resources...")
         for det_model in det_models:
             det_model.release()
         for rec_model in rec_models:
