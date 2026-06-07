@@ -151,6 +151,7 @@ catkin_package(
 add_executable(${PROJECT_NAME}_node src/vision_line.cpp)
 add_executable(${PROJECT_NAME}_node_fixed src/vision_line_fixed.cpp)
 add_executable(find_way src/find_way.cpp)
+add_executable(find_way_ros src/find_way_ros.cpp)
 
 add_library(camera_capture src/camera_capture.cpp)
 add_library(image_process src/image_process.cpp)
@@ -176,6 +177,10 @@ target_link_libraries(find_way
   image_process
   camera_capture
 
+)
+target_link_libraries(find_way_ros
+  ${catkin_LIBRARIES}
+  image_process
 )
 target_link_libraries(camera_capture
   ${catkin_LIBRARIES}
@@ -211,6 +216,12 @@ target_include_directories(camera_capture
     ${OpenCV_INCLUDE_DIRS}
 )
 target_include_directories(image_process
+  PUBLIC
+    include
+    ${catkin_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
+)
+target_include_directories(find_way_ros
   PUBLIC
     include
     ${catkin_INCLUDE_DIRS}

@@ -96,6 +96,11 @@ public:
 
     void draw_line(cv::Mat &canvas, float fps, std::string state);
 
+    // 公开访问线检测结果（Python 版本直接访问这些成员）
+    std::vector<cv::Point> &get_fit_mid_line() { return fit_mid_line_; }
+    cv::Point &get_left_corners() { return left_corners_; }
+    cv::Point &get_right_corners() { return right_corners_; }
+
 private:
     ImageProcessConfig config_;
     cv::Mat frame_;
