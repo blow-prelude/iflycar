@@ -74,7 +74,7 @@ class ImageProcessConfig:
     interp_dy_thresh: int = 3
     fill_down_ratio: float = 0.90
 
-    #
+    # 追踪点的索引
     straight_target_p_index = -10
     left_target_p_index = -15
 

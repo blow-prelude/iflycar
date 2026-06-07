@@ -49,6 +49,11 @@ struct ImageProcessConfig
     int interp_dx_thresh = 6;
     int interp_dy_thresh = 3;
     float fill_down_ratio = 0.90;
+
+    // 追踪点的索引
+    int straight_target_p_index = -10;
+    int left_target_p_index = -15;
+    int right_target_p_index = -20;
 };
 
 struct LineFit
