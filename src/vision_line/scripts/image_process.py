@@ -36,33 +36,34 @@ class ImageProcessConfig:
     preprocess_max_w: int = 320
 
     # ---- 边线搜索 ----
-    x_continual: int = 15
+    x_continual: int = 10
     y_continual: int = 5
     search_offset: int = 30  # 起始搜索偏移量
-    init_stable_count: int = 5
+    init_stable_count: int = 8
     miss_threshold: int = 3
     up_ratio: float = 0.55
     down_ratio: float = 0.90
     search_range_wide: int = 50  # 动态搜索窗口最大宽度
     search_range_narrow: int = 30  # 动态搜索窗口最小宽度
-    search_range_threshold: float = 0.75  # 搜索窗口宽度调整阈值
+    search_range_threshold: float = 0.60  # 搜索窗口宽度调整阈值
 
     # ---- 拐点检测 ----
     corner_angle_high: int = 135
     corner_angle_low: int = 45
-    corner_y_ratio: float = 0.75
+    corner_y_ratio: float = 0.70
 
     # ---- 停止线检测 ----
-    stop_roi_y0: float = 0.55
-    stop_roi_y1: float = 0.80
+    stop_roi_y0: float = 0.70
+    stop_roi_y1: float = 0.85
     stop_roi_x0: float = 0.30
     stop_roi_x1: float = 0.70
     stop_kernel_w: int = 15
-    stop_min_width: int = 20
+    stop_min_width: int = 80
 
     # ---- 转弯判断 ----
     turning_enter_y_thresh: float = 0.78
     turning_end_x_diff: int = 20  # 转弯结束时两边线末端 x 坐标差异阈值
+    turning_end_y_diff: int = 30  # 转弯结束时两边线末端 y 坐标差异阈值
 
     # ---- 多项式拟合（分段线性） ----
     fit_angle_thresh: float = 15.0
@@ -107,7 +108,7 @@ class ImageProcess:
         self.mid_line = _empty.copy()
         self.fit_mid_line = _empty.copy()
 
-        self.lefmt_c = None  # 本帧左边线拐点 (x, y)，未检测到时为 None
+        self.left_c = None  # 本帧左边线拐点 (x, y)，未检测到时为 None
         self.right_c = None  # 本帧右边线拐点 (x, y)，未检测到时为 None
 
         # 上一帧的边线信息（用于指导当前帧搜索）
@@ -121,45 +122,51 @@ class ImageProcess:
         )
 
     def preprocess(self, frame):
+        try:
+            if self.img_path is not None:
+                # 从图片文件读取
+                frame = cv2.imread(self.img_path)
 
-        if self.img_path is not None:
-            # 从图片文件读取
-            frame = cv2.imread(self.img_path)
+            if self.frame is not None:
+                frame = self.frame
 
-        if self.frame is not None:
-            frame = self.frame
+            if frame is not None:
+                # 如果图片太大，按比例缩小
+                if (
+                    frame.shape[0] >= self.cfg.preprocess_max_h
+                    or frame.shape[1] >= self.cfg.preprocess_max_w
+                ):
+                    h, w = frame.shape[:2]
+                    scale = min(
+                        self.cfg.preprocess_max_h / h, self.cfg.preprocess_max_w / w
+                    )
+                    new_h = int(h * scale)
+                    new_w = int(w * scale)
+                    frame = cv2.resize(
+                        frame, (new_w, new_h), interpolation=cv2.INTER_AREA
+                    )
+                    self.frame = frame.copy()
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        if frame is not None:
-            # 如果图片太大，按比例缩小
-            if (
-                frame.shape[0] >= self.cfg.preprocess_max_h
-                or frame.shape[1] >= self.cfg.preprocess_max_w
-            ):
-                h, w = frame.shape[:2]
-                scale = min(
-                    self.cfg.preprocess_max_h / h, self.cfg.preprocess_max_w / w
-                )
-                new_h = int(h * scale)
-                new_w = int(w * scale)
-                frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
-                self.frame = frame.copy()
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                # 大尺寸高斯模糊获取背景光照分布
+                # 核大小应根据图像尺寸调整，通常为图像宽度的1/5到1/3
+                kernel_size = (gray.shape[1] // 5 | 1, gray.shape[0] // 5 | 1)
+                background = cv2.GaussianBlur(gray, kernel_size, 0)
 
-            # 大尺寸高斯模糊获取背景光照分布
-            # 核大小应根据图像尺寸调整，通常为图像宽度的1/5到1/3
-            kernel_size = (gray.shape[1] // 5 | 1, gray.shape[0] // 5 | 1)
-            background = cv2.GaussianBlur(gray, kernel_size, 0)
+                # 原图减去背景，得到滤除光照后的特征
+                diff = cv2.subtract(gray, background)
 
-            # 原图减去背景，得到滤除光照后的特征
-            diff = cv2.subtract(gray, background)
-
-            # 二值化（使用Otsu自适应阈值）
-            binary = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-            close = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=3)
-            return close
-        else:
-            raise ValueError("Failed to load image for preprocessing")
+                # 二值化（使用Otsu自适应阈值）
+                binary = cv2.threshold(
+                    diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+                )[1]
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+                close = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=3)
+                return close
+            else:
+                raise ValueError("Failed to load image for preprocessing")
+        except Exception as e:
+            raise RuntimeError(f"Error during preprocessing: {e}")
 
     def return_frame(self):
         """获取用于绘制的画布（当前帧的副本）
@@ -865,6 +872,12 @@ class ImageProcess:
                     search_start_right = mid_x + self.cfg.search_offset
                     search_end_right = img_w - 1
 
+                if y % 10 == 0:
+                    logging.info(
+                        f"y={y}, search range: left [{search_end_left}, {search_start_left}], "
+                        f"right [{search_start_right}, {search_end_right}]"
+                    )
+
                 if is_draw:
                     cv2.circle(canvas, (search_start_right, y), 1, (255, 255, 0), -1)
                     cv2.circle(canvas, (search_end_right, y), 1, (255, 255, 0), -1)
@@ -1240,6 +1253,16 @@ class ImageProcess:
             logging.debug(
                 f"length of left_line: {len(self.supple_left_line)} , lenth of right_line: {len(self.supple_right_line)}"
             )
+
+            # 绘制中线
+            cv2.line(
+                canvas,
+                (canvas.shape[1] // 2 - 1, 0),
+                (canvas.shape[1] // 2 - 1, canvas.shape[0] - 1),
+                (255, 0, 127),
+                1,
+            )
+
             # 绘制优化后的边线和中线
             for pt in self.supple_left_line.tolist():
                 cv2.circle(canvas, pt, 2, (0, 0, 255), -1)

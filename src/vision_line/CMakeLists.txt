@@ -8,12 +8,25 @@ project(vision_line)
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
+  OpenCV REQUIRED
   geometry_msgs
   roscpp
   rospy
   std_msgs
   cv_bridge
+  image_transport
 )
+
+# find_package(OpenCV REQUIRED)
+# if(OpenCV_FOUND)
+#     include_directories(${OpenCV_INCLUDE_DIRS})
+#     message(STATUS "OpenCV library status:")
+#     message(STATUS "    version: ${OpenCV_VERSION}")
+#     message(STATUS "    libraries: ${OpenCV_LIBS}")
+#     message(STATUS "    include path: ${OpenCV_INCLUDE_DIRS}")
+# else()
+#     message(FATAL_ERROR "OpenCV library not found")
+# endif()
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -105,7 +118,7 @@ find_package(catkin REQUIRED COMPONENTS
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
-#  INCLUDE_DIRS include
+  INCLUDE_DIRS include
 #  LIBRARIES vision_line
 #  CATKIN_DEPENDS roscpp rospy std_msgs
 #  DEPENDS system_lib
@@ -117,10 +130,10 @@ catkin_package(
 
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
-include_directories(
-# include
-  ${catkin_INCLUDE_DIRS}
-)
+# include_directories(
+#   include
+#   ${catkin_INCLUDE_DIRS}
+# )
 
 ## Declare a C++ library
 # add_library(${PROJECT_NAME}
@@ -137,7 +150,10 @@ include_directories(
 ## The recommended prefix ensures that target names across packages don't collide
 add_executable(${PROJECT_NAME}_node src/vision_line.cpp)
 add_executable(${PROJECT_NAME}_node_fixed src/vision_line_fixed.cpp)
+add_executable(find_way src/find_way.cpp)
 
+add_library(camera_capture src/camera_capture.cpp)
+add_library(image_process src/image_process.cpp)
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
 ## target back to the shorter version for ease of user use
@@ -155,6 +171,53 @@ target_link_libraries(${PROJECT_NAME}_node
 target_link_libraries(${PROJECT_NAME}_node_fixed
   ${catkin_LIBRARIES}
 )
+target_link_libraries(find_way
+  ${catkin_LIBRARIES}
+  image_process
+  camera_capture
+
+)
+target_link_libraries(camera_capture
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBS}
+)
+target_link_libraries(image_process
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBS}
+)
+
+target_include_directories(${PROJECT_NAME}_node
+  PUBLIC
+    include
+    ${catkin_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
+)
+target_include_directories(${PROJECT_NAME}_node_fixed
+  PUBLIC
+    include
+    ${catkin_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
+)
+target_include_directories(find_way
+  PUBLIC
+    include
+    ${catkin_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
+)
+target_include_directories(camera_capture
+  PUBLIC
+    include
+    ${catkin_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
+)
+target_include_directories(image_process
+  PUBLIC
+    include
+    ${catkin_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
+)
+
+
 
 #############
 ## Install ##
