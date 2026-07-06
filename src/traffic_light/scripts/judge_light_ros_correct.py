@@ -175,6 +175,61 @@ def post_process(input_data):
     return boxes, classes, scores
 
 
+def check_arrow_direction(img_src, box_letterbox, co_helper):
+    """OpenCV 复核交通灯箭头方向。
+
+    用 HSV 高V高S 提取亮绿核心区域，取最大连通域；以核心质心 x 相对
+    检测框中心 (cx_bbox) 的偏移定方向：核心在左=>left，核心在右=>right，
+    |offset|<=band 视为居中不可靠返回 None。打印 cx_core/cx_bbox/offset/area
+    便于验证核心是否稳定落在大头侧。
+    返回 "left"/"right"/None。
+    """
+    if box_letterbox is None or len(box_letterbox) < 4:
+        return None
+    real_box = co_helper.get_real_box(np.array(box_letterbox, dtype=np.float32).reshape(1, -1))[0]
+    x1, y1, x2, y2 = [int(v) for v in real_box]
+    h0, w0 = img_src.shape[:2]
+    pad = 5
+    x1 = max(0, x1 - pad)
+    y1 = max(0, y1 - pad)
+    x2 = min(w0, x2 + pad)
+    y2 = min(h0, y2 + pad)
+    if x2 - x1 < 8 or y2 - y1 < 8:
+        return None
+
+    roi = img_src[y1:y2, x1:x2]
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    # 仅取亮绿核心: 高V高S, 排除杆/反光等低饱和或低亮度区
+    mask = cv2.inRange(hsv, (35, 120, 120), (85, 255, 255))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if num <= 1:
+        return None
+    largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    area = stats[largest, cv2.CC_STAT_AREA]
+    if area < 5:
+        return None
+
+    ys, xs = np.where(labels == largest)
+    if xs.size == 0:
+        return None
+    cx_core = float(xs.mean())                       # 核心带质心 x
+    cx_bbox = (x1 + x2) / 2.0 - x1                  # 检测框中心在 ROI 内的 x
+    offset = cx_core - cx_bbox
+    bw = xs.max() - xs.min() + 1
+    band = max(1, bw // 8)
+    result = None
+    if abs(offset) > band:
+        result = "left" if offset < 0 else "right"
+    print(
+        f"arrow check: cx_core={cx_core:.1f} cx_bbox={cx_bbox:.1f} "
+        f"offset={offset:.1f} band={band} area={area} -> {result}",
+        flush=True,
+    )
+    return result
+
+
 def draw(image, boxes, scores, classes):
     for box, score, cl in zip(boxes, scores, classes):
         top, left, right, bottom = [int(_b) for _b in box]
@@ -404,14 +459,18 @@ def main():
                 worker_id = result["worker_id"]
 
                 # 发布检测到的方向到 /vision_line_direction 话题
-                best_score = (
-                    scores.max() if scores is not None and len(scores) > 0 else 0
-                )
-                best_class = (
-                    classes[scores.argmax()]
-                    if classes is not None and scores is not None and len(classes) > 0
-                    else None
-                )
+                if scores is not None and len(scores) > 0:
+                    best_idx = int(scores.argmax())
+                    best_score = scores[best_idx]
+                    best_class = (
+                        classes[best_idx]
+                        if classes is not None and len(classes) > best_idx
+                        else None
+                    )
+                else:
+                    best_idx = None
+                    best_score = 0
+                    best_class = None
 
                 rospy.loginfo(
                     f"worker-{worker_id}: best_class: {best_class}, best_score: {best_score} ,inference time: {inference_time:.4f} s"
@@ -419,12 +478,29 @@ def main():
 
                 if best_class is not None and best_score >= OBJ_THRESH:
                     direction_name = CLASSES[best_class]
-                    direction_pub.publish(String(direction_name))
-                    rospy.loginfo(f"Detected direction: {direction_name}")
-                    # 等待消息被消费，避免订阅者未收到就退出
-                    if direction_name != "stop":
-                        time.sleep(1.0)
-                        break
+                    publish = True
+                    if direction_name in ("left", "right") and best_idx is not None:
+                        cv_dir = check_arrow_direction(
+                            img_src, boxes[best_idx], co_helper
+                        )
+                        if cv_dir is None:
+                            publish = False
+                            print(
+                                "CV unsure (None), skip publish this frame",
+                                flush=True,
+                            )
+                        elif cv_dir != direction_name:
+                            rospy.loginfo(
+                                f"OpenCV override: {direction_name} -> {cv_dir}"
+                            )
+                            direction_name = cv_dir
+                    if publish:
+                        direction_pub.publish(String(direction_name))
+                        rospy.loginfo(f"Detected direction: {direction_name}")
+                        # 等待消息被消费，避免订阅者未收到就退出
+                        if direction_name != "stop":
+                            time.sleep(1.0)
+                            break
 
                 # 在主线程中绘制结果
                 canvas = img_src.copy()
