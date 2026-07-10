@@ -74,7 +74,7 @@ class ImageProcessConfig:
     interp_dy_thresh: int = 3
     fill_down_ratio: float = 0.90
 
-    # 追踪点的索引
+    #
     straight_target_p_index = -10
     left_target_p_index = -15
 
@@ -1715,7 +1715,7 @@ def run_ros_topic_mode():
     }
 
     # 允许通过参数服务器设置初始方向
-    initial_direction = rospy.get_param("~initial_direction", "left")
+    initial_direction = rospy.get_param("~initial_direction", None)
     _valid_dirs = {"straight", "right", "left", "stop"}
     if initial_direction in _valid_dirs:
         direction_state["straight"] = initial_direction == "straight"
@@ -1800,6 +1800,7 @@ def run_ros_topic_mode():
                     go_straight = direction_state["straight"]
                     go_right = direction_state["right"]
                     go_left = direction_state["left"]
+                    
                 if go_straight:
                     state = ProcessState.STRAIGHT_TRACKING
                     t0 = time.perf_counter()

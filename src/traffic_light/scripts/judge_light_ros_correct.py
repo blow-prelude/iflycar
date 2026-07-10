@@ -199,32 +199,40 @@ def check_arrow_direction(img_src, box_letterbox, co_helper):
 
     roi = img_src[y1:y2, x1:x2]
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    # 仅取亮绿核心: 高V高S, 排除杆/反光等低饱和或低亮度区
-    mask = cv2.inRange(hsv, (35, 120, 120), (85, 255, 255))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    # hue 放宽到 100 容青绿; 去掉开运算(它在把勉强抓到的薄绿色削掉)
+    mask = cv2.inRange(hsv, (35, 60, 60), (100, 255, 255))
 
     num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    mask_area = int(mask.sum() // 255)
     if num <= 1:
+        print(
+            f"arrow None: no green component | mask_total={mask_area} roi={x2-x1}x{y2-y1}",
+            flush=True,
+        )
         return None
     largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
     area = stats[largest, cv2.CC_STAT_AREA]
-    if area < 5:
+    if area < 80:
+        print(
+            f"arrow None: largest too small | area={area} ncomp={num-1} mask_total={mask_area}",
+            flush=True,
+        )
         return None
 
+    comp = (labels == largest)
     ys, xs = np.where(labels == largest)
     if xs.size == 0:
         return None
-    cx_core = float(xs.mean())                       # 核心带质心 x
-    cx_bbox = (x1 + x2) / 2.0 - x1                  # 检测框中心在 ROI 内的 x
-    offset = cx_core - cx_bbox
-    bw = xs.max() - xs.min() + 1
-    band = max(1, bw // 8)
-    result = None
-    if abs(offset) > band:
-        result = "left" if offset < 0 else "right"
+    # ROI 宽切成 8 段, 峰段位置区分方向(左转峰在 idx<=2, 右转峰在 idx>=3)
+    col_mass = comp.sum(axis=0)
+    w = comp.shape[1]
+    seg = max(1, w // 8)
+    bands = [int(col_mass[i*seg:(i+1)*seg].sum()) for i in range(8)]
+    peak_idx = int(np.argmax(bands))
+    result = "left" if peak_idx <= 2 else "right"
     print(
-        f"arrow check: cx_core={cx_core:.1f} cx_bbox={cx_bbox:.1f} "
-        f"offset={offset:.1f} band={band} area={area} -> {result}",
+        f"arrow check: bands={bands} peak_idx={peak_idx} "
+        f"area={area} w={w} -> {result}",
         flush=True,
     )
     return result
@@ -433,6 +441,8 @@ def main():
 
         rospy.loginfo("Starting main loop...")
         loop_rate = rospy.Rate(30)
+        pub_skip_n = 10          # 每 5 帧命中才发布一次, 降低话题频率
+        pub_counter = 0
 
         while not rospy.is_shutdown():
             # 主线程：从 ROS 话题获取图像
@@ -495,12 +505,16 @@ def main():
                             )
                             direction_name = cv_dir
                     if publish:
-                        direction_pub.publish(String(direction_name))
-                        rospy.loginfo(f"Detected direction: {direction_name}")
-                        # 等待消息被消费，避免订阅者未收到就退出
-                        if direction_name != "stop":
-                            time.sleep(1.0)
-                            break
+                        if pub_counter % pub_skip_n != 0:
+                            pub_counter += 1
+                        else:
+                            pub_counter += 1
+                            direction_pub.publish(String(direction_name))
+                            rospy.loginfo(f"Detected direction: {direction_name}")
+                            # 等待消息被消费，避免订阅者未收到就退出
+                            if direction_name != "stop":
+                                time.sleep(1.0)
+                                break
 
                 # 在主线程中绘制结果
                 canvas = img_src.copy()

@@ -75,7 +75,7 @@ private:
     double turning_angular_vel_;
     ros::Time turn_start_time_;
     std::mutex data_mutex_;
-    const double FIXED_TURN_DURATION = 1.6; // 固定旋转时长 (s)
+    const double FIXED_TURN_DURATION = 1.8; // 固定旋转时长 (s)
 
     // 初始化PID参数
     void initPID()
@@ -142,9 +142,33 @@ private:
     // 方向指令回调函数
     void directionCallback(const std_msgs::String::ConstPtr &msg)
     {
-        if (maneuver_state_ != ManeuverState::IDLE)
-            return;
         std::string dir = msg->data;
+
+        // stop 优先级最高：任何机动状态(IDLE/FORWARD/ROTATE/DONE)都立即停车
+        if (dir == "stop")
+        {
+            maneuver_state_ = ManeuverState::DONE;
+            last_direction_ = "stop";
+            std_msgs::String dir_msg;
+            dir_msg.data = last_direction_;
+            direction_pub_.publish(dir_msg);
+            ROS_INFO("Maneuver: -> DONE (stop)");
+            return;
+        }
+
+        // 卡在 DONE(stop 后未解锁)时，新方向直接复位，不再死等 /start_vision1
+        if (maneuver_state_ == ManeuverState::DONE)
+        {
+            maneuver_state_ = ManeuverState::IDLE;
+            turning_mode_ = false;
+            stable_count_ = 0;
+            current_error_ = 0.0;
+            ROS_INFO("Maneuver: DONE -> IDLE (new direction %s after stop)", dir.c_str());
+        }
+
+        if (maneuver_state_ != ManeuverState::IDLE)
+            return; // FORWARD/ROTATE 途中忽略非 stop 指令
+
         if (dir == "left")
         {
             maneuver_direction_ = 1.0;
@@ -162,16 +186,6 @@ private:
             maneuver_direction_ = 0.0;
             needs_rotate_ = false;
             last_direction_ = "straight";
-        }
-        else if (dir == "stop")
-        {
-            last_direction_ = "stop";
-            maneuver_state_ = ManeuverState::DONE;
-            std_msgs::String dir_msg;
-            dir_msg.data = last_direction_;
-            direction_pub_.publish(dir_msg);
-            ROS_INFO("Maneuver: IDLE -> DONE (stop)");
-            return;
         }
         else
         {
