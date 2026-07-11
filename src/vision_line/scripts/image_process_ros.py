@@ -51,7 +51,7 @@ class ImageProcessConfig:
     corner_y_ratio: float = 0.70
 
     # ---- 停止线检测 ----
-    stop_roi_y0: float = 0.70
+    stop_roi_y0: float = 0.60
     stop_roi_y1: float = 0.85
     stop_roi_x0: float = 0.30
     stop_roi_x1: float = 0.70
@@ -59,7 +59,7 @@ class ImageProcessConfig:
     stop_min_width: int = 80
 
     # ---- 转弯判断 ----
-    turning_enter_y_thresh: float = 0.80
+    turning_enter_y_thresh: float = 0.60
     turning_end_x_diff: int = 20
     turning_end_y_diff: int = 30
 
@@ -76,7 +76,8 @@ class ImageProcessConfig:
 
     #
     straight_target_p_index = -10
-    left_target_p_index = -15
+    tracking2_target_p_index = -48
+    left_target_p_index = -25
 
     # ---- 透视变换矩阵 ----
     perspective_matrix: list = field(
@@ -432,7 +433,7 @@ class ImageProcess:
         result.append(tuple(pts[-1]))
         return np.array(result, dtype=np.int32).reshape(-1, 2)
 
-    def _fill_boundary(self, left_line, right_line, img_shape):
+    def _fill_boundary(self, left_line, right_line, img_shape, allow_prev_fallback=False):
         """将边线延伸到指定y位置，处理丢线情况
 
         三种情况：
@@ -494,6 +495,20 @@ class ImageProcess:
             ys_all = supple_left[:, 1]
             boundary_right = np.stack([np.full_like(ys_all, img_w - 1), ys_all], axis=1)
             return supple_left, boundary_right
+
+        # 双丢线：用上一帧(两边都在时保存的)边线兜底，避免 mid_line 清空导致 cpp 停车
+        if (
+            allow_prev_fallback
+            and len(self.prev_supple_left_line) > 0
+            and len(self.prev_supple_right_line) > 0
+        ):
+            rospy.logdebug(
+                "Both side lines lost: fallback to prev frame boundary lines"
+            )
+            return (
+                self.prev_supple_left_line.copy(),
+                self.prev_supple_right_line.copy(),
+            )
 
         return left_line, right_line
 
@@ -1215,7 +1230,7 @@ class ImageProcess:
 
             # 插值 + 填充边线（同时处理丢线情况）
             self.supple_left_line, self.supple_right_line = self._fill_boundary(
-                self.left_line, self.right_line, img.shape
+                self.left_line, self.right_line, img.shape, allow_prev_fallback=True
             )
 
             # 用优化后的边线计算中线（向量化）
@@ -1239,6 +1254,9 @@ class ImageProcess:
 
         except Exception as e:
             rospy.logerr(f"Error occurred during getting side lines : {e}")
+        finally:
+            # 更新上一帧的边线信息
+            self._update_prev_frame_lines()
 
     def draw_line(self, canvas, fps=float("inf"), state=None):
         """绘制边线、中线
@@ -1324,10 +1342,20 @@ class ImageProcess:
                 cv2.circle(canvas, pt, 2, (255, 255, 255), -1)
 
             # 绘制目标点
-            if len(self.fit_mid_line) > abs(self.cfg.left_target_p_index) + 1:
+            target_idx = self.cfg.left_target_p_index
+            if state == ProcessState.TRACKING2:
+                target_idx = self.cfg.tracking2_target_p_index
+            elif state in (
+                ProcessState.STRAIGHT_TRACKING,
+                ProcessState.CROSS,
+                ProcessState.TURNING,
+            ):
+                target_idx = self.cfg.straight_target_p_index
+
+            if len(self.fit_mid_line) > abs(target_idx) + 1:
                 cv2.circle(
                     canvas,
-                    self.fit_mid_line[self.cfg.left_target_p_index],
+                    self.fit_mid_line[target_idx],
                     3,
                     (0, 255, 0),
                     -1,
@@ -1916,7 +1944,9 @@ def run_ros_topic_mode():
                         imgprocess.fit_mid_line,
                         binary_img.shape,
                         original_shape,
-                        imgprocess.cfg.straight_target_p_index,
+                        imgprocess.cfg.tracking2_target_p_index
+                        if state == ProcessState.TRACKING2
+                        else imgprocess.cfg.straight_target_p_index,
                     )
                     vision_line_pub.publish(vision_msg)
 
