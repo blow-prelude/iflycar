@@ -131,7 +131,7 @@ include_directories(
 )
 
 link_directories(
-  lib/arm64
+  lib/x64
   /usr/include
 )
 

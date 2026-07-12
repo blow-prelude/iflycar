@@ -8,7 +8,6 @@ project(vision_line)
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
-  OpenCV REQUIRED
   geometry_msgs
   roscpp
   rospy
@@ -17,16 +16,16 @@ find_package(catkin REQUIRED COMPONENTS
   image_transport
 )
 
-# find_package(OpenCV REQUIRED)
-# if(OpenCV_FOUND)
-#     include_directories(${OpenCV_INCLUDE_DIRS})
-#     message(STATUS "OpenCV library status:")
-#     message(STATUS "    version: ${OpenCV_VERSION}")
-#     message(STATUS "    libraries: ${OpenCV_LIBS}")
-#     message(STATUS "    include path: ${OpenCV_INCLUDE_DIRS}")
-# else()
-#     message(FATAL_ERROR "OpenCV library not found")
-# endif()
+find_package(OpenCV REQUIRED)
+if(OpenCV_FOUND)
+    include_directories(${OpenCV_INCLUDE_DIRS})
+    message(STATUS "OpenCV library status:")
+    message(STATUS "    version: ${OpenCV_VERSION}")
+    message(STATUS "    libraries: ${OpenCV_LIBS}")
+    message(STATUS "    include path: ${OpenCV_INCLUDE_DIRS}")
+else()
+    message(FATAL_ERROR "OpenCV library not found")
+endif()
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)

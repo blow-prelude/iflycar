@@ -493,7 +493,7 @@ std::vector<cv::Point> &supple_left_line, &supple_right_line: 用于存储填充
    b. 如果左线丢失但右线存在，则以右线为基准进行插值，并从右线的底部y坐标开始向下填充，同时将左线的填充点x坐标设置为0
    c. 如果右线丢失但左线存在，则以左线为基准进行插值，并从左线的底部y坐标开始向下填充，同时将右线的填充点x坐标设置为图像宽度减1
 */
-void ImageProcess::fill_boundary(std::vector<cv::Point> &left_line, std::vector<cv::Point> &right_line, std::vector<int> img_shape, std::vector<cv::Point> &supple_left_line, std::vector<cv::Point> &supple_right_line, bool allow_prev_fallack = false)
+void ImageProcess::fill_boundary(std::vector<cv::Point> &left_line, std::vector<cv::Point> &right_line, std::vector<int> img_shape, std::vector<cv::Point> &supple_left_line, std::vector<cv::Point> &supple_right_line, bool allow_prev_fallack)
 {
     int img_h = img_shape[0];
     int img_w = img_shape[1];
