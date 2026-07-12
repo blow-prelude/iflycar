@@ -20,6 +20,7 @@ struct ImageProcessConfig
     int search_range_wide = 50;          // 动态搜索窗口最大宽度
     int search_range_narrow = 30;        // 动态搜索窗口最小宽度
     float search_range_threshold = 0.60; // 搜索窗口宽度调整阈值
+    int min_left_right_distance = 30;    // 左右边线最小间距
 
     // 拐点检测
     int corner_angle_high = 135;
@@ -27,7 +28,7 @@ struct ImageProcessConfig
     float corner_y_ratio = 0.70;
 
     // 停止线检测
-    float stop_roi_y0 = 0.70;
+    float stop_roi_y0 = 0.60;
     float stop_roi_y1 = 0.85;
     float stop_roi_x0 = 0.30;
     float stop_roi_x1 = 0.70;
@@ -35,7 +36,7 @@ struct ImageProcessConfig
     int stop_min_width = 80;
 
     // 转弯判断
-    float turning_enter_y_thresh = 0.78;
+    float turning_enter_y_thresh = 0.60;
     int turning_end_x_diff = 20; // 转弯结束时两边线末端 x 坐标差异阈值
     int turning_end_y_diff = 30;
 
@@ -53,7 +54,8 @@ struct ImageProcessConfig
     // 追踪点的索引
     int straight_target_p_index = -10;
     int left_target_p_index = -15;
-    int right_target_p_index = -20;
+    // int right_target_p_index = -20;
+    int tracking2_target_p_index = -48;
 };
 
 struct LineFit
@@ -80,12 +82,13 @@ public:
                  float a10, float a11, float a12,
                  float a20, float a21, float a22);
     std::array<float, 3> polyfit_quadratic(const std::vector<float> &x, const std::vector<float> &y);
+    void update_prev_frame_lines(); // 更新上一帧的边线数据
     // void linear_interpolation(Eigen::MatrixX2d &line);
     void linear_interpolation(std::vector<cv::Point> &line, std::vector<cv::Point> &interp_line);
     bool add_point_with_stable_start(std::vector<cv::Point> &line, cv::Point point, std::vector<cv::Point> &stable_buf, bool &stable, int x_thresh, int y_thresh);
     int get_search_start_point(std::vector<cv::Point> &pre_line, int cur_y, int img_w, bool is_left);
     // void fill_boundary(Eigen::MatrixX2d &left_line, Eigen::MatrixX2d &right_line, std::vector<int> img_shape, Eigen::MatrixX2d &supple_left_line, Eigen::MatrixX2d &supple_right_line);
-    void fill_boundary(std::vector<cv::Point> &left_line, std::vector<cv::Point> &right_line, std::vector<int> img_shape, std::vector<cv::Point> &supple_left_line, std::vector<cv::Point> &supple_right_line);
+    void fill_boundary(std::vector<cv::Point> &left_line, std::vector<cv::Point> &right_line, std::vector<int> img_shape, std::vector<cv::Point> &supple_left_line, std::vector<cv::Point> &supple_right_line, bool allow_prev_fallack = false);
     void fit_polynomial();
     void fit_polynomial2();
     std::vector<int> get_stop_line(cv::Mat &binary, cv::Mat &canvas, bool is_draw);
@@ -116,6 +119,10 @@ private:
     std::vector<cv::Point> supple_right_line_;
     std::vector<cv::Point> mid_line_;
     std::vector<cv::Point> fit_mid_line_;
+    std::vector<cv::Point> prev_left_line_;
+    std::vector<cv::Point> prev_right_line_;
+    std::vector<cv::Point> prev_supple_left_line_;
+    std::vector<cv::Point> prev_supple_right_line_;
     // 拐点
     cv::Point left_corners_;
     cv::Point right_corners_;

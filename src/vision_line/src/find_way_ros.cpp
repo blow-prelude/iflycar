@@ -242,7 +242,7 @@ public:
                     auto msg = buildVisionLineMsg(processor_.get_fit_mid_line(),
                                                   proc_h, proc_w,
                                                   orig_h, orig_w,
-                                                  config_.straight_target_p_index);
+                                                  state_ == TRACKING2 ? config_.tracking2_target_p_index : config_.straight_target_p_index);
                     vision_line_pub_.publish(msg);
 
                     processor_.draw_line(canvas, fps, stateToStr(state_));

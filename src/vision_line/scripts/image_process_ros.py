@@ -433,7 +433,9 @@ class ImageProcess:
         result.append(tuple(pts[-1]))
         return np.array(result, dtype=np.int32).reshape(-1, 2)
 
-    def _fill_boundary(self, left_line, right_line, img_shape, allow_prev_fallback=False):
+    def _fill_boundary(
+        self, left_line, right_line, img_shape, allow_prev_fallback=False
+    ):
         """将边线延伸到指定y位置，处理丢线情况
 
         三种情况：
@@ -1158,37 +1160,6 @@ class ImageProcess:
                     if right_added:
                         prev_row_right_x = rx
 
-                        # miss 计数（只在 stable 后）
-                        if right_stable[0] and not right_added:
-                            right_miss_count += 1
-                        else:
-                            right_miss_count = 0
-
-                        if right_miss_count >= self.cfg.miss_threshold:
-                            prev_row_right_x = mid_x + self.cfg.search_offset
-                            right_miss_count = 0
-
-                    # 检查左右边线距离，如果太小则认为是噪点，移除这对点
-                    if left_added and right_added:
-                        # lx 和 rx 已经在前面定义了
-                        if lx is not None and rx is not None:
-                            rx_minus_lx = rx - lx
-                            if rx_minus_lx <= self.cfg.min_left_right_distance:
-                                # 移除最后添加的左右点
-                                if len(local_left_line) > 0:
-                                    local_left_line.pop()
-                                    left_stable[0] = False
-                                    left_stable_buf.clear()
-                                    prev_row_left_x = mid_x - self.cfg.search_offset
-                                if len(local_right_line) > 0:
-                                    local_right_line.pop()
-                                    right_stable[0] = False
-                                    right_stable_buf.clear()
-                                    prev_row_right_x = mid_x + self.cfg.search_offset
-                                rospy.logdebug(
-                                    f"Removed noisy point pair at y={y}: lx={lx}, rx={rx}, distance={rx_minus_lx}"
-                                )
-
                         # 只有稳定点才参与拐点检测
                         if find_corner and find_right_corner is False:
                             right_nxt_p = (rx, y)
@@ -1212,6 +1183,37 @@ class ImageProcess:
                             # 更新点
                             right_pre_p = right_cur_p
                             right_cur_p = right_nxt_p
+
+                    # miss 计数（只在 stable 后）
+                    if right_stable[0] and not right_added:
+                        right_miss_count += 1
+                    else:
+                        right_miss_count = 0
+
+                    if right_miss_count >= self.cfg.miss_threshold:
+                        prev_row_right_x = mid_x + self.cfg.search_offset
+                        right_miss_count = 0
+
+                    # 检查左右边线距离，如果太小则认为是噪点，移除这对点
+                    if left_added and right_added:
+                        # lx 和 rx 已经在前面定义了
+                        if lx is not None and rx is not None:
+                            rx_minus_lx = rx - lx
+                            if rx_minus_lx <= self.cfg.min_left_right_distance:
+                                # 移除最后添加的左右点
+                                if len(local_left_line) > 0:
+                                    local_left_line.pop()
+                                    left_stable[0] = False
+                                    left_stable_buf.clear()
+                                    prev_row_left_x = mid_x - self.cfg.search_offset
+                                if len(local_right_line) > 0:
+                                    local_right_line.pop()
+                                    right_stable[0] = False
+                                    right_stable_buf.clear()
+                                    prev_row_right_x = mid_x + self.cfg.search_offset
+                                rospy.logdebug(
+                                    f"Removed noisy point pair at y={y}: lx={lx}, rx={rx}, distance={rx_minus_lx}"
+                                )
 
             # 转换为 numpy 数组
             self.left_line = (
@@ -1828,7 +1830,7 @@ def run_ros_topic_mode():
                     go_straight = direction_state["straight"]
                     go_right = direction_state["right"]
                     go_left = direction_state["left"]
-                    
+
                 if go_straight:
                     state = ProcessState.STRAIGHT_TRACKING
                     t0 = time.perf_counter()

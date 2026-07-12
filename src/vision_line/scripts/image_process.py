@@ -1112,16 +1112,6 @@ class ImageProcess:
                     if right_added:
                         prev_row_right_x = x
 
-                        # miss 计数（只在 stable 后）
-                        if right_stable[0] and not right_added:
-                            right_miss_count += 1
-                        else:
-                            right_miss_count = 0
-
-                        if right_miss_count >= self.cfg.miss_threshold:
-                            prev_row_right_x = mid_x + self.cfg.search_offset
-                            right_miss_count = 0
-
                         # 只有稳定点才参与拐点检测
                         if find_corner and find_right_corner is False:
                             right_nxt_p = (x, y)
@@ -1145,6 +1135,16 @@ class ImageProcess:
                             # 更新点
                             right_pre_p = right_cur_p
                             right_cur_p = right_nxt_p
+
+                    # miss 计数（只在 stable 后）
+                    if right_stable[0] and not right_added:
+                        right_miss_count += 1
+                    else:
+                        right_miss_count = 0
+
+                    if right_miss_count >= self.cfg.miss_threshold:
+                        prev_row_right_x = mid_x + self.cfg.search_offset
+                        right_miss_count = 0
 
             # 转换为 numpy 数组
             self.left_line = (
