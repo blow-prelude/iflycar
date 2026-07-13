@@ -21,10 +21,17 @@ enum State
     TRACKING2 = 7
 };
 
+enum MissLineState
+{
+    NO_MISS = 0,
+    MISS = 1,
+    RECOVERED = 2
+};
+
 class FindWayROS
 {
 public:
-    FindWayROS() : nh_private_("~"), it_(nh_), state_(IDLE), miss_line_(false)
+    FindWayROS() : nh_private_("~"), it_(nh_), state_(IDLE), miss_line_(NO_MISS)
     {
         // 加载 ROS 参数（私有命名空间）
         std::string image_topic = nh_private_.param<std::string>("image_topic", "ucar_camera/image_raw");
@@ -109,7 +116,7 @@ public:
                 {
                     state_ = IDLE;
                     t0_set = false;
-                    miss_line_ = false;
+                    miss_line_ = NO_MISS;
                     reset_requested_ = false;
                     ROS_INFO("State machine reset to IDLE (direction changed)");
                 }
@@ -215,7 +222,7 @@ public:
                         }
                         else if (processor_.judge_turing_end(proc_w, proc_h, miss_line_))
                         {
-                            if (miss_line_)
+                            if (miss_line_ == RECOVERED)
                             {
                                 auto msg = buildVisionLineMsg(processor_.get_fit_mid_line(),
                                                               proc_h, proc_w,
@@ -282,7 +289,7 @@ private:
     bool reset_requested_ = false;
 
     State state_ = IDLE;
-    bool miss_line_ = false;
+    MissLineState miss_line_ = NO_MISS;
 
     ImageProcessConfig config_;
     ImageProcess processor_{config_};
@@ -363,7 +370,9 @@ private:
         // 处理负索引（从末尾数）
         int idx = target_index;
         if (idx < 0)
+        {
             idx = static_cast<int>(line_points.size()) + idx;
+        }
 
         if (idx < 0 || idx >= static_cast<int>(line_points.size()))
         {
@@ -375,6 +384,7 @@ private:
         double x_raw = pt.x * scale_x;
         double y_raw = pt.y * scale_y;
         double x_error = x_raw - (orig_w / 2.0);
+        ROS_DEBUG("x_error: %.2f, y_raw: %.2f, target_index: %d", x_error, y_raw, target_index);
 
         msg.data = {static_cast<float>(x_error), static_cast<float>(y_raw)};
         return msg;

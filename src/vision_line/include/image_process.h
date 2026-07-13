@@ -58,6 +58,14 @@ struct ImageProcessConfig
     int tracking2_target_p_index = -48;
 };
 
+// 判断丢线状态机
+enum MissLineState
+{
+    NO_MISS = 0,
+    MISS = 1,
+    RECOVERED = 2
+};
+
 struct LineFit
 {
     float k;
@@ -93,7 +101,7 @@ public:
     void fit_polynomial2();
     std::vector<int> get_stop_line(cv::Mat &binary, cv::Mat &canvas, bool is_draw);
     bool judge_enter_turning(std::vector<int> &stop_mid, int img_h, int img_w);
-    bool judge_turing_end(int img_w, int img_h, bool &miss_line);
+    bool judge_turing_end(int img_w, int img_h, MissLineState &miss_line);
     void get_side_line_task_1(cv::Mat &img, cv::Mat &canvas, bool is_draw);
     void get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_draw, bool find_corner);
 
