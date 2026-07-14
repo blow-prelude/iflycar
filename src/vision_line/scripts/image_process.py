@@ -27,6 +27,14 @@ class ProcessState(Enum):
     TRACKING2 = 7  # 转弯后继续循迹
 
 
+class MissLineState(Enum):
+    """转弯期间边线丢线状态机，对应 C++ 中的 MissLineState 枚举"""
+
+    NO_MISS = 0  # 未丢线
+    MISS = 1  # 丢线
+    RECOVERED = 2  # 丢线后恢复，用于判断转弯结束
+
+
 @dataclass
 class ImageProcessConfig:
     """集中管理 ImageProcess 的所有可调参数"""
@@ -82,6 +90,47 @@ class ImageProcessConfig:
             [-0.000241, -0.009225, 1.000000],
         ]
     )
+
+    # ---- 拟合曲线上的目标点索引（负数表示从末尾倒数，与 image_process_ros 对齐） ----
+    straight_target_p_index = -10
+    tracking2_target_p_index = -48
+    left_target_p_index = -25
+
+
+def compute_target_x_error(line_points, processed_shape, original_shape, index):
+    """计算拟合中线上指定索引点的 x_error 与 y_pixel（缩放到原始分辨率）。
+
+    与 image_process_ros.build_vision_line_msg_by_index 等价，但不构造 ROS 消息，
+    供离线 main/mian_video 用于 TURNING -> TRACKING2 的阈值判断。
+
+    Returns:
+        (x_error, y_pixel): 输入无效时返回 (0.0, -1.0)
+    """
+    if (
+        line_points is None
+        or len(line_points) == 0
+        or processed_shape is None
+        or original_shape is None
+        or len(processed_shape) < 2
+        or len(original_shape) < 2
+        or len(line_points) < abs(index) + 1
+    ):
+        return 0.0, -1.0
+
+    proc_h, proc_w = processed_shape[:2]
+    orig_h, orig_w = original_shape[:2]
+
+    if proc_h <= 0 or proc_w <= 0 or orig_h <= 0 or orig_w <= 0:
+        return 0.0, -1.0
+
+    scale_x = float(orig_w) / float(proc_w)
+    scale_y = float(orig_h) / float(proc_h)
+
+    best_x, best_y = int(line_points[index, 0]), int(line_points[index, 1])
+    x_raw = best_x * scale_x
+    y_raw = best_y * scale_y
+    x_error = x_raw - (orig_w / 2.0)
+    return float(x_error), float(y_raw)
 
 
 class ImageProcess:
@@ -660,26 +709,27 @@ class ImageProcess:
         y_norm = stop_mid[1] / img_shape[0]
         return y_norm > self.cfg.turning_enter_y_thresh
 
-    def judge_turning_end(self, img_shape, miss_line=[False]):
+    def judge_turning_end(self, img_shape, miss_line=[MissLineState.NO_MISS]):
         """判断转弯是否结束：一开始两边都不丢线，然后一边丢线一边不丢线，最后两边都不丢线
 
         Args:
             img_shape: 图像形状 (h, w, ...)
-            miss_line: 转弯期间是否丢线
+            miss_line: 转弯期间丢线状态 [MissLineState]
 
         Returns:
             bool: True 表示转弯结束，可以进入 TRACKING2 状态
         """
         if len(self.left_line) == 0 or len(self.right_line) == 0:
-            miss_line[0] = True
+            miss_line[0] = MissLineState.MISS
             return False
 
         x_diff = abs(int(self.right_line[-1, 0]) - int(self.left_line[-1, 0]))
-        if miss_line[0] and x_diff <= self.cfg.turning_end_x_diff:
+        if miss_line[0] == MissLineState.MISS and x_diff <= self.cfg.turning_end_x_diff:
+            miss_line[0] = MissLineState.RECOVERED
             return True
 
         if x_diff <= self.cfg.turning_end_x_diff:
-            miss_line[0] = True
+            miss_line[0] = MissLineState.MISS
             return False
 
     def get_stop_line(self, binary_img, is_draw=False, canvas=None):
@@ -1527,7 +1577,10 @@ def main_video():
     # 状态机变量
     state = ProcessState.IDLE
     t0 = None  # 指令开始时刻
-    miss_line = [False]
+    miss_line = [MissLineState.NO_MISS]
+    turning_end_x_error_abs_max = (
+        15.0  # TURNING -> TRACKING2 时中线 x_error 阈值（原始分辨率）
+    )
 
     try:
         while True:
@@ -1630,15 +1683,27 @@ def main_video():
                             )
 
                     if state == ProcessState.TURNING:
-                        # 转弯一直转到两侧都不丢线，则继续巡线
-                        # 从开始转弯到停止转弯，是一个从不丢线到一边丢线一边不丢线再到两边都不丢线的过程，进入巡线状态
+                        # 视觉判断转弯结束：需要 miss_line 进入过 MISS 再到 RECOVERED，
+                        # 且中线 x_error 收敛到阈值内，才允许进入 TRACKING2。
+                        # 与 find_way_ros.cpp 的路径 B 一致（离线版无 ROS flag 路径 A）。
                         if imgprocess.judge_turning_end(
                             binary_img.shape, miss_line=miss_line
                         ):
-                            state = ProcessState.TRACKING2
-                            logging.info(
-                                "State: TURNING -> TRACKING2 (turning end detected)"
-                            )
+                            if miss_line[0] == MissLineState.RECOVERED:
+                                x_error, y_pixel = compute_target_x_error(
+                                    imgprocess.fit_mid_line,
+                                    binary_img.shape,
+                                    frame.shape,
+                                    imgprocess.cfg.straight_target_p_index,
+                                )
+                                if (
+                                    y_pixel >= 0
+                                    and abs(x_error) <= turning_end_x_error_abs_max
+                                ):
+                                    state = ProcessState.TRACKING2
+                                    logging.info(
+                                        f"State: TURNING -> TRACKING2 (visual end detected, x_error={x_error:.1f})"
+                                    )
 
                     # 多项式拟合
                     imgprocess.fit_polynomial()
@@ -1801,7 +1866,10 @@ def main():
     # 状态机变量
     state = ProcessState.IDLE
     t0 = None  # 指令开始时刻
-    miss_line = [False]
+    miss_line = [MissLineState.NO_MISS]
+    turning_end_x_error_abs_max = (
+        15.0  # TURNING -> TRACKING2 时中线 x_error 阈值（原始分辨率）
+    )
 
     try:
         # 连接服务器，开启发送线程
@@ -1875,6 +1943,9 @@ def main():
                         find_corner=find_corner,
                     )
 
+                    # 多项式拟合
+                    imgprocess.fit_polynomial()
+
                     # CORNER 状态：处理完毕后检查是否进入 CROSS
                     if state == ProcessState.CORNER:
                         if imgprocess.judge_enter_cross_state(binary_img.shape):
@@ -1901,18 +1972,30 @@ def main():
                             )
 
                     if state == ProcessState.TURNING:
-                        # 转弯一直转到两侧都不丢线，则继续巡线
-                        # 从开始转弯到停止转弯，是一个从不丢线到一边丢线一边不丢线再到两边都不丢线的过程，进入巡线状态
+                        # 视觉判断转弯结束：需要 miss_line 进入过 MISS 再到 RECOVERED，
+                        # 且中线 x_error 收敛到阈值内，才允许进入 TRACKING2。
+                        # 与 find_way_ros.cpp 的路径 B 一致（离线版无 ROS flag 路径 A）。
                         if imgprocess.judge_turning_end(
                             binary_img.shape, miss_line=miss_line
                         ):
-                            state = ProcessState.TRACKING2
-                            logging.info(
-                                "State: TURNING -> TRACKING2 (turning end detected)"
-                            )
+                            if miss_line[0] == MissLineState.RECOVERED:
+                                x_error, y_pixel = compute_target_x_error(
+                                    imgprocess.fit_mid_line,
+                                    binary_img.shape,
+                                    frame.shape,
+                                    imgprocess.cfg.straight_target_p_index,
+                                )
+                                if (
+                                    y_pixel >= 0
+                                    and abs(x_error) <= turning_end_x_error_abs_max
+                                ):
+                                    state = ProcessState.TRACKING2
+                                    logging.info(
+                                        f"State: TURNING -> TRACKING2 (visual end detected, x_error={x_error:.1f})"
+                                    )
 
-                    # 多项式拟合
-                    imgprocess.fit_polynomial()
+                    if state == ProcessState.TRACKING2:
+                        pass
 
                     canvas = imgprocess.draw_line(canvas, fps, state)
 

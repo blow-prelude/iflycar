@@ -324,28 +324,35 @@ bool ImageProcess::judge_enter_turning(std::vector<int> &stop_mid, int img_h, in
  * img_w, img_h: 图像宽度和高度
  * miss_line: 是否丢过线
  * 逻辑：
-1. 如果之前丢过线（miss_line为true），且当前左右边线的末端点x坐标差异小于预设的转弯结束阈值，则认为转弯结束，返回true
+1. 如果之前丢过线（miss_line为true），且当前左右边线的末端点x坐标差异大于预设的转弯结束阈值，则认为转弯结束，返回true
 2. 否则认为转弯未结束，返回false
 3. 有时候可能左右都没有丢线，但是末端点x坐标差异也很小，即两边同时把一条线当作自己的线，这时认为是丢线
  */
-bool ImageProcess::judge_turing_end(int img_w, int img_h, bool &miss_line)
+bool ImageProcess::judge_turing_end(int img_w, int img_h, MissLineState &miss_line)
 {
+
+    if (miss_line == RECOVERED)
+    {
+        return true; // 已经恢复过线，直接认为转弯结束
+    }
+
     if (this->left_line_.empty() || this->right_line_.empty())
     {
-        miss_line = true;
+        miss_line = MISS;
         return false;
     }
+
     int left_x = this->left_line_.back().x;
     int right_x = this->right_line_.back().x;
     int x_diff = std::abs(left_x - right_x);
-    if (miss_line && x_diff < this->config_.turning_end_x_diff)
+    if (miss_line == MISS && x_diff > this->config_.turning_end_x_diff)
     {
-        miss_line = false; // 转弯结束，重置丢线状态
+        miss_line = RECOVERED; // 转弯结束，重置丢线状态
         return true;
     }
-    else if (!miss_line && x_diff < this->config_.turning_end_x_diff)
+    else if (miss_line == NO_MISS && x_diff < this->config_.turning_end_x_diff)
     {
-        miss_line = true; // 可能同时丢线
+        miss_line = MISS; // 可能同时丢线
     }
     return false;
 }
@@ -1439,8 +1446,7 @@ void ImageProcess::draw_line(cv::Mat &canvas, float fps, std::string state)
 
     if (this->fit_mid_line_.size() > std::abs(target_idx))
     {
-        cv::circle(canvas, this->fit_mid_line_[target_idx], 3, cv::Scalar(0, 255, 0), -1);
-        std::cout << "target_idx: " << target_idx << ", fit_mid_line_ size: " << fit_mid_line_.size() << std::endl;
+        cv::circle(canvas, this->fit_mid_line_[target_idx], 4, cv::Scalar(255, 0, 255), -1);
     }
 }
 

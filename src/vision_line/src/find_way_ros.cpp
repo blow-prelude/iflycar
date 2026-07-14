@@ -21,10 +21,35 @@ enum State
     TRACKING2 = 7
 };
 
+const char *state_name(State s)
+{
+    switch (s)
+    {
+    case IDLE:
+        return "IDLE";
+    case STRAIGHT_TRACKING:
+        return "STRAIGHT_TRACKING";
+    case RIGHT_TRACKING:
+        return "RIGHT_TRACKING";
+    case LEFT_TRACKING:
+        return "LEFT_TRACKING";
+    case CORNER:
+        return "CORNER";
+    case CROSS:
+        return "CROSS";
+    case TURNING:
+        return "TURNING";
+    case TRACKING2:
+        return "TRACKING2";
+    default:
+        return "UNKNOWN";
+    }
+}
+
 class FindWayROS
 {
 public:
-    FindWayROS() : nh_private_("~"), it_(nh_), state_(IDLE), miss_line_(false)
+    FindWayROS() : nh_private_("~"), it_(nh_), state_(IDLE), miss_line_(NO_MISS)
     {
         // 加载 ROS 参数（私有命名空间）
         std::string image_topic = nh_private_.param<std::string>("image_topic", "ucar_camera/image_raw");
@@ -36,8 +61,8 @@ public:
         turning_end_x_error_abs_max_ = nh_private_.param<double>("turning_end_x_error_abs_max", 15.0);
         target_y_ = nh_private_.param<double>("vision_target_y", 400.0);
         turning_target_y_ = nh_private_.param<double>("turning_target_y", 360.0);
-        loop_rate_ = nh_private_.param<int>("loop_rate", 60);
-        std::string initial_direction = nh_private_.param<std::string>("initial_direction", "straight");
+        loop_rate_ = nh_private_.param<int>("loop_rate", 120);
+        std::string initial_direction = nh_private_.param<std::string>("initial_direction", "left");
 
         // 设置初始方向
         if (initial_direction == "straight")
@@ -109,7 +134,7 @@ public:
                 {
                     state_ = IDLE;
                     t0_set = false;
-                    miss_line_ = false;
+                    miss_line_ = NO_MISS;
                     reset_requested_ = false;
                     ROS_INFO("State machine reset to IDLE (direction changed)");
                 }
@@ -171,7 +196,7 @@ public:
                                                   config_.left_target_p_index);
                     vision_line_pub_.publish(msg);
 
-                    processor_.draw_line(canvas, fps, stateToStr(state_));
+                    processor_.draw_line(canvas, fps, state_name(state_));
                     cv::imshow("binary", binary_img);
                     cv::imshow("processed_img", canvas);
                 }
@@ -215,28 +240,26 @@ public:
                         }
                         else if (processor_.judge_turing_end(proc_w, proc_h, miss_line_))
                         {
-                            if (miss_line_)
-                            {
-                                auto msg = buildVisionLineMsg(processor_.get_fit_mid_line(),
-                                                              proc_h, proc_w,
-                                                              orig_h, orig_w,
-                                                              config_.straight_target_p_index);
-                                float x_error = msg.data[0];
-                                float y_pixel = msg.data[1];
 
-                                if (y_pixel >= 0 && std::abs(x_error) <= turning_end_x_error_abs_max_)
-                                {
-                                    state_ = TRACKING2;
-                                    ros::param::set(turning_flag_param_, 0);
-                                    ROS_INFO("State: TURNING -> TRACKING2 (visual end detected, x_error=%.1f)", x_error);
-                                }
+                            auto msg = buildVisionLineMsg(processor_.get_fit_mid_line(),
+                                                          proc_h, proc_w,
+                                                          orig_h, orig_w,
+                                                          config_.straight_target_p_index);
+                            float x_error = msg.data[0];
+                            float y_pixel = msg.data[1];
+
+                            if (y_pixel >= 0 && std::abs(x_error) <= turning_end_x_error_abs_max_)
+                            {
+                                state_ = TRACKING2;
+                                ros::param::set(turning_flag_param_, 0);
+                                ROS_INFO("State: TURNING -> TRACKING2 (visual end detected, x_error=%.1f)", x_error);
                             }
                         }
                     }
 
                     if (state_ == TRACKING2)
                     {
-                        processor_.fit_polynomial();
+                        // processor_.fit_polynomial();
                     }
 
                     auto msg = buildVisionLineMsg(processor_.get_fit_mid_line(),
@@ -245,7 +268,7 @@ public:
                                                   state_ == TRACKING2 ? config_.tracking2_target_p_index : config_.straight_target_p_index);
                     vision_line_pub_.publish(msg);
 
-                    processor_.draw_line(canvas, fps, stateToStr(state_));
+                    processor_.draw_line(canvas, fps, state_name(state_));
                     cv::imshow("binary", binary_img);
                     cv::imshow("processed_img", canvas);
                 }
@@ -282,7 +305,7 @@ private:
     bool reset_requested_ = false;
 
     State state_ = IDLE;
-    bool miss_line_ = false;
+    MissLineState miss_line_ = NO_MISS;
 
     ImageProcessConfig config_;
     ImageProcess processor_{config_};
@@ -294,7 +317,7 @@ private:
     double turning_end_x_error_abs_max_ = 15.0;
     double target_y_ = 400.0;
     double turning_target_y_ = 360.0;
-    int loop_rate_ = 60;
+    int loop_rate_ = 120;
 
     void imageCallback(const sensor_msgs::ImageConstPtr &msg)
     {
@@ -363,7 +386,9 @@ private:
         // 处理负索引（从末尾数）
         int idx = target_index;
         if (idx < 0)
+        {
             idx = static_cast<int>(line_points.size()) + idx;
+        }
 
         if (idx < 0 || idx >= static_cast<int>(line_points.size()))
         {
@@ -375,35 +400,36 @@ private:
         double x_raw = pt.x * scale_x;
         double y_raw = pt.y * scale_y;
         double x_error = x_raw - (orig_w / 2.0);
+        ROS_DEBUG("x_error: %.2f, y_raw: %.2f, target_index: %d", x_error, y_raw, target_index);
 
         msg.data = {static_cast<float>(x_error), static_cast<float>(y_raw)};
         return msg;
     }
 
-    static std::string stateToStr(State s)
-    {
-        switch (s)
-        {
-        case IDLE:
-            return "IDLE";
-        case STRAIGHT_TRACKING:
-            return "STRAIGHT_TRACKING";
-        case RIGHT_TRACKING:
-            return "RIGHT_TRACKING";
-        case LEFT_TRACKING:
-            return "LEFT_TRACKING";
-        case CORNER:
-            return "CORNER";
-        case CROSS:
-            return "CROSS";
-        case TURNING:
-            return "TURNING";
-        case TRACKING2:
-            return "TRACKING2";
-        default:
-            return "UNKNOWN";
-        }
-    }
+    // static std::string stateToStr(State s)
+    // {
+    //     switch (s)
+    //     {
+    //     case IDLE:
+    //         return "IDLE";
+    //     case STRAIGHT_TRACKING:
+    //         return "STRAIGHT_TRACKING";
+    //     case RIGHT_TRACKING:
+    //         return "RIGHT_TRACKING";
+    //     case LEFT_TRACKING:
+    //         return "LEFT_TRACKING";
+    //     case CORNER:
+    //         return "CORNER";
+    //     case CROSS:
+    //         return "CROSS";
+    //     case TURNING:
+    //         return "TURNING";
+    //     case TRACKING2:
+    //         return "TRACKING2";
+    //     default:
+    //         return "UNKNOWN";
+    //     }
+    // }
 };
 
 int main(int argc, char **argv)

@@ -1,0 +1,36 @@
+<launch>
+    <!-- 默认参数，外部 roslaunch 时可用 arg_name:=value 覆盖 -->
+    <arg name="image_topic"         default="ucar_camera/image_raw" />
+    <arg name="vision_line_topic"   default="/vision_line" />
+    <arg name="direction_topic"     default="/vision_line_direction_out" />
+    <arg name="turning_flag_param"  default="/start_vision_line2" />
+
+    <arg name="corner_delay_s"               default="1.5" />
+    <arg name="turning_end_x_error_abs_max"  default="15.0" />
+    <arg name="vision_target_y"              default="400.0" />
+    <arg name="turning_target_y"             default="360.0" />
+    <arg name="loop_rate"                    default="60" />
+
+    <!-- 初始方向: straight / left / right -->
+    <arg name="initial_direction"  default="left" />
+
+    <node pkg="vision_line" type="find_way_ros" name="find_way_ros" output="screen">
+        <!-- 话题 -->
+        <param name="image_topic"         type="string" value="$(arg image_topic)" />
+        <param name="vision_line_topic"   type="string" value="$(arg vision_line_topic)" />
+        <param name="direction_topic"     type="string" value="$(arg direction_topic)" />
+
+        <!-- 全局参数名（ros::param::set/get 使用） -->
+        <param name="turning_flag_param"  type="string" value="$(arg turning_flag_param)" />
+
+        <!-- 控制参数 -->
+        <param name="corner_delay_s"               type="double" value="$(arg corner_delay_s)" />
+        <param name="turning_end_x_error_abs_max"  type="double" value="$(arg turning_end_x_error_abs_max)" />
+        <param name="vision_target_y"              type="double" value="$(arg vision_target_y)" />
+        <param name="turning_target_y"             type="double" value="$(arg turning_target_y)" />
+        <param name="loop_rate"                    type="int"    value="$(arg loop_rate)" />
+
+        <!-- 初始方向 -->
+        <param name="initial_direction"  type="string" value="$(arg initial_direction)" />
+    </node>
+</launch>
