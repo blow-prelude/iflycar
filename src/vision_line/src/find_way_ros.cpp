@@ -21,7 +21,7 @@ enum State
     TRACKING2 = 7
 };
 
-const char *state_name(ProcessState s)
+const char *state_name(State s)
 {
     switch (s)
     {
@@ -29,12 +29,12 @@ const char *state_name(ProcessState s)
         return "IDLE";
     case STRAIGHT_TRACKING:
         return "STRAIGHT_TRACKING";
-    case RIGHT_TURNING:
-        return "RIGHT_TURNING";
-    case LEFT_TURNING:
-        return "LEFT_TURNING";
-    case CORNERING:
-        return "CORNERING";
+    case RIGHT_TRACKING:
+        return "RIGHT_TRACKING";
+    case LEFT_TRACKING:
+        return "LEFT_TRACKING";
+    case CORNER:
+        return "CORNER";
     case CROSS:
         return "CROSS";
     case TURNING:
@@ -61,7 +61,7 @@ public:
         turning_end_x_error_abs_max_ = nh_private_.param<double>("turning_end_x_error_abs_max", 15.0);
         target_y_ = nh_private_.param<double>("vision_target_y", 400.0);
         turning_target_y_ = nh_private_.param<double>("turning_target_y", 360.0);
-        loop_rate_ = nh_private_.param<int>("loop_rate", 60);
+        loop_rate_ = nh_private_.param<int>("loop_rate", 120);
         std::string initial_direction = nh_private_.param<std::string>("initial_direction", "left");
 
         // 设置初始方向
@@ -317,7 +317,7 @@ private:
     double turning_end_x_error_abs_max_ = 15.0;
     double target_y_ = 400.0;
     double turning_target_y_ = 360.0;
-    int loop_rate_ = 60;
+    int loop_rate_ = 120;
 
     void imageCallback(const sensor_msgs::ImageConstPtr &msg)
     {

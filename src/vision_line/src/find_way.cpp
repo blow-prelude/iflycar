@@ -85,7 +85,8 @@ int main()
 {
 
     // 参数
-    int turning_end_x_error_abs_max_ = 15; // 转弯结束时 x_error 最大绝对值
+    int turning_end_x_error_abs_max_ = 15;                          // 转弯结束时 x_error 最大绝对值
+    std::chrono::seconds corner_delay_s_ = std::chrono::seconds(3); // 直行状态延时进入CROSS状态的时间
 
     auto pre_t = std::chrono::steady_clock::now();
     auto cur_t = pre_t;
@@ -168,7 +169,7 @@ int main()
                     if (state == ProcessState::STRAIGHT_TRACKING)
                     {
                         // 延时3s后进入CROSS状态
-                        if (std::chrono::steady_clock::now() - t0 > std::chrono::seconds(3))
+                        if (std::chrono::steady_clock::now() - t0 > corner_delay_s_)
                         {
                             std::cout << "state: STRAIGHT_TRACKING -> CORSS after 3s" << std::endl;
                             state = ProcessState::CROSS;
@@ -196,7 +197,7 @@ int main()
                         if (img_process.judge_turing_end(binary_img.cols, binary_img.rows, miss_line))
                         {
                             int x_error = track_target_p(img_process.get_fit_mid_line(), config.tracking2_target_p_index, binary_img.cols, binary_img.rows);
-                            // std::cout << "x_error = " << x_error << std::endl;
+                            std::cout << "x_error = " << x_error << std::endl;
                             if (std::abs(x_error) <= turning_end_x_error_abs_max_)
                             {
                                 state = ProcessState::TRACKING2;
