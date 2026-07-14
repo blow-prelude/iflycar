@@ -16,6 +16,31 @@ enum ProcessState
     TRACKING2 = 7
 };
 
+const char *state_name(ProcessState s)
+{
+    switch (s)
+    {
+    case IDLE:
+        return "IDLE";
+    case STRAIGHT_TRACKING:
+        return "STRAIGHT_TRACKING";
+    case RIGHT_TURNING:
+        return "RIGHT_TURNING";
+    case LEFT_TURNING:
+        return "LEFT_TURNING";
+    case CORNERING:
+        return "CORNERING";
+    case CROSS:
+        return "CROSS";
+    case TURNING:
+        return "TURNING";
+    case TRACKING2:
+        return "TRACKING2";
+    default:
+        return "UNKNOWN";
+    }
+}
+
 struct InitSignal
 {
     bool straight_signal = false;
@@ -93,7 +118,7 @@ int main()
                     img_process.get_side_line_task_1(binary_img, canvas, true);
                     img_process.fit_polynomial2();
 
-                    img_process.draw_line(canvas, fps, std::to_string(state));
+                    img_process.draw_line(canvas, fps, state_name(state));
 
                     cv::imshow("binary", binary_img);
                     cv::imshow("canvas", canvas);
@@ -136,7 +161,7 @@ int main()
                     }
 
                     img_process.fit_polynomial();
-                    img_process.draw_line(canvas, fps, std::to_string(state));
+                    img_process.draw_line(canvas, fps, state_name(state));
 
                     cv::imshow("binary", binary_img);
                     cv::imshow("canvas", canvas);
