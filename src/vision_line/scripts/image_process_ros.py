@@ -24,6 +24,14 @@ class ProcessState(Enum):
     TRACKING2 = 7  # 转弯结束后的巡线状态，find_corner=False
 
 
+class MissLineState(Enum):
+    """转弯期间边线丢线状态机，对应 C++ 中的 MissLineState 枚举"""
+
+    NO_MISS = 0  # 未丢线
+    MISS = 1  # 丢线
+    RECOVERED = 2  # 丢线后恢复，用于判断转弯结束
+
+
 @dataclass
 class ImageProcessConfig:
     """集中管理 ImageProcess 的所有可调参数"""
@@ -697,28 +705,29 @@ class ImageProcess:
         y_norm = stop_mid[1] / img_shape[0]
         return y_norm > self.cfg.turning_enter_y_thresh
 
-    def judge_turning_end(self, img_shape, miss_line=[False]):
+    def judge_turning_end(self, img_shape, miss_line=[MissLineState.NO_MISS]):
         """判断转弯是否结束：一开始两边都不丢线，然后一边丢线一边不丢线，最后两边都不丢线
 
         Args:
             img_shape: 图像形状 (h, w, ...)
-            miss_line: 转弯期间是否丢线
+            miss_line: 转弯期间丢线状态 [MissLineState]
 
         Returns:
             bool: True 表示转弯结束，可以进入 TRACKING2 状态
         """
         if len(self.left_line) == 0 or len(self.right_line) == 0:
-            miss_line[0] = True
+            miss_line[0] = MissLineState.MISS
             return False
 
         x_diff = abs(int(self.right_line[-1, 0]) - int(self.left_line[-1, 0]))
         y_diff = abs(int(self.right_line[-1, 1]) - int(self.left_line[-1, 1]))
 
-        if miss_line[0] and y_diff <= self.cfg.turning_end_y_diff:
+        if miss_line[0] == MissLineState.MISS and y_diff <= self.cfg.turning_end_y_diff:
+            miss_line[0] = MissLineState.RECOVERED
             return True
 
         if x_diff <= self.cfg.turning_end_x_diff:
-            miss_line[0] = True
+            miss_line[0] = MissLineState.MISS
             return False
 
     def get_stop_line(self, binary_img, is_draw=False, canvas=None):
@@ -1784,7 +1793,7 @@ def run_ros_topic_mode():
 
     state = ProcessState.IDLE
     t0 = None
-    miss_line = [False]
+    miss_line = [MissLineState.NO_MISS]
     wait_log_t = 0.0
     loop_rate = rospy.Rate(rt_cfg.loop_rate)
 
@@ -1821,7 +1830,7 @@ def run_ros_topic_mode():
                 if direction_state["reset_requested"]:
                     state = ProcessState.IDLE
                     t0 = None
-                    miss_line[0] = False
+                    miss_line[0] = MissLineState.NO_MISS
                     direction_state["reset_requested"] = False
                     rospy.loginfo("State machine reset to IDLE (direction changed)")
 
@@ -1872,7 +1881,7 @@ def run_ros_topic_mode():
                         find_corner=find_corner,
                     )
 
-                    imgprocess.fit_polynomial2()
+                    imgprocess.fit_polynomial()
 
                     if state == ProcessState.CORNER:
                         if imgprocess.judge_enter_cross_state(binary_img.shape):
@@ -1912,7 +1921,7 @@ def run_ros_topic_mode():
                         elif imgprocess.judge_turning_end(
                             binary_img.shape, miss_line=miss_line
                         ):
-                            if miss_line[0]:
+                            if miss_line[0] == MissLineState.RECOVERED:
                                 turning_mid_msg = build_vision_line_msg_by_index(
                                     imgprocess.fit_mid_line,
                                     binary_img.shape,
@@ -1940,7 +1949,8 @@ def run_ros_topic_mode():
                                     )
 
                     if state == ProcessState.TRACKING2:
-                        imgprocess.fit_polynomial()
+                        # imgprocess.fit_polynomial()
+                        pass
 
                     vision_msg = build_vision_line_msg_by_index(
                         imgprocess.fit_mid_line,

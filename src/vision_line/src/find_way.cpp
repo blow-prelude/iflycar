@@ -23,8 +23,38 @@ struct InitSignal
     bool right_signal = false;
 };
 
+int track_target_p(const std::vector<cv::Point> &line_points, int target_index, int w, int h)
+{
+    if (line_points.empty() || w <= 0 || h <= 0 || static_cast<int>(line_points.size()) < std::abs(target_index) + 1)
+    {
+        std::cout << "Invalid input for track_target_p" << std::endl;
+        return -1000;
+    }
+    // 处理负索引
+    int idx = target_index;
+    if (idx < 0)
+    {
+        idx = static_cast<int>(line_points.size()) + idx;
+    }
+    if (idx < 0 || idx >= static_cast<int>(line_points.size()))
+    {
+        std::cout << "Index out of bounds for track_target_p" << std::endl;
+        return -1000;
+    }
+    cv::Point pt = line_points[idx];
+    double x_raw = pt.x;
+    double y_raw = pt.y;
+    double x_error = x_raw - (w / 2.0);
+    std::cout << "Tracking target point: target idx:" << target_index << ", y:" << y_raw << ",x_error = " << x_error << std::endl;
+    return x_error;
+}
+
 int main()
 {
+
+    // 参数
+    int turning_end_x_error_abs_max_ = 15; // 转弯结束时 x_error 最大绝对值
+
     auto pre_t = std::chrono::steady_clock::now();
     auto cur_t = pre_t;
     long long sum_ms = 0;
@@ -35,7 +65,7 @@ int main()
     std::chrono::_V2::steady_clock::time_point t0;
 
     // 转弯结束后可能出现的丢线情况，记录是否丢过线
-    bool miss_line = false;
+    MissLineState miss_line = NO_MISS;
 
     // 状态信号
     InitSignal init_signal;
@@ -130,9 +160,17 @@ int main()
                     {
                         if (img_process.judge_turing_end(binary_img.cols, binary_img.rows, miss_line))
                         {
-                            state = ProcessState::TRACKING2;
-                            std::cout << "state: TURNING -> TRACKING2" << std::endl;
+                            int x_error = track_target_p(img_process.get_fit_mid_line(), config.tracking2_target_p_index, binary_img.cols, binary_img.rows);
+                            if (std::abs(x_error) <= turning_end_x_error_abs_max_)
+                            {
+                                state = ProcessState::TRACKING2;
+                                std::cout << "state: TURNING -> TRACKING2" << std::endl;
+                            }
                         }
+                    }
+
+                    if (state == ProcessState::TRACKING2)
+                    {
                     }
 
                     img_process.fit_polynomial();

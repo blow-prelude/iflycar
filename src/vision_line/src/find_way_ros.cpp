@@ -243,7 +243,7 @@ public:
 
                     if (state_ == TRACKING2)
                     {
-                        processor_.fit_polynomial();
+                        // processor_.fit_polynomial();
                     }
 
                     auto msg = buildVisionLineMsg(processor_.get_fit_mid_line(),
