@@ -1444,11 +1444,11 @@ void ImageProcess::draw_line(cv::Mat &canvas, float fps, std::string state)
         target_idx = this->config_.straight_target_p_index;
     }
 
-    std::cout << "[DEBUG] state: " << state << ", drawing target point at index: " << target_idx << std::endl;
+    // std::cout << "[DEBUG] state: " << state << ", drawing target point at index: " << target_idx << std::endl;
 
     if (this->fit_mid_line_.size() > std::abs(target_idx))
     {
-        cv::circle(canvas, this->fit_mid_line_[this->fit_mid_line_.size() + target_idx], 4, cv::Scalar(255, 0, 255), -1);
+        cv::circle(canvas, this->fit_mid_line_[target_idx], 4, cv::Scalar(255, 0, 255), -1);
     }
 }
 
