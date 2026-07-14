@@ -51,6 +51,10 @@ class FindWayROS
 public:
     FindWayROS() : nh_private_("~"), it_(nh_), state_(IDLE), miss_line_(NO_MISS)
     {
+        // 输出初始配置值
+        // ROS_INFO("Initial config values: straight_target_p_index=%d, left_target_p_index=%d, tracking2_target_p_index=%d",
+        //          config_.straight_target_p_index, config_.left_target_p_index, config_.tracking2_target_p_index);
+
         // 加载 ROS 参数（私有命名空间）
         std::string image_topic = nh_private_.param<std::string>("image_topic", "ucar_camera/image_raw");
         std::string vision_line_topic = nh_private_.param<std::string>("vision_line_topic", "/vision_line");
@@ -180,6 +184,14 @@ public:
                 int proc_h = binary_img.rows;
                 int proc_w = binary_img.cols;
 
+                // 调试：检查图像尺寸
+                static int debug_count = 0;
+                // if (debug_count++ % 30 == 0)
+                // {
+                //     ROS_INFO("Frame dimensions: orig_h=%d, orig_w=%d, proc_h=%d, proc_w=%d",
+                //              orig_h, orig_w, proc_h, proc_w);
+                // }
+
                 // 用于消息缩放的比例
                 double scale_x = static_cast<double>(orig_w) / proc_w;
                 double scale_y = static_cast<double>(orig_h) / proc_h;
@@ -240,13 +252,20 @@ public:
                         }
                         else if (processor_.judge_turing_end(proc_w, proc_h, miss_line_))
                         {
+                            // 调试：检查关键变量状态
+                            // ROS_INFO("Before buildVisionLineMsg: orig_w=%d, orig_h=%d, proc_w=%d, proc_h=%d",
+                            //         orig_w, orig_h, proc_w, proc_h);
 
                             auto msg = buildVisionLineMsg(processor_.get_fit_mid_line(),
                                                           proc_h, proc_w,
                                                           orig_h, orig_w,
                                                           config_.straight_target_p_index);
+                            // vision_line_pub_.publish(msg);
+
                             float x_error = msg.data[0];
                             float y_pixel = msg.data[1];
+
+                            // ROS_INFO("After buildVisionLineMsg: x_error=%f, y_pixel=%f", x_error, y_pixel);
 
                             if (y_pixel >= 0 && std::abs(x_error) <= turning_end_x_error_abs_max_)
                             {
@@ -255,7 +274,7 @@ public:
                                 ROS_INFO("State: TURNING -> TRACKING2 (visual end detected, x_error=%.1f)", x_error);
                             }
                         }
-                        ROS_INFO("miss_line: %d", miss_line_);
+                        // ROS_INFO("miss_line: %d", miss_line_);
                     }
 
                     if (state_ == TRACKING2)
@@ -263,10 +282,15 @@ public:
                         // processor_.fit_polynomial();
                     }
 
+                    // 调试：检查主要调用处的参数
+                    int main_target_index = state_ == TRACKING2 ? config_.tracking2_target_p_index : config_.straight_target_p_index;
+                    // ROS_INFO("Main buildVisionLineMsg: state=%s, target_index=%d, orig_w=%d, orig_h=%d",
+                    //          state_name(state_), main_target_index, orig_w, orig_h);
+
                     auto msg = buildVisionLineMsg(processor_.get_fit_mid_line(),
                                                   proc_h, proc_w,
                                                   orig_h, orig_w,
-                                                  state_ == TRACKING2 ? config_.tracking2_target_p_index : config_.straight_target_p_index);
+                                                  main_target_index);
                     vision_line_pub_.publish(msg);
 
                     processor_.draw_line(canvas, fps, state_name(state_));
@@ -372,6 +396,22 @@ private:
     {
         std_msgs::Float32MultiArray msg;
 
+        // 调试：检查输入参数的合理性
+        // ROS_INFO("buildVisionLineMsg params: proc_h=%d, proc_w=%d, orig_h=%d, orig_w=%d, target_index=%d",
+        //          proc_h, proc_w, orig_h, orig_w, target_index);
+
+        // 检查 orig_w 是否在合理范围内
+        if (orig_w > 10000 || orig_w <= 0)
+        {
+            ROS_ERROR("Invalid orig_w: %d, setting to default 640", orig_w);
+            orig_w = 640;
+        }
+        if (orig_h > 10000 || orig_h <= 0)
+        {
+            ROS_ERROR("Invalid orig_h: %d, setting to default 480", orig_h);
+            orig_h = 480;
+        }
+
         if (line_points.empty() ||
             proc_h <= 0 || proc_w <= 0 ||
             orig_h <= 0 || orig_w <= 0 ||
@@ -401,7 +441,7 @@ private:
         double x_raw = pt.x * scale_x;
         double y_raw = pt.y * scale_y;
         double x_error = x_raw - (orig_w / 2.0);
-        ROS_DEBUG("x_error: %.2f, y_raw: %.2f, target_index: %d", x_error, y_raw, target_index);
+        // ROS_INFO(" ptx: %.2f, pty: %.2f, x_raw: %.2f, x_error: %.2f, y_raw: %.2f, idx: %d", static_cast<double>(pt.x), static_cast<double>(pt.y), x_raw, x_error, y_raw, target_index);
 
         msg.data = {static_cast<float>(x_error), static_cast<float>(y_raw)};
         return msg;
