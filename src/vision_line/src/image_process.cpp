@@ -330,11 +330,18 @@ bool ImageProcess::judge_enter_turning(std::vector<int> &stop_mid, int img_h, in
  */
 bool ImageProcess::judge_turing_end(int img_w, int img_h, MissLineState &miss_line)
 {
+
+    if (miss_line == RECOVERED)
+    {
+        return true; // 已经恢复过线，直接认为转弯结束
+    }
+
     if (this->left_line_.empty() || this->right_line_.empty())
     {
         miss_line = MISS;
         return false;
     }
+
     int left_x = this->left_line_.back().x;
     int right_x = this->right_line_.back().x;
     int x_diff = std::abs(left_x - right_x);

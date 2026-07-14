@@ -16,6 +16,31 @@ enum ProcessState
     TRACKING2 = 7
 };
 
+const char *state_name(ProcessState s)
+{
+    switch (s)
+    {
+    case IDLE:
+        return "IDLE";
+    case STRAIGHT_TRACKING:
+        return "STRAIGHT_TRACKING";
+    case RIGHT_TURNING:
+        return "RIGHT_TURNING";
+    case LEFT_TURNING:
+        return "LEFT_TURNING";
+    case CORNERING:
+        return "CORNERING";
+    case CROSS:
+        return "CROSS";
+    case TURNING:
+        return "TURNING";
+    case TRACKING2:
+        return "TRACKING2";
+    default:
+        return "UNKNOWN";
+    }
+}
+
 struct InitSignal
 {
     bool straight_signal = false;
@@ -25,11 +50,18 @@ struct InitSignal
 
 int track_target_p(const std::vector<cv::Point> &line_points, int target_index, int w, int h)
 {
-    if (line_points.empty() || w <= 0 || h <= 0 || static_cast<int>(line_points.size()) < std::abs(target_index) + 1)
+    if (line_points.empty() || w <= 0 || h <= 0)
     {
-        std::cout << "Invalid input for track_target_p" << std::endl;
+        // std::cout << "Invalid input for track_target_p" << std::endl;
         return -1000;
     }
+
+    if (static_cast<int>(line_points.size()) < std::abs(target_index) + 1)
+    {
+        // std::cout << "Index out of bounds for track_target_p" << std::endl;
+        return -1001;
+    }
+
     // 处理负索引
     int idx = target_index;
     if (idx < 0)
@@ -38,7 +70,7 @@ int track_target_p(const std::vector<cv::Point> &line_points, int target_index, 
     }
     if (idx < 0 || idx >= static_cast<int>(line_points.size()))
     {
-        std::cout << "Index out of bounds for track_target_p" << std::endl;
+        // std::cout << "Index out of bounds for track_target_p" << std::endl;
         return -1000;
     }
     cv::Point pt = line_points[idx];
@@ -89,6 +121,8 @@ int main()
             }
             pre_t = cur_t;
             cv::Mat frame = camera.captureFrame();
+            cv::Mat frame_1 = camera.correctFrame(frame);
+            cv::flip(frame_1, frame, 1); // 水平翻转
 
             if (state == ProcessState::IDLE)
             {
@@ -123,7 +157,7 @@ int main()
                     img_process.get_side_line_task_1(binary_img, canvas, true);
                     img_process.fit_polynomial2();
 
-                    img_process.draw_line(canvas, fps, std::to_string(state));
+                    img_process.draw_line(canvas, fps, state_name(state));
 
                     cv::imshow("binary", binary_img);
                     cv::imshow("canvas", canvas);
@@ -143,6 +177,7 @@ int main()
 
                     cv::Mat canvas = img_process.return_frame();
                     img_process.get_side_line_task_2(binary_img, canvas, true, false);
+                    img_process.fit_polynomial();
 
                     if (state == ProcessState::CROSS)
                     {
@@ -152,7 +187,7 @@ int main()
                         if (img_process.judge_enter_turning(stop_mid, binary_img.rows, binary_img.cols))
                         {
                             state = ProcessState::TURNING;
-                            std::cout << "state: CROSS -> TURNING at y=" << stop_mid[1] / binary_img.rows << std::endl;
+                            std::cout << "state: CROSS -> TURNING at y=" << 1.0f * stop_mid[1] / binary_img.rows << std::endl;
                         }
                     }
 
@@ -161,20 +196,21 @@ int main()
                         if (img_process.judge_turing_end(binary_img.cols, binary_img.rows, miss_line))
                         {
                             int x_error = track_target_p(img_process.get_fit_mid_line(), config.tracking2_target_p_index, binary_img.cols, binary_img.rows);
+                            // std::cout << "x_error = " << x_error << std::endl;
                             if (std::abs(x_error) <= turning_end_x_error_abs_max_)
                             {
                                 state = ProcessState::TRACKING2;
                                 std::cout << "state: TURNING -> TRACKING2" << std::endl;
                             }
                         }
+                        std::cout << "TURNING state: miss_line = " << miss_line << std::endl;
                     }
 
                     if (state == ProcessState::TRACKING2)
                     {
                     }
 
-                    img_process.fit_polynomial();
-                    img_process.draw_line(canvas, fps, std::to_string(state));
+                    img_process.draw_line(canvas, fps, state_name(state));
 
                     cv::imshow("binary", binary_img);
                     cv::imshow("canvas", canvas);

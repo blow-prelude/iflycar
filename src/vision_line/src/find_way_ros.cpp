@@ -21,12 +21,30 @@ enum State
     TRACKING2 = 7
 };
 
-enum MissLineState
+const char *state_name(ProcessState s)
 {
-    NO_MISS = 0,
-    MISS = 1,
-    RECOVERED = 2
-};
+    switch (s)
+    {
+    case IDLE:
+        return "IDLE";
+    case STRAIGHT_TRACKING:
+        return "STRAIGHT_TRACKING";
+    case RIGHT_TURNING:
+        return "RIGHT_TURNING";
+    case LEFT_TURNING:
+        return "LEFT_TURNING";
+    case CORNERING:
+        return "CORNERING";
+    case CROSS:
+        return "CROSS";
+    case TURNING:
+        return "TURNING";
+    case TRACKING2:
+        return "TRACKING2";
+    default:
+        return "UNKNOWN";
+    }
+}
 
 class FindWayROS
 {
@@ -178,7 +196,7 @@ public:
                                                   config_.left_target_p_index);
                     vision_line_pub_.publish(msg);
 
-                    processor_.draw_line(canvas, fps, stateToStr(state_));
+                    processor_.draw_line(canvas, fps, state_name(state_));
                     cv::imshow("binary", binary_img);
                     cv::imshow("processed_img", canvas);
                 }
@@ -222,21 +240,19 @@ public:
                         }
                         else if (processor_.judge_turing_end(proc_w, proc_h, miss_line_))
                         {
-                            if (miss_line_ == RECOVERED)
-                            {
-                                auto msg = buildVisionLineMsg(processor_.get_fit_mid_line(),
-                                                              proc_h, proc_w,
-                                                              orig_h, orig_w,
-                                                              config_.straight_target_p_index);
-                                float x_error = msg.data[0];
-                                float y_pixel = msg.data[1];
 
-                                if (y_pixel >= 0 && std::abs(x_error) <= turning_end_x_error_abs_max_)
-                                {
-                                    state_ = TRACKING2;
-                                    ros::param::set(turning_flag_param_, 0);
-                                    ROS_INFO("State: TURNING -> TRACKING2 (visual end detected, x_error=%.1f)", x_error);
-                                }
+                            auto msg = buildVisionLineMsg(processor_.get_fit_mid_line(),
+                                                          proc_h, proc_w,
+                                                          orig_h, orig_w,
+                                                          config_.straight_target_p_index);
+                            float x_error = msg.data[0];
+                            float y_pixel = msg.data[1];
+
+                            if (y_pixel >= 0 && std::abs(x_error) <= turning_end_x_error_abs_max_)
+                            {
+                                state_ = TRACKING2;
+                                ros::param::set(turning_flag_param_, 0);
+                                ROS_INFO("State: TURNING -> TRACKING2 (visual end detected, x_error=%.1f)", x_error);
                             }
                         }
                     }
@@ -252,7 +268,7 @@ public:
                                                   state_ == TRACKING2 ? config_.tracking2_target_p_index : config_.straight_target_p_index);
                     vision_line_pub_.publish(msg);
 
-                    processor_.draw_line(canvas, fps, stateToStr(state_));
+                    processor_.draw_line(canvas, fps, state_name(state_));
                     cv::imshow("binary", binary_img);
                     cv::imshow("processed_img", canvas);
                 }
@@ -390,30 +406,30 @@ private:
         return msg;
     }
 
-    static std::string stateToStr(State s)
-    {
-        switch (s)
-        {
-        case IDLE:
-            return "IDLE";
-        case STRAIGHT_TRACKING:
-            return "STRAIGHT_TRACKING";
-        case RIGHT_TRACKING:
-            return "RIGHT_TRACKING";
-        case LEFT_TRACKING:
-            return "LEFT_TRACKING";
-        case CORNER:
-            return "CORNER";
-        case CROSS:
-            return "CROSS";
-        case TURNING:
-            return "TURNING";
-        case TRACKING2:
-            return "TRACKING2";
-        default:
-            return "UNKNOWN";
-        }
-    }
+    // static std::string stateToStr(State s)
+    // {
+    //     switch (s)
+    //     {
+    //     case IDLE:
+    //         return "IDLE";
+    //     case STRAIGHT_TRACKING:
+    //         return "STRAIGHT_TRACKING";
+    //     case RIGHT_TRACKING:
+    //         return "RIGHT_TRACKING";
+    //     case LEFT_TRACKING:
+    //         return "LEFT_TRACKING";
+    //     case CORNER:
+    //         return "CORNER";
+    //     case CROSS:
+    //         return "CROSS";
+    //     case TURNING:
+    //         return "TURNING";
+    //     case TRACKING2:
+    //         return "TRACKING2";
+    //     default:
+    //         return "UNKNOWN";
+    //     }
+    // }
 };
 
 int main(int argc, char **argv)
