@@ -62,7 +62,7 @@ public:
         target_y_ = nh_private_.param<double>("vision_target_y", 400.0);
         turning_target_y_ = nh_private_.param<double>("turning_target_y", 360.0);
         loop_rate_ = nh_private_.param<int>("loop_rate", 120);
-        std::string initial_direction = nh_private_.param<std::string>("initial_direction", "left");
+        std::string initial_direction = nh_private_.param<std::string>("initial_direction", "straight");
 
         // 设置初始方向
         if (initial_direction == "straight")
@@ -215,7 +215,7 @@ public:
 
                     cv::Mat canvas = processor_.return_frame();
                     processor_.get_side_line_task_2(binary_img, canvas, false, false);
-                    processor_.fit_polynomial2();
+                    processor_.fit_polynomial();
 
                     if (state_ == CROSS)
                     {
@@ -255,6 +255,7 @@ public:
                                 ROS_INFO("State: TURNING -> TRACKING2 (visual end detected, x_error=%.1f)", x_error);
                             }
                         }
+                        ROS_INFO("miss_line: %d", miss_line_);
                     }
 
                     if (state_ == TRACKING2)

@@ -689,7 +689,7 @@ void ImageProcess::fit_polynomial()
     {
         float sign_k_far = (far_fit.k > 0.0) ? 1.0 : ((far_fit.k < 0.0) ? -1.0 : 0.0);
         float factor = std::min(angle / 60.0f, 1.0f);
-        offset = static_cast<int>(-sign_k_far + factor * this->config_.fit_max_offset);
+        offset = static_cast<int>(-sign_k_far * factor * this->config_.fit_max_offset);
     }
 
     int far_y_start = static_cast<int>(far_y_min);
