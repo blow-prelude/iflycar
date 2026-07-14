@@ -613,8 +613,8 @@ void ImageProcess::fit_polynomial()
 
     int y_dive = this->mid_line_.back().y * this->config_.fit_y_div_far_w + this->mid_line_.front().y * this->config_.fit_y_div_near_w;
 
-    float near_sx, near_sy, near_sxx, near_syy, near_sxy;
-    float far_sx, far_sy, far_sxx, far_syy, far_sxy;
+    float near_sx = 0.0f, near_sy = 0.0f, near_sxx = 0.0f, near_syy = 0.0f, near_sxy = 0.0f;
+    float far_sx = 0.0f, far_sy = 0.0f, far_sxx = 0.0f, far_syy = 0.0f, far_sxy = 0.0f;
     float near_y_min = std::numeric_limits<float>::max();
     float near_y_max = std::numeric_limits<float>::lowest();
     float far_y_min = std::numeric_limits<float>::max();
