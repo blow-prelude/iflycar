@@ -1184,8 +1184,8 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
         {
             // 逐行计算相邻像素差异，避免计算整张图
             cv::Mat row_mask = (img.row(y) == 0);
-            cv::Mat row_left = row_mask(cv::Range::all(), cv::Range(0, img_w - 1));
-            cv::Mat row_right = row_mask(cv::Range::all(), cv::Range(1, img_w));
+            cv::Mat row_left = row_mask(cv::Range::all(), cv::Range(0, img_w - 2));
+            cv::Mat row_right = row_mask(cv::Range::all(), cv::Range(1, img_w - 1));
             cv::Mat row_diff;
             cv::bitwise_xor(row_left, row_right, row_diff);
 
@@ -1208,10 +1208,10 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
             }
 
             // // 调试输出：显示搜索区间
-            // if (y % 10 == 0) // 每10行输出一次，避免过多输出
-            // {
-            //     std::cout << "[LEFT] y: " << y << ", range: [" << search_left_end << ", " << search_left_start << "], prev_x: " << prev_row_left_x << std::endl;
-            // }
+            if (y % 10 == 0) // 每10行输出一次，避免过多输出
+            {
+                std::cout << "[LEFT] y: " << y << ", range: [" << search_left_end << ", " << search_left_start << "], prev_x: " << prev_row_left_x << std::endl;
+            }
 
             if (is_draw)
             {
@@ -1277,76 +1277,77 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
                     miss_left_count = 0;
                     prev_row_left_x = mid_x - this->config_.search_offset;
                 }
+            }
 
-                // 搜索右边线
-                if (right_stable_flag)
-                {
-                    // 右侧稳定时，围绕上一帧位置向左右搜索
-                    search_right_start = std::max(prev_row_right_x - cur_range, 0);
-                    search_right_end = std::min(prev_row_right_x + cur_range, img_w - 1);
+            // 搜索右边线
+            if (right_stable_flag)
+            {
+                // 右侧稳定时，围绕上一帧位置向左右搜索
+                search_right_start = std::max(prev_row_right_x - cur_range, 0);
+                search_right_end = std::min(prev_row_right_x + cur_range, img_w - 1);
+            }
+            else
+            {
+                // 右侧不稳定时，从中线偏右位置向右搜索到图像边缘
+                search_right_start = mid_x + this->config_.search_offset;
+                search_right_end = img_w - 1;
+            }
+
+            // 调试输出：显示搜索区间
+            // if (y % 10 == 0)
+            // {
+            //     std::cout << "[RIGHT-TASK2] y: " << y << ", range: [" << search_right_start << ", " << search_right_end << "], prev_x: " << prev_row_right_x << std::endl;
+            // }
+
+            if (is_draw)
+            {
+                cv::circle(canvas, cv::Point(search_right_start, y), 1, cv::Scalar(255, 255, 0), -1);
+                cv::circle(canvas, cv::Point(search_right_end, y), 1, cv::Scalar(255, 255, 0), -1);
+            }
+
+            rx = -1; // 重置x，避免使用旧值
+            for (int i = search_right_start; i <= search_right_end; i++)
+            {
+                if (row_ptr[i] != 0)
+                { // 非0表示存在黑白跳变点
+                    rx = i;
+                    break; // 右侧搜索：找到第一个跳变点就停止
                 }
-                else
-                {
-                    // 右侧不稳定时，从中线偏右位置向右搜索到图像边缘
-                    search_right_start = mid_x + this->config_.search_offset;
-                    search_right_end = img_w - 1;
-                }
+            }
+            bool right_added = false;
+            if (0 <= rx && rx < img_w) // 允许图像边缘的点
+            {
+                right_added = add_point_with_stable_start(this->right_line_, cv::Point(rx, y), right_stable_buf, right_stable_flag, this->config_.x_continual, this->config_.y_continual);
+            }
 
-                // // 调试输出：显示搜索区间
-                // if (y % 10 == 0)
-                // {
-                //     std::cout << "[RIGHT-TASK2] y: " << y << ", range: [" << search_right_start << ", " << search_right_end << "], prev_x: " << prev_row_right_x << std::endl;
-                // }
+            // // 调试输出
+            // if (y % 10 == 0)
+            // {
+            //     std::cout << "[RIGHT-TASK2] found x=" << rx << ", right_added=" << right_added << ", stable=" << right_stable_flag << std::endl;
+            // }
 
-                if (is_draw)
+            if (right_added)
+            {
+                prev_row_right_x = rx;
+                // 只有稳定点才参与拐点检测
+                if (find_corner && !find_right_corner)
                 {
-                    cv::circle(canvas, cv::Point(search_right_start, y), 1, cv::Scalar(255, 255, 0), -1);
-                    cv::circle(canvas, cv::Point(search_right_end, y), 1, cv::Scalar(255, 255, 0), -1);
-                }
-
-                rx = -1; // 重置x，避免使用旧值
-                for (int i = search_right_start; i <= search_right_end; i++)
-                {
-                    if (row_ptr[i] != 0)
-                    { // 非0表示存在黑白跳变点
-                        rx = i;
-                        break; // 右侧搜索：找到第一个跳变点就停止
-                    }
-                }
-                bool right_added = false;
-                if (0 <= rx && rx < img_w) // 允许图像边缘的点
-                {
-                    right_added = add_point_with_stable_start(this->right_line_, cv::Point(rx, y), right_stable_buf, right_stable_flag, this->config_.x_continual, this->config_.y_continual);
-                }
-
-                // // 调试输出
-                // if (y % 10 == 0)
-                // {
-                //     std::cout << "[RIGHT-TASK2] found x=" << rx << ", right_added=" << right_added << ", stable=" << right_stable_flag << std::endl;
-                // }
-
-                if (right_added)
-                {
-                    prev_row_right_x = rx;
-                    // 只有稳定点才参与拐点检测
-                    if (find_corner && !find_right_corner)
+                    right_nxt_p = cv::Point(rx, y);
+                    if (right_cur_p.x != 0 && right_cur_p.y != 0 && right_pre_p.x != 0 && right_pre_p.y != 0)
                     {
-                        right_nxt_p = cv::Point(rx, y);
-                        if (right_cur_p.x != 0 && right_cur_p.y != 0 && right_pre_p.x != 0 && right_pre_p.y != 0)
+                        float angle = get_angle_p(right_pre_p, right_cur_p, right_nxt_p);
+                        if (angle < this->config_.corner_angle_high && angle > this->config_.corner_angle_low)
                         {
-                            float angle = get_angle_p(right_pre_p, right_cur_p, right_nxt_p);
-                            if (angle < this->config_.corner_angle_high && angle > this->config_.corner_angle_low)
-                            {
-                                find_right_corner = true;
-                                this->right_corners_ = right_cur_p;
-                                // std::cout << "[DEBUG] Find right corner at: " << right_cur_p << ", angle: " << angle << std::endl;
-                            }
+                            find_right_corner = true;
+                            this->right_corners_ = right_cur_p;
+                            // std::cout << "[DEBUG] Find right corner at: " << right_cur_p << ", angle: " << angle << std::endl;
                         }
-                        // 更新拐点检测的点
-                        right_pre_p = right_cur_p;
-                        right_cur_p = right_nxt_p;
                     }
+                    // 更新拐点检测的点
+                    right_pre_p = right_cur_p;
+                    right_cur_p = right_nxt_p;
                 }
+
                 if (right_stable_flag && !right_added)
                     miss_right_count++;
                 else
@@ -1356,46 +1357,60 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
                     miss_right_count = 0;
                     prev_row_right_x = mid_x + this->config_.search_offset;
                 }
+            }
 
-                // 检测左右边线距离，如果太小则认为是噪点，移除这一对
-                if (left_added && right_added)
+            // 检测左右边线距离，如果太小则认为是噪点，移除这一对
+            if (left_added && right_added)
+            {
+                int distance = std::abs(lx - rx);
+                if (distance < this->config_.min_left_right_distance)
                 {
-                    int distance = std::abs(lx - rx);
-                    if (distance < this->config_.min_left_right_distance)
-                    {
-                        // 移除最后加入的点
-                        this->left_line_.pop_back();
-                        this->right_line_.pop_back();
-                        left_stable_flag = false;
-                        right_stable_flag = false;
-                        prev_row_left_x = mid_x - this->config_.search_offset;
-                        prev_row_right_x = mid_x + this->config_.search_offset;
-                        left_stable_buf.clear();
-                        right_stable_buf.clear();
-                    }
+                    // 移除最后加入的点
+                    this->left_line_.pop_back();
+                    this->right_line_.pop_back();
+                    left_stable_flag = false;
+                    right_stable_flag = false;
+                    prev_row_left_x = mid_x - this->config_.search_offset;
+                    prev_row_right_x = mid_x + this->config_.search_offset;
+                    left_stable_buf.clear();
+                    right_stable_buf.clear();
                 }
             }
-
-            // 插值+填充边线（同时处理边线情况）
-            fill_boundary(this->left_line_, this->right_line_, {img_h, img_w}, this->supple_left_line_, this->supple_right_line_, true);
-
-            //  使用优化后的边线计算中线
-            int n = std::min(this->supple_left_line_.size(), this->supple_right_line_.size());
-            this->mid_line_.resize(n);
-            for (int i = 0; i < n; i++)
-            {
-                this->mid_line_[i].x = (this->supple_left_line_[i].x + this->supple_right_line_[i].x) / 2.0;
-                this->mid_line_[i].y = (this->supple_left_line_[i].y + this->supple_right_line_[i].y) / 2.0;
-            }
-
-            this->update_prev_frame_lines(); // 更新上一帧的边线数据
         }
     }
+
     catch (const std::exception &e)
     {
         std::cerr << "Error in get_side_line_task_2: " << e.what() << std::endl;
-        this->update_prev_frame_lines(); // 即使发生异常，也要更新上一帧的边线数据
     }
+}
+
+/*
+ * 根据当前左右原始边线插值+填充，并计算中线
+ * img: 当前二值化图像（仅用于获取宽高）
+ * 逻辑：
+ * 1. 调用 fill_boundary 对左右边线做插值和底部填充，得到 supple_left_line_/supple_right_line_
+ * 2. 按相同索引对左右填充线的点求中点，写入 mid_line_
+ * 3. 更新 prev_* 成员，供下一帧 fill_boundary 的 allow_prev_fallack 使用
+ */
+void ImageProcess::calculate_mid_line(cv::Mat &img)
+{
+    int img_h = img.rows;
+    int img_w = img.cols;
+
+    // 插值+填充边线（同时处理边线情况）
+    fill_boundary(this->left_line_, this->right_line_, {img_h, img_w}, this->supple_left_line_, this->supple_right_line_, true);
+
+    // 使用优化后的边线计算中线
+    int n = std::min(this->supple_left_line_.size(), this->supple_right_line_.size());
+    this->mid_line_.resize(n);
+    for (int i = 0; i < n; i++)
+    {
+        this->mid_line_[i].x = (this->supple_left_line_[i].x + this->supple_right_line_[i].x) / 2.0;
+        this->mid_line_[i].y = (this->supple_left_line_[i].y + this->supple_right_line_[i].y) / 2.0;
+    }
+
+    this->update_prev_frame_lines();
 }
 
 void ImageProcess::draw_line(cv::Mat &canvas, float fps, std::string state)
@@ -1459,7 +1474,13 @@ void ImageProcess::draw_line(cv::Mat &canvas, float fps, std::string state)
 
     // std::cout << "Drawing target point at index: " << target_idx << std::endl;
 
-    if (this->fit_mid_line_.size() > std::abs(target_idx))
+    // 处理负索引
+    if (target_idx < 0)
+    {
+        target_idx = this->fit_mid_line_.size() + target_idx; // 转换为正索引
+    }
+
+    if (this->fit_mid_line_.size() > target_idx)
     {
         cv::circle(canvas, this->fit_mid_line_[target_idx], 4, cv::Scalar(255, 0, 255), -1);
     }

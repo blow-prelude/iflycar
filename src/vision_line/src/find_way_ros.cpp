@@ -226,7 +226,8 @@ public:
                     }
 
                     cv::Mat canvas = processor_.return_frame();
-                    processor_.get_side_line_task_2(binary_img, canvas, false, false);
+                    processor_.get_side_line_task_2(binary_img, canvas, true, false);
+                    processor_.calculate_mid_line(binary_img);
                     processor_.fit_polynomial();
 
                     if (state_ == CROSS)
@@ -399,18 +400,6 @@ private:
         // 调试：检查输入参数的合理性
         // ROS_INFO("buildVisionLineMsg params: proc_h=%d, proc_w=%d, orig_h=%d, orig_w=%d, target_index=%d",
         //          proc_h, proc_w, orig_h, orig_w, target_index);
-
-        // 检查 orig_w 是否在合理范围内
-        if (orig_w > 10000 || orig_w <= 0)
-        {
-            ROS_ERROR("Invalid orig_w: %d, setting to default 640", orig_w);
-            orig_w = 640;
-        }
-        if (orig_h > 10000 || orig_h <= 0)
-        {
-            ROS_ERROR("Invalid orig_h: %d, setting to default 480", orig_h);
-            orig_h = 480;
-        }
 
         if (line_points.empty() ||
             proc_h <= 0 || proc_w <= 0 ||

@@ -178,6 +178,7 @@ int main()
 
                     cv::Mat canvas = img_process.return_frame();
                     img_process.get_side_line_task_2(binary_img, canvas, true, false);
+                    img_process.calculate_mid_line(binary_img);
                     img_process.fit_polynomial();
 
                     if (state == ProcessState::CROSS)
@@ -197,14 +198,14 @@ int main()
                         if (img_process.judge_turing_end(binary_img.cols, binary_img.rows, miss_line))
                         {
                             int x_error = track_target_p(img_process.get_fit_mid_line(), config.tracking2_target_p_index, binary_img.cols, binary_img.rows);
-                            std::cout << "x_error = " << x_error << std::endl;
+                            // std::cout << "x_error = " << x_error << std::endl;
                             if (std::abs(x_error) <= turning_end_x_error_abs_max_)
                             {
                                 state = ProcessState::TRACKING2;
                                 std::cout << "state: TURNING -> TRACKING2" << std::endl;
                             }
                         }
-                        std::cout << "TURNING state: miss_line = " << miss_line << std::endl;
+                        // std::cout << "TURNING state: miss_line = " << miss_line << std::endl;
                     }
 
                     if (state == ProcessState::TRACKING2)
