@@ -509,7 +509,7 @@ void ImageProcess::fill_boundary(std::vector<cv::Point> &left_line, std::vector<
     // std::cout << "[fill_boundary] left_line.size()=" << left_line.size()
     //           << ", right_line.size()=" << right_line.size() << std::endl;
 
-    // 两边都有线：插值 + 填充到底部
+    // 两边都有线：插值 + 把较短的边补齐到较长的边
     if (!left_line.empty() && !right_line.empty())
     {
         // std::cout << "[fill_boundary] Both lines exist, interpolating..." << std::endl;
@@ -517,14 +517,21 @@ void ImageProcess::fill_boundary(std::vector<cv::Point> &left_line, std::vector<
         linear_interpolation(left_line, supple_left_line);
         linear_interpolation(right_line, supple_right_line);
 
-        // 填充到底部（插值点已经是y从小到大，填充点也从小到大push_back即可）
-        int bottom_y = std::max(int(supple_left_line.back().y), int(supple_right_line.back().y));
-        if (bottom_y < bottom_y_limit)
+        // 先判断哪边 y 值更大，把另一边填充到对应的 y（插值点按 y 从小到大，push_back 即可）
+        int left_bottom_y = int(supple_left_line.back().y);
+        int right_bottom_y = int(supple_right_line.back().y);
+        if (left_bottom_y > right_bottom_y)
         {
-            for (int y = bottom_y + 2; y < bottom_y_limit; y += 2)
+            for (int y = right_bottom_y + 2; y <= left_bottom_y; y += 2)
+            {
+                supple_right_line.push_back(cv::Point(img_w - 1, y));
+            }
+        }
+        else if (right_bottom_y > left_bottom_y)
+        {
+            for (int y = left_bottom_y + 2; y <= right_bottom_y; y += 2)
             {
                 supple_left_line.push_back(cv::Point(0, y));
-                supple_right_line.push_back(cv::Point(img_w - 1, y));
             }
         }
     }
@@ -533,17 +540,9 @@ void ImageProcess::fill_boundary(std::vector<cv::Point> &left_line, std::vector<
     else if (left_line.empty() && !right_line.empty())
     {
         // std::cout << "[fill_boundary] Left line missing, using right line..." << std::endl;
-        // 以右线为基准，插值 + 填充到底部
+        // 以右线为基准插值，丢线边拷贝相同 y 序列、x 置 0
         linear_interpolation(right_line, supple_right_line);
 
-        int bottom_y = int(supple_right_line.back().y);
-        if (bottom_y < bottom_y_limit)
-        {
-            for (int y = bottom_y + 2; y < bottom_y_limit; y += 2)
-            {
-                supple_right_line.push_back(cv::Point(img_w - 1, y));
-            }
-        }
         // 左边线使用右线相同的 y 坐标序列，但 x 全部为 0
         supple_left_line = supple_right_line;
         const size_t n = supple_left_line.size();
@@ -559,17 +558,9 @@ void ImageProcess::fill_boundary(std::vector<cv::Point> &left_line, std::vector<
     else if (!left_line.empty() && right_line.empty())
     {
         // std::cout << "[fill_boundary] Right line missing, using left line..." << std::endl;
-        // 以左线为基准，插值 + 填充到底部
+        // 以左线为基准插值，丢线边拷贝相同 y 序列、x 置 img_w - 1
         linear_interpolation(left_line, supple_left_line);
 
-        int bottom_y = int(supple_left_line.back().y);
-        if (bottom_y < bottom_y_limit)
-        {
-            for (int y = bottom_y + 2; y < bottom_y_limit; y += 2)
-            {
-                supple_left_line.push_back(cv::Point(0, y));
-            }
-        }
         // 右边线使用左线相同的 y 坐标序列，但 x 全部为 img_w - 1
         supple_right_line = supple_left_line;
         const size_t n = supple_right_line.size();
@@ -668,8 +659,9 @@ void ImageProcess::fit_polynomial()
 
         LineFit fit = fit_line_1d(near_count + far_count, sx2, sy2, sxx2, syy2, sxy2);
         this->fit_mid_line_.clear();
-        int y_start = static_cast<int>(far_y_min);
-        int y_end = static_cast<int>(near_y_max);
+        // 修正：使用整体y范围，确保循环条件正确
+        int y_start = static_cast<int>(std::min(far_y_min, near_y_min));
+        int y_end = static_cast<int>(std::max(far_y_max, near_y_max));
         // std::cerr << "[fit_poly][DEGENERATE] mid=" << this->mid_line_.size()
         //           << " near_count=" << near_count << " far_count=" << far_count
         //           << " far_y_min=" << far_y_min << " near_y_max=" << near_y_max
@@ -713,17 +705,41 @@ void ImageProcess::fit_polynomial()
     // 预分配内存
     this->fit_mid_line_.reserve(far_y_end - far_y_start + near_y_end - near_y_start + 1);
 
-    // 根据拟合结果生成新的点集合
-    for (int y = far_y_start; y <= far_y_end; y++)
-    {
-        int x = static_cast<int>(far_fit.k * y + far_fit.b) + offset;
-        this->fit_mid_line_.emplace_back(cv::Point(x, y));
-    }
+    // 根据拟合结果生成新的点集合（按y值从小到大有序生成）
+    // 注意：在图像坐标系中，y值越小=越靠上（远），y值越大=越靠下（近）
+    // near段（y < y_dive）= 远段，应该先生成
+    // far段（y >= y_dive）= 近段，应该后生成
     for (int y = near_y_start; y <= near_y_end; y++)
     {
         int x = static_cast<int>(near_fit.k * y + near_fit.b) + offset;
         this->fit_mid_line_.emplace_back(cv::Point(x, y));
     }
+    for (int y = far_y_start; y <= far_y_end; y++)
+    {
+        int x = static_cast<int>(far_fit.k * y + far_fit.b) + offset;
+        this->fit_mid_line_.emplace_back(cv::Point(x, y));
+    }
+
+    // // 打印所有线的首尾
+    // std::cout << "[fit_poly] left_line :first:" << (this->left_line_.empty() ? "empty" : std::to_string(this->left_line_.front().x) + "," + std::to_string(this->left_line_.front().y))
+    //           << " last:" << (this->left_line_.empty() ? "empty" : std::to_string(this->left_line_.back().x) + "," + std::to_string(this->left_line_.back().y)) << std::endl;
+    // std::cout << "[fit_poly] right_line :first:" << (this->right_line_.empty() ? "empty" : std::to_string(this->right_line_.front().x) + "," + std::to_string(this->right_line_.front().y))
+    //           << " last:" << (this->right_line_.empty() ? "empty" : std::to_string(this->right_line_.back().x) + "," + std::to_string(this->right_line_.back().y)) << std::endl;
+    // std::cout << "[fit_poly] supple_left_line :first:" << (this->supple_left_line_.empty() ? "empty" : std::to_string(this->supple_left_line_.front().x) + "," + std::to_string(this->supple_left_line_.front().y))
+    //           << " last:" << (this->supple_left_line_.empty() ? "empty" : std::to_string(this->supple_left_line_.back().x) + "," + std::to_string(this->supple_left_line_.back().y)) << std::endl;
+    // std::cout << "[fit_poly] supple_right_line :first:" << (this->supple_right_line_.empty() ? "empty" : std::to_string(this->supple_right_line_.front().x) + "," + std::to_string(this->supple_right_line_.front().y))
+    //           << " last:" << (this->supple_right_line_.empty() ? "empty" : std::to_string(this->supple_right_line_.back().x) + "," + std::to_string(this->supple_right_line_.back().y)) << std::endl;
+    // std::cout << "[fit_poly] fit_mid_line :first:" << (this->fit_mid_line_.empty() ? "empty" : std::to_string(this->fit_mid_line_.front().x) + "," + std::to_string(this->fit_mid_line_.front().y))
+    //           << " last:" << (this->fit_mid_line_.empty() ? "empty" : std::to_string(this->fit_mid_line_.back().x) + "," + std::to_string(this->fit_mid_line_.back().y)) << std::endl;
+    // for (int i = 0; i < std::min((int)this->fit_mid_line_.size(), 10); i++)
+    // {
+    //     std::cout << "[fit_poly] fit_mid_line_[" << i << "]:" << this->fit_mid_line_[i].x << "," << this->fit_mid_line_[i].y << std::endl;
+    // }
+
+    // for (int i = this->fit_mid_line_.size(); i > std::max(0, (int)this->fit_mid_line_.size() - 10); i--)
+    // {
+    //     std::cout << "[fit_poly] fit_mid_line_[" << i - 1 << "]:" << this->fit_mid_line_[i - 1].x << "," << this->fit_mid_line_[i - 1].y << std::endl;
+    // }
 }
 
 /*
@@ -1208,10 +1224,10 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
             }
 
             // // 调试输出：显示搜索区间
-            if (y % 10 == 0) // 每10行输出一次，避免过多输出
-            {
-                std::cout << "[LEFT] y: " << y << ", range: [" << search_left_end << ", " << search_left_start << "], prev_x: " << prev_row_left_x << std::endl;
-            }
+            // if (y % 10 == 0) // 每10行输出一次，避免过多输出
+            // {
+            //     std::cout << "[LEFT] y: " << y << ", range: [" << search_left_end << ", " << search_left_start << "], prev_x: " << prev_row_left_x << std::endl;
+            // }
 
             if (is_draw)
             {
