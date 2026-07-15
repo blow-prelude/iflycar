@@ -36,7 +36,7 @@ struct ImageProcessConfig
     int stop_min_width = 80;
 
     // 转弯判断
-    float turning_enter_y_thresh = 0.52;
+    float turning_enter_y_thresh = 0.55;
     int turning_end_x_diff = 20; // 转弯结束时两边线末端 x 坐标差异阈值
     int turning_end_y_diff = 30;
 

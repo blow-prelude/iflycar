@@ -226,7 +226,7 @@ public:
                     }
 
                     cv::Mat canvas = processor_.return_frame();
-                    processor_.get_side_line_task_2(binary_img, canvas, false, false);
+                    processor_.get_side_line_task_2(binary_img, canvas, true, false);
                     processor_.fit_polynomial();
 
                     if (state_ == CROSS)
