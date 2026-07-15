@@ -315,13 +315,13 @@ std::vector<int> ImageProcess::get_stop_line(cv::Mat &binary, cv::Mat &canvas, b
     return stop_line;
 }
 
-bool ImageProcess::judge_enter_turning(std::vector<int> &stop_mid, int img_h, int img_w)
+bool ImageProcess::judge_enter_turning(std::vector<int> &stop_mid, int img_h, int img_w, float &y_norm)
 {
     if (stop_mid.empty())
     {
         return false;
     }
-    float y_norm = stop_mid[1] / float(img_h);
+    y_norm = stop_mid[1] / float(img_h);
     return y_norm > this->config_.turning_enter_y_thresh;
 }
 
@@ -605,6 +605,7 @@ void ImageProcess::fit_polynomial()
     if (this->mid_line_.size() < 5)
     {
         std::cerr << "Not enough points to fit polynomial." << std::endl;
+
         return;
     }
 
