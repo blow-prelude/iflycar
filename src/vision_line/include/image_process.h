@@ -28,7 +28,7 @@ struct ImageProcessConfig
     float corner_y_ratio = 0.70;
 
     // 停止线检测
-    float stop_roi_y0 = 0.50;
+    float stop_roi_y0 = 0.65;
     float stop_roi_y1 = 0.85;
     float stop_roi_x0 = 0.30;
     float stop_roi_x1 = 0.70;
@@ -36,7 +36,7 @@ struct ImageProcessConfig
     int stop_min_width = 80;
 
     // 转弯判断
-    float turning_enter_y_thresh = 0.52;
+    float turning_enter_y_thresh = 0.65;
     int turning_end_x_diff = 20; // 转弯结束时两边线末端 x 坐标差异阈值
     int turning_end_y_diff = 30;
 
@@ -52,10 +52,10 @@ struct ImageProcessConfig
     float fill_down_ratio = 0.90;
 
     // 追踪点的索引
-    int straight_target_p_index = 10;
-    int left_target_p_index = 15;
+    int straight_target_p_index = -10;
+    int left_target_p_index = -15;
     // int right_target_p_index = -20;
-    int tracking2_target_p_index = 15;
+    int tracking2_target_p_index = -15;
 };
 
 // 判断丢线状态机
@@ -100,7 +100,7 @@ public:
     void fit_polynomial();
     void fit_polynomial2();
     std::vector<int> get_stop_line(cv::Mat &binary, cv::Mat &canvas, bool is_draw);
-    bool judge_enter_turning(std::vector<int> &stop_mid, int img_h, int img_w);
+    bool judge_enter_turning(std::vector<int> &stop_mid, int img_h, int img_w, float &y_norm);
     bool judge_turing_end(int img_w, int img_h, MissLineState &miss_line);
     void get_side_line_task_1(cv::Mat &img, cv::Mat &canvas, bool is_draw);
     void get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_draw, bool find_corner);
