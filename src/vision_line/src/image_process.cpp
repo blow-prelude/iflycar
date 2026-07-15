@@ -670,6 +670,11 @@ void ImageProcess::fit_polynomial()
         this->fit_mid_line_.clear();
         int y_start = static_cast<int>(far_y_min);
         int y_end = static_cast<int>(near_y_max);
+        // std::cerr << "[fit_poly][DEGENERATE] mid=" << this->mid_line_.size()
+        //           << " near_count=" << near_count << " far_count=" << far_count
+        //           << " far_y_min=" << far_y_min << " near_y_max=" << near_y_max
+        //           << " y_range=[" << y_start << "," << y_end << "]"
+        //           << " k=" << fit.k << " b=" << fit.b << std::endl;
         for (int y = y_start; y <= y_end; y++)
         {
             int x = static_cast<int>(fit.k * y + fit.b);
@@ -696,6 +701,14 @@ void ImageProcess::fit_polynomial()
     int far_y_end = static_cast<int>(far_y_max);
     int near_y_start = static_cast<int>(near_y_min);
     int near_y_end = static_cast<int>(near_y_max);
+
+    // std::cerr << "[fit_poly][PIECEWISE] mid=" << this->mid_line_.size()
+    //           << " near_count=" << near_count << " far_count=" << far_count
+    //           << " far_y=[" << far_y_min << "," << far_y_max << "]"
+    //           << " near_y=[" << near_y_min << "," << near_y_max << "]"
+    //           << " near(k=" << near_fit.k << ",b=" << near_fit.b << ")"
+    //           << " far(k=" << far_fit.k << ",b=" << far_fit.b << ")"
+    //           << " offset=" << offset << std::endl;
 
     // 预分配内存
     this->fit_mid_line_.reserve(far_y_end - far_y_start + near_y_end - near_y_start + 1);
@@ -1444,7 +1457,7 @@ void ImageProcess::draw_line(cv::Mat &canvas, float fps, std::string state)
         target_idx = this->config_.straight_target_p_index;
     }
 
-    // std::cout << "[DEBUG] state: " << state << ", drawing target point at index: " << target_idx << std::endl;
+    // std::cout << "Drawing target point at index: " << target_idx << std::endl;
 
     if (this->fit_mid_line_.size() > std::abs(target_idx))
     {

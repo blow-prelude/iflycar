@@ -15,7 +15,7 @@ struct ImageProcessConfig
     int search_offset = 30; // 起始搜索偏移量
     int init_stable_count = 8;
     int miss_threshold = 3;
-    float up_ratio = 0.55;
+    float up_ratio = 0.45;
     float down_ratio = 0.90;
     int search_range_wide = 50;          // 动态搜索窗口最大宽度
     int search_range_narrow = 30;        // 动态搜索窗口最小宽度
@@ -52,10 +52,10 @@ struct ImageProcessConfig
     float fill_down_ratio = 0.90;
 
     // 追踪点的索引
-    int straight_target_p_index = -10;
-    int left_target_p_index = -15;
+    int straight_target_p_index = 10;
+    int left_target_p_index = 15;
     // int right_target_p_index = -20;
-    int tracking2_target_p_index = -48;
+    int tracking2_target_p_index = 15;
 };
 
 // 判断丢线状态机
