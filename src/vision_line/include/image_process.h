@@ -15,7 +15,7 @@ struct ImageProcessConfig
     int search_offset = 30; // 起始搜索偏移量
     int init_stable_count = 8;
     int miss_threshold = 3;
-    float up_ratio = 0.45;
+    float up_ratio = 0.50;
     float down_ratio = 0.90;
     int search_range_wide = 50;          // 动态搜索窗口最大宽度
     int search_range_narrow = 30;        // 动态搜索窗口最小宽度
