@@ -283,8 +283,9 @@ std::vector<int> ImageProcess::get_stop_line(cv::Mat &binary, cv::Mat &canvas, b
 
     // 找到最像横线的轮廓
     std::vector<int> stop_line; // {x_center, y}
-    int line_w, line_h, line_x, line_y;
+    int line_w = 0, line_h = 0, line_x = 0, line_y = 0;
     double max_score = 0;
+    bool found = false;
     for (const auto &contour : contours)
     {
         cv::Rect bbox = cv::boundingRect(contour);
@@ -297,7 +298,12 @@ std::vector<int> ImageProcess::get_stop_line(cv::Mat &binary, cv::Mat &canvas, b
             line_h = bbox.height;
             line_x = bbox.x;
             line_y = bbox.y;
+            found = true;
         }
+    }
+    if (!found)
+    {
+        return {};
     }
     stop_line = {line_x + line_w / 2 + roi_x0, line_y + line_h / 2 + roi_y0};
 
@@ -309,13 +315,13 @@ std::vector<int> ImageProcess::get_stop_line(cv::Mat &binary, cv::Mat &canvas, b
     return stop_line;
 }
 
-bool ImageProcess::judge_enter_turning(std::vector<int> &stop_mid, int img_h, int img_w)
+bool ImageProcess::judge_enter_turning(std::vector<int> &stop_mid, int img_h, int img_w, float &y_norm)
 {
     if (stop_mid.empty())
     {
         return false;
     }
-    float y_norm = stop_mid[1] / float(img_h);
+    y_norm = stop_mid[1] / float(img_h);
     return y_norm > this->config_.turning_enter_y_thresh;
 }
 

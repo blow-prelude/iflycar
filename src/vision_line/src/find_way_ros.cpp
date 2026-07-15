@@ -66,7 +66,7 @@ public:
         target_y_ = nh_private_.param<double>("vision_target_y", 400.0);
         turning_target_y_ = nh_private_.param<double>("turning_target_y", 360.0);
         loop_rate_ = nh_private_.param<int>("loop_rate", 120);
-        std::string initial_direction = nh_private_.param<std::string>("initial_direction", "straight");
+        std::string initial_direction = nh_private_.param<std::string>("initial_direction", "stop");
 
         // 设置初始方向
         if (initial_direction == "straight")
@@ -76,7 +76,7 @@ public:
         else if (initial_direction == "left")
             direction_ = "left";
         else
-            direction_ = "left";
+            direction_ = "stop";
 
         // 订阅图像话题
         image_sub_ = it_.subscribe(image_topic, 1, &FindWayROS::imageCallback, this);
@@ -233,11 +233,12 @@ public:
                     if (state_ == CROSS)
                     {
                         std::vector<int> stop_mid = processor_.get_stop_line(binary_img, canvas, true);
-                        if (processor_.judge_enter_turning(stop_mid, proc_h, proc_w))
+                        float y_norm = 0.0f;
+                        if (processor_.judge_enter_turning(stop_mid, proc_h, proc_w, y_norm))
                         {
                             state_ = TURNING;
                             ros::param::set(turning_flag_param_, 1);
-                            float y_norm = stop_mid.size() >= 2 ? static_cast<float>(stop_mid[1]) / proc_h : 0.0f;
+
                             ROS_INFO("State: CROSS -> TURNING (stop line, y_norm=%.2f)", y_norm);
                         }
                     }
