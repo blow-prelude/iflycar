@@ -28,7 +28,7 @@ struct ImageProcessConfig
     float corner_y_ratio = 0.70;
 
     // 停止线检测
-    float stop_roi_y0 = 0.60;
+    float stop_roi_y0 = 0.50;
     float stop_roi_y1 = 0.85;
     float stop_roi_x0 = 0.30;
     float stop_roi_x1 = 0.70;
@@ -36,7 +36,7 @@ struct ImageProcessConfig
     int stop_min_width = 80;
 
     // 转弯判断
-    float turning_enter_y_thresh = 0.60;
+    float turning_enter_y_thresh = 0.52;
     int turning_end_x_diff = 20; // 转弯结束时两边线末端 x 坐标差异阈值
     int turning_end_y_diff = 30;
 

@@ -11,6 +11,7 @@ int main()
     try
     {
         CameraCapture camera(0, 1920, 1080); // Initialize camera with index 0 and resolution 1920x1080
+
         cv::Mat frame;
         while (1)
         {
@@ -28,6 +29,7 @@ int main()
             frame = camera.captureFrame();
             if (!frame.empty())
             {
+                cv::resize(frame, frame, cv::Size(320, 240));
                 cv::imshow("Captured Frame", frame);
                 cv::waitKey(1);
             }
