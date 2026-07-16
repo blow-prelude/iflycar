@@ -139,6 +139,7 @@ public:
                     state_ = IDLE;
                     t0_set = false;
                     miss_line_ = NO_MISS;
+                    processor_.set_mid_line_mode(MID_AVG);
                     reset_requested_ = false;
                     ROS_INFO("State machine reset to IDLE (direction changed)");
                 }
@@ -225,6 +226,12 @@ public:
                         }
                     }
 
+                    // 非 TURNING 状态强制使用 MID_AVG，防止 mode 残留
+                    if (state_ == STRAIGHT_TRACKING || state_ == CROSS)
+                    {
+                        processor_.set_mid_line_mode(MID_AVG);
+                    }
+
                     cv::Mat canvas = processor_.return_frame();
                     processor_.get_side_line_task_2(binary_img, canvas, true, false);
                     processor_.calculate_mid_line(binary_img);
@@ -238,6 +245,8 @@ public:
                         {
                             state_ = TURNING;
                             ros::param::set(turning_flag_param_, 1);
+                            processor_.set_mid_line_mode(LEFT_OFFSET);
+                            miss_line_ = NO_MISS;
 
                             ROS_INFO("State: CROSS -> TURNING (stop line, y_norm=%.2f)", y_norm);
                         }
@@ -250,6 +259,7 @@ public:
                         if (flag == 0)
                         {
                             state_ = TRACKING2;
+                            processor_.set_mid_line_mode(MID_AVG);
                             ROS_INFO("State: TURNING -> TRACKING2 (flag cleared by controller)");
                         }
                         else if (processor_.judge_turing_end(proc_w, proc_h, miss_line_))
@@ -273,6 +283,7 @@ public:
                             {
                                 state_ = TRACKING2;
                                 ros::param::set(turning_flag_param_, 0);
+                                processor_.set_mid_line_mode(MID_AVG);
                                 ROS_INFO("State: TURNING -> TRACKING2 (visual end detected, x_error=%.1f)", x_error);
                             }
                         }
