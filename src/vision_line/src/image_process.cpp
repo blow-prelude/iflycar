@@ -1424,13 +1424,40 @@ void ImageProcess::calculate_mid_line(cv::Mat &img)
     // 插值+填充边线（同时处理边线情况）
     fill_boundary(this->left_line_, this->right_line_, {img_h, img_w}, this->supple_left_line_, this->supple_right_line_, true);
 
-    // 使用优化后的边线计算中线
-    int n = std::min(this->supple_left_line_.size(), this->supple_right_line_.size());
-    this->mid_line_.resize(n);
-    for (int i = 0; i < n; i++)
+    if (this->mid_line_mode_ == LEFT_OFFSET)
     {
-        this->mid_line_[i].x = (this->supple_left_line_[i].x + this->supple_right_line_[i].x) / 2.0;
-        this->mid_line_[i].y = (this->supple_left_line_[i].y + this->supple_right_line_[i].y) / 2.0;
+        // 用左边线 + 偏移
+        int n = this->supple_left_line_.size();
+        this->mid_line_.resize(n);
+        for (int i = 0; i < n; i++)
+        {
+            int x = this->supple_left_line_[i].x + this->config_.turning_mid_offset;
+            this->mid_line_[i].x = std::max(0, std::min(x, img_w - 1));
+            this->mid_line_[i].y = this->supple_left_line_[i].y;
+        }
+    }
+    else if (this->mid_line_mode_ == RIGHT_OFFSET)
+    {
+        // 用右边线 - 偏移
+        int n = this->supple_right_line_.size();
+        this->mid_line_.resize(n);
+        for (int i = 0; i < n; i++)
+        {
+            int x = this->supple_right_line_[i].x - this->config_.turning_mid_offset;
+            this->mid_line_[i].x = std::max(0, std::min(x, img_w - 1));
+            this->mid_line_[i].y = this->supple_right_line_[i].y;
+        }
+    }
+    else // MID_AVG
+    {
+        // 使用优化后的边线计算中线
+        int n = std::min(this->supple_left_line_.size(), this->supple_right_line_.size());
+        this->mid_line_.resize(n);
+        for (int i = 0; i < n; i++)
+        {
+            this->mid_line_[i].x = (this->supple_left_line_[i].x + this->supple_right_line_[i].x) / 2.0;
+            this->mid_line_[i].y = (this->supple_left_line_[i].y + this->supple_right_line_[i].y) / 2.0;
+        }
     }
 
     this->update_prev_frame_lines();
