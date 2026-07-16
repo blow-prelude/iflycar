@@ -1207,8 +1207,8 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
         {
             // 逐行计算相邻像素差异，避免计算整张图
             cv::Mat row_mask = (img.row(y) == 0);
-            cv::Mat row_left = row_mask(cv::Range::all(), cv::Range(0, img_w - 2));
-            cv::Mat row_right = row_mask(cv::Range::all(), cv::Range(1, img_w - 1));
+            cv::Mat row_left = row_mask(cv::Range::all(), cv::Range(0, img_w - 1));
+            cv::Mat row_right = row_mask(cv::Range::all(), cv::Range(1, img_w));
             cv::Mat row_diff;
             cv::bitwise_xor(row_left, row_right, row_diff);
 
@@ -1220,7 +1220,7 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
             if (left_stable_flag)
             {
                 // 左侧稳定时，围绕上一帧位置向左右搜索
-                search_left_start = std::min(prev_row_left_x + cur_range, img_w - 1);
+                search_left_start = std::min(prev_row_left_x + cur_range, img_w - 2);
                 search_left_end = std::max(prev_row_left_x - cur_range, 0);
             }
             else
@@ -1289,17 +1289,19 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
                     left_pre_p = left_cur_p;
                     left_cur_p = left_nxt_p;
                 }
+            }
 
-                // miss记数，只有在左边线稳定时才计算
-                if (left_stable_flag && !left_added)
-                    miss_left_count++;
-                else
-                    miss_left_count = 0;
-                if (miss_left_count > this->config_.miss_threshold)
-                {
-                    miss_left_count = 0;
-                    prev_row_left_x = mid_x - this->config_.search_offset;
-                }
+            // 如果当前行没有加入边线，则进入miss计数
+            if (left_stable_flag && !left_added)
+                miss_left_count++;
+            else
+                miss_left_count = 0;
+            if (miss_left_count > this->config_.miss_threshold)
+            {
+                miss_left_count = 0;
+                prev_row_left_x = mid_x - this->config_.search_offset;
+                left_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
+                left_stable_buf.clear();  // 清空稳定缓冲区
             }
 
             // 搜索右边线
@@ -1307,13 +1309,13 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
             {
                 // 右侧稳定时，围绕上一帧位置向左右搜索
                 search_right_start = std::max(prev_row_right_x - cur_range, 0);
-                search_right_end = std::min(prev_row_right_x + cur_range, img_w - 1);
+                search_right_end = std::min(prev_row_right_x + cur_range, img_w - 2);
             }
             else
             {
                 // 右侧不稳定时，从中线偏右位置向右搜索到图像边缘
                 search_right_start = mid_x + this->config_.search_offset;
-                search_right_end = img_w - 1;
+                search_right_end = img_w - 2;
             }
 
             // 调试输出：显示搜索区间
@@ -1370,16 +1372,19 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
                     right_pre_p = right_cur_p;
                     right_cur_p = right_nxt_p;
                 }
+            }
 
-                if (right_stable_flag && !right_added)
-                    miss_right_count++;
-                else
-                    miss_right_count = 0;
-                if (miss_right_count > this->config_.miss_threshold)
-                {
-                    miss_right_count = 0;
-                    prev_row_right_x = mid_x + this->config_.search_offset;
-                }
+            // miss计数逻辑
+            if (right_stable_flag && !right_added)
+                miss_right_count++;
+            else
+                miss_right_count = 0;
+            if (miss_right_count > this->config_.miss_threshold)
+            {
+                miss_right_count = 0;
+                prev_row_right_x = mid_x + this->config_.search_offset;
+                right_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
+                right_stable_buf.clear();  // 清空稳定缓冲区
             }
 
             // 检测左右边线距离，如果太小则认为是噪点，移除这一对
