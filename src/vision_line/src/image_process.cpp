@@ -898,6 +898,8 @@ void ImageProcess::get_side_line_task_1(cv::Mat &img, cv::Mat &canvas, bool is_d
             {
                 miss_left_count = 0;
                 prev_row_left_x = mid_x - this->config_.search_offset;
+                left_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
+                left_stable_buf.clear();  // 清空稳定缓冲区
             }
 
             // 搜索右边线
@@ -956,6 +958,8 @@ void ImageProcess::get_side_line_task_1(cv::Mat &img, cv::Mat &canvas, bool is_d
             {
                 miss_right_count = 0;
                 prev_row_right_x = mid_x + this->config_.search_offset;
+                right_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
+                right_stable_buf.clear();  // 清空稳定缓冲区
             }
 
             // 检测左右边线距离，如果太小则认为是噪点，移除这一对
@@ -1289,17 +1293,19 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
                     left_pre_p = left_cur_p;
                     left_cur_p = left_nxt_p;
                 }
+            }
 
-                // miss记数，只有在左边线稳定时才计算
-                if (left_stable_flag && !left_added)
-                    miss_left_count++;
-                else
-                    miss_left_count = 0;
-                if (miss_left_count > this->config_.miss_threshold)
-                {
-                    miss_left_count = 0;
-                    prev_row_left_x = mid_x - this->config_.search_offset;
-                }
+            // miss计数逻辑应该在left_added条件之外
+            if (left_stable_flag && !left_added)
+                miss_left_count++;
+            else
+                miss_left_count = 0;
+            if (miss_left_count > this->config_.miss_threshold)
+            {
+                miss_left_count = 0;
+                prev_row_left_x = mid_x - this->config_.search_offset;
+                left_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
+                left_stable_buf.clear();  // 清空稳定缓冲区
             }
 
             // 搜索右边线
@@ -1307,13 +1313,13 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
             {
                 // 右侧稳定时，围绕上一帧位置向左右搜索
                 search_right_start = std::max(prev_row_right_x - cur_range, 0);
-                search_right_end = std::min(prev_row_right_x + cur_range, img_w - 1);
+                search_right_end = std::min(prev_row_right_x + cur_range, img_w - 3);
             }
             else
             {
                 // 右侧不稳定时，从中线偏右位置向右搜索到图像边缘
                 search_right_start = mid_x + this->config_.search_offset;
-                search_right_end = img_w - 1;
+                search_right_end = img_w - 3;
             }
 
             // 调试输出：显示搜索区间
@@ -1327,6 +1333,13 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
                 cv::circle(canvas, cv::Point(search_right_start, y), 1, cv::Scalar(255, 255, 0), -1);
                 cv::circle(canvas, cv::Point(search_right_end, y), 1, cv::Scalar(255, 255, 0), -1);
             }
+            if (y % 4 == 0)
+            {
+                std::cout << "[DEBUG] y: " << y << ", search_left_start: " << search_left_start << ", search_right_start: " << search_right_start << "search_left_end: " << search_left_end << ", search_right_end: " << search_right_end << std::endl;
+            }
+
+            // 打印右边界跳变情况
+            // std::cout << "[DEBUG] right boundary jump:" << row_ptr[img_w - 3] << std::endl;
 
             rx = -1; // 重置x，避免使用旧值
             for (int i = search_right_start; i <= search_right_end; i++)
@@ -1370,16 +1383,19 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
                     right_pre_p = right_cur_p;
                     right_cur_p = right_nxt_p;
                 }
+            }
 
-                if (right_stable_flag && !right_added)
-                    miss_right_count++;
-                else
-                    miss_right_count = 0;
-                if (miss_right_count > this->config_.miss_threshold)
-                {
-                    miss_right_count = 0;
-                    prev_row_right_x = mid_x + this->config_.search_offset;
-                }
+            // miss计数逻辑应该在right_added条件之外
+            if (right_stable_flag && !right_added)
+                miss_right_count++;
+            else
+                miss_right_count = 0;
+            if (miss_right_count > this->config_.miss_threshold)
+            {
+                miss_right_count = 0;
+                prev_row_right_x = mid_x + this->config_.search_offset;
+                right_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
+                right_stable_buf.clear();  // 清空稳定缓冲区
             }
 
             // 检测左右边线距离，如果太小则认为是噪点，移除这一对
