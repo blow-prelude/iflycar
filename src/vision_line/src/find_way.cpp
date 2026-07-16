@@ -183,13 +183,15 @@ int main()
 
                     if (state == ProcessState::CROSS)
                     {
+
                         std::vector<int> stop_mid = img_process.get_stop_line(binary_img, canvas, true);
 
                         // 检查是否进入TURNING状态
-                        if (img_process.judge_enter_turning(stop_mid, binary_img.rows, binary_img.cols))
+                        float y_norm = 0.0f;
+                        if (img_process.judge_enter_turning(stop_mid, binary_img.rows, binary_img.cols, y_norm))
                         {
                             state = ProcessState::TURNING;
-                            std::cout << "state: CROSS -> TURNING at y=" << 1.0f * stop_mid[1] / binary_img.rows << std::endl;
+                            std::cout << "state: CROSS -> TURNING at y=" << y_norm << std::endl;
                         }
                     }
 
