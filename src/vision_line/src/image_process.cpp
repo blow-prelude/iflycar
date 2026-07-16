@@ -839,7 +839,7 @@ void ImageProcess::get_side_line_task_1(cv::Mat &img, cv::Mat &canvas, bool is_d
             if (left_stable_flag)
             {
                 // 左侧稳定时，围绕上一帧位置向左右搜索
-                search_left_start = std::min(prev_row_left_x + cur_range, img_w - 1);
+                search_left_start = std::min(prev_row_left_x + cur_range, img_w - 2);
                 search_left_end = std::max(prev_row_left_x - cur_range, 0);
             }
             else
@@ -1211,8 +1211,8 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
         {
             // 逐行计算相邻像素差异，避免计算整张图
             cv::Mat row_mask = (img.row(y) == 0);
-            cv::Mat row_left = row_mask(cv::Range::all(), cv::Range(0, img_w - 2));
-            cv::Mat row_right = row_mask(cv::Range::all(), cv::Range(1, img_w - 1));
+            cv::Mat row_left = row_mask(cv::Range::all(), cv::Range(0, img_w - 1));
+            cv::Mat row_right = row_mask(cv::Range::all(), cv::Range(1, img_w));
             cv::Mat row_diff;
             cv::bitwise_xor(row_left, row_right, row_diff);
 
@@ -1224,7 +1224,7 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
             if (left_stable_flag)
             {
                 // 左侧稳定时，围绕上一帧位置向左右搜索
-                search_left_start = std::min(prev_row_left_x + cur_range, img_w - 1);
+                search_left_start = std::min(prev_row_left_x + cur_range, img_w - 2);
                 search_left_end = std::max(prev_row_left_x - cur_range, 0);
             }
             else
@@ -1313,13 +1313,13 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
             {
                 // 右侧稳定时，围绕上一帧位置向左右搜索
                 search_right_start = std::max(prev_row_right_x - cur_range, 0);
-                search_right_end = std::min(prev_row_right_x + cur_range, img_w - 3);
+                search_right_end = std::min(prev_row_right_x + cur_range, img_w - 2);
             }
             else
             {
                 // 右侧不稳定时，从中线偏右位置向右搜索到图像边缘
                 search_right_start = mid_x + this->config_.search_offset;
-                search_right_end = img_w - 3;
+                search_right_end = img_w - 2;
             }
 
             // 调试输出：显示搜索区间
@@ -1333,10 +1333,10 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
                 cv::circle(canvas, cv::Point(search_right_start, y), 1, cv::Scalar(255, 255, 0), -1);
                 cv::circle(canvas, cv::Point(search_right_end, y), 1, cv::Scalar(255, 255, 0), -1);
             }
-            if (y % 4 == 0)
-            {
-                std::cout << "[DEBUG] y: " << y << ", search_left_start: " << search_left_start << ", search_right_start: " << search_right_start << "search_left_end: " << search_left_end << ", search_right_end: " << search_right_end << std::endl;
-            }
+            // if (y % 4 == 0)
+            // {
+            //     std::cout << "[DEBUG] y: " << y << ", search_left_start: " << search_left_start << ", search_right_start: " << search_right_start << "search_left_end: " << search_left_end << ", search_right_end: " << search_right_end << std::endl;
+            // }
 
             // 打印右边界跳变情况
             // std::cout << "[DEBUG] right boundary jump:" << row_ptr[img_w - 3] << std::endl;
