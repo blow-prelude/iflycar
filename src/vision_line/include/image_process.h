@@ -56,6 +56,9 @@ struct ImageProcessConfig
     int left_target_p_index = -15;
     // int right_target_p_index = -20;
     int tracking2_target_p_index = -15;
+
+    // TURNING 状态下用单边线生成 mid_line 的横向偏移（像素）
+    int turning_mid_offset = 80;
 };
 
 // 判断丢线状态机
@@ -64,6 +67,14 @@ enum MissLineState
     NO_MISS = 0,
     MISS = 1,
     RECOVERED = 2
+};
+
+// mid_line 计算模式
+enum MidLineMode
+{
+    MID_AVG = 0,       // (supple_left + supple_right) / 2
+    LEFT_OFFSET = 1,   // supple_left + offset
+    RIGHT_OFFSET = 2   // supple_right - offset
 };
 
 struct LineFit
@@ -109,11 +120,14 @@ public:
     void draw_line(cv::Mat &canvas, float fps, std::string state);
 
     // 公开访问线检测结果（Python 版本直接访问这些成员）
+    void set_mid_line_mode(MidLineMode mode) { mid_line_mode_ = mode; }
+    MidLineMode get_mid_line_mode() const { return mid_line_mode_; }
     std::vector<cv::Point> &get_fit_mid_line() { return fit_mid_line_; }
     cv::Point &get_left_corners() { return left_corners_; }
     cv::Point &get_right_corners() { return right_corners_; }
 
 private:
+    MidLineMode mid_line_mode_ = LEFT_OFFSET; // TURNING 时单边线 mid_line 模式
     ImageProcessConfig config_;
     cv::Mat frame_;
     // Eigen::MatrixX2d left_line_;
