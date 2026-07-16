@@ -176,6 +176,12 @@ int main()
                         }
                     }
 
+                    // 非 TURNING 状态强制使用 MID_AVG，防止 mode 残留
+                    if (state == ProcessState::STRAIGHT_TRACKING || state == ProcessState::CROSS)
+                    {
+                        img_process.set_mid_line_mode(MID_AVG);
+                    }
+
                     cv::Mat canvas = img_process.return_frame();
                     img_process.get_side_line_task_2(binary_img, canvas, true, false);
                     img_process.calculate_mid_line(binary_img);
@@ -191,6 +197,8 @@ int main()
                         if (img_process.judge_enter_turning(stop_mid, binary_img.rows, binary_img.cols, y_norm))
                         {
                             state = ProcessState::TURNING;
+                            img_process.set_mid_line_mode(LEFT_OFFSET);
+                            miss_line = NO_MISS;
                             std::cout << "state: CROSS -> TURNING at y=" << y_norm << std::endl;
                         }
                     }
@@ -204,6 +212,7 @@ int main()
                             if (std::abs(x_error) <= turning_end_x_error_abs_max_)
                             {
                                 state = ProcessState::TRACKING2;
+                                img_process.set_mid_line_mode(MID_AVG);
                                 std::cout << "state: TURNING -> TRACKING2" << std::endl;
                             }
                         }
