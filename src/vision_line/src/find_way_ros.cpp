@@ -81,6 +81,23 @@ public:
 
         // 初始化转弯标志
         ros::param::set(turning_flag_param_, 0);
+
+        // 由 straight_track_side_ 一次性派生出搜索侧与中线模式（运行前算一次，避免每帧 switch）
+        switch (straight_track_side_)
+        {
+        case LEFT_ONLY:
+            straight_side_ = LEFT_ONLY;
+            straight_mode_ = LEFT_OFFSET;
+            break;
+        case RIGHT_ONLY:
+            straight_side_ = RIGHT_ONLY;
+            straight_mode_ = RIGHT_OFFSET;
+            break;
+        default:
+            straight_side_ = BOTH;
+            straight_mode_ = MID_AVG;
+            break;
+        }
     }
 
     void run()
@@ -204,95 +221,25 @@ public:
                 }
                 else
                 {
-                    // STRAIGHT_TRACKING / CROSS / TURNING / TRACKING2
-                    if (state_ == STRAIGHT_TRACKING && t0_set)
+                    // STRAIGHT_TRACKING
+                    SearchSide side = BOTH;
+                    MidLineMode mode = MID_AVG;
+                    if (state_ == STRAIGHT_TRACKING)
                     {
-                        double elapsed_state = (ros::Time::now() - t0).toSec();
-                        if (elapsed_state >= corner_delay_s_)
-                        {
-                            state_ = CROSS;
-                            ROS_INFO("State: STRAIGHT_TRACKING -> CROSS (after %.1fs)", corner_delay_s_);
-                        }
+                        side = straight_side_;
+                        mode = straight_mode_;
                     }
-
-                    // 非 TURNING 状态强制使用 MID_AVG，防止 mode 残留
-                    if (state_ == STRAIGHT_TRACKING || state_ == CROSS)
-                    {
-                        processor_.set_mid_line_mode(MID_AVG);
-                    }
+                    processor_.set_mid_line_mode(mode);
 
                     cv::Mat canvas = processor_.return_frame();
-                    processor_.get_side_line_task_2(binary_img, canvas, true, false);
+                    processor_.get_side_line_task_2(binary_img, canvas, true, false, side);
                     processor_.calculate_mid_line(binary_img);
                     processor_.fit_polynomial();
-
-                    if (state_ == CROSS)
-                    {
-                        std::vector<int> stop_mid = processor_.get_stop_line(binary_img, canvas, true);
-                        float y_norm = 0.0f;
-                        if (processor_.judge_enter_turning(stop_mid, proc_h, proc_w, y_norm))
-                        {
-                            state_ = TURNING;
-                            ros::param::set(turning_flag_param_, 1);
-                            processor_.set_mid_line_mode(LEFT_OFFSET);
-                            miss_line_ = NO_MISS;
-
-                            ROS_INFO("State: CROSS -> TURNING (stop line, y_norm=%.2f)", y_norm);
-                        }
-                    }
-
-                    if (state_ == TURNING)
-                    {
-                        int flag = 0;
-                        ros::param::get(turning_flag_param_, flag);
-                        if (flag == 0)
-                        {
-                            state_ = TRACKING2;
-                            processor_.set_mid_line_mode(MID_AVG);
-                            ROS_INFO("State: TURNING -> TRACKING2 (flag cleared by controller)");
-                        }
-                        else if (processor_.judge_turing_end(proc_w, proc_h, miss_line_))
-                        {
-                            // 调试：检查关键变量状态
-                            // ROS_INFO("Before buildVisionLineMsg: orig_w=%d, orig_h=%d, proc_w=%d, proc_h=%d",
-                            //         orig_w, orig_h, proc_w, proc_h);
-
-                            auto msg = buildVisionLineMsg(processor_.get_fit_mid_line(),
-                                                          proc_h, proc_w,
-                                                          orig_h, orig_w,
-                                                          config_.straight_target_p_index);
-                            // vision_line_pub_.publish(msg);
-
-                            float x_error = msg.data[0];
-                            float y_pixel = msg.data[1];
-
-                            // ROS_INFO("After buildVisionLineMsg: x_error=%f, y_pixel=%f", x_error, y_pixel);
-
-                            if (y_pixel >= 0 && std::abs(x_error) <= turning_end_x_error_abs_max_)
-                            {
-                                state_ = TRACKING2;
-                                ros::param::set(turning_flag_param_, 0);
-                                processor_.set_mid_line_mode(MID_AVG);
-                                ROS_INFO("State: TURNING -> TRACKING2 (visual end detected, x_error=%.1f)", x_error);
-                            }
-                        }
-                        // ROS_INFO("miss_line: %d", miss_line_);
-                    }
-
-                    if (state_ == TRACKING2)
-                    {
-                        // processor_.fit_polynomial();
-                    }
-
-                    // 调试：检查主要调用处的参数
-                    int main_target_index = state_ == TRACKING2 ? config_.tracking2_target_p_index : config_.straight_target_p_index;
-                    // ROS_INFO("Main buildVisionLineMsg: state=%s, target_index=%d, orig_w=%d, orig_h=%d",
-                    //          state_name(state_), main_target_index, orig_w, orig_h);
 
                     auto msg = buildVisionLineMsg(processor_.get_fit_mid_line(),
                                                   proc_h, proc_w,
                                                   orig_h, orig_w,
-                                                  main_target_index);
+                                                  config_.straight_target_p_index);
                     vision_line_pub_.publish(msg);
 
                     processor_.draw_line(canvas, fps, state_name(state_));
@@ -345,6 +292,12 @@ private:
     double target_y_ = 400.0;
     double turning_target_y_ = 360.0;
     int loop_rate_ = 120;
+
+    // STRAIGHT_TRACKING 走哪一边：LEFT_ONLY / RIGHT_ONLY / BOTH
+    SearchSide straight_track_side_ = LEFT_ONLY;
+    // 由 straight_track_side_ 派生（构造时算一次）
+    SearchSide straight_side_ = BOTH;
+    MidLineMode straight_mode_ = MID_AVG;
 
     void imageCallback(const sensor_msgs::ImageConstPtr &msg)
     {
