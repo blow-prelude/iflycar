@@ -9,7 +9,6 @@
 4. 控制台会打印变换矩阵
 """
 
-import glob
 import os
 
 import cv2
@@ -313,40 +312,19 @@ class PerspectiveCalibration:
             traceback.print_exc()
 
 
-def find_test_image(pictures_dir):
-    """
-    查找测试图片
-
-    Args:
-        pictures_dir: 图片目录路径
-
-    Returns:
-        图片路径或None
-    """
-    # 常见的图片格式
-    extensions = ["*.jpg", "*.jpeg", "*.png", "*.bmp"]
-
-    for ext in extensions:
-        pattern = os.path.join(pictures_dir, ext)
-        files = glob.glob(pattern)
-        if files:
-            return files[0]  # 返回第一个找到的图片
-
-    return None
-
-
 def main():
     """主函数"""
     # 获取图片目录
     script_dir = os.path.dirname(os.path.abspath(__file__))
     pictures_dir = os.path.join(os.path.dirname(script_dir), "pictures")
 
-    # 查找测试图片
-    image_path = r"D:\programs\ucar_ws\src\vision_line\pictures\captured_image_20260428_212542.jpg"
+    # 手动填入文件名（位于上一级目录的 pictures/ 下）
+    image_name = ""
+    image_path = os.path.join(pictures_dir, image_name)
 
-    if image_path is None:
-        print(f"错误: 在 {pictures_dir} 目录下没有找到图片")
-        print("请将测试图片放到该目录下，支持格式: jpg, jpeg, png, bmp")
+    if not os.path.exists(image_path):
+        print(f"错误: 图片不存在: {image_path}")
+        print(f"请将测试图片放到 {pictures_dir} 目录下，支持格式: jpg, jpeg, png, bmp")
         return
 
     print(f"使用图片: {image_path}")
