@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''src/vision_line/scripts/image_process.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''syntax ok''\\)\")",
+      "Bash(python -m py_compile src/vision_line/scripts/tune_params.py)",
+      "Bash(python test_task5_final.py)",
+      "Bash(python final_verification_test.py)",
+      "Bash(python src/vision_line/scripts/image_process.py)"
+    ]
+  }
+}

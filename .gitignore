@@ -3,7 +3,6 @@
 .catkin_workspace
 **/.vscode/
 /.marscode
-/.claude
 /docs
 
 **/__pycache__/
