@@ -8,6 +8,7 @@
 #include <mutex>
 
 #include "image_process.h"
+#include "camera_capture.h"
 
 enum State
 {
@@ -186,6 +187,14 @@ public:
             }
             else
             {
+                processor_.resize_frame(frame);
+
+                // STRAIGHT_TRACKING 时先对图片做透视变换
+                if (state_ == STRAIGHT_TRACKING)
+                {
+                    frame = CameraCapture::perspectiveFrame(frame);
+                }
+
                 processor_.set_frame(frame);
                 cv::Mat binary_img = processor_.preprocess(frame);
                 int proc_h = binary_img.rows;

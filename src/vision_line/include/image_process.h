@@ -98,6 +98,7 @@ public:
     // ~ImageProcess();
 
     cv::Mat preprocess(cv::Mat &img);
+    void resize_frame(cv::Mat &img);
     void set_frame(const cv::Mat &frame);
     cv::Mat return_frame();
 

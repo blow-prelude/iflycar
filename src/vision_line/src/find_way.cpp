@@ -76,7 +76,7 @@ int main()
     // 参数
     int turning_end_x_error_abs_max_ = 15;                          // 转弯结束时 x_error 最大绝对值
     std::chrono::seconds corner_delay_s_ = std::chrono::seconds(3); // 直行状态延时进入CROSS状态的时间
-    SearchSide straight_track_side = LEFT_ONLY; // STRAIGHT_TRACKING 走哪一边：LEFT_ONLY / RIGHT_ONLY / BOTH
+    SearchSide straight_track_side = LEFT_ONLY;                     // STRAIGHT_TRACKING 走哪一边：LEFT_ONLY / RIGHT_ONLY / BOTH
 
     // 由 straight_track_side 一次性派生出的搜索侧与中线模式（循环外计算，避免每帧 switch）
     SearchSide straight_side = BOTH;
@@ -155,6 +155,14 @@ int main()
             }
             else
             {
+                img_process.resize_frame(frame);
+
+                // STRAIGHT_TRACKING 时先对图片做透视变换
+                if (state == ProcessState::STRAIGHT_TRACKING)
+                {
+                    frame = CameraCapture::perspectiveFrame(frame);
+                }
+
                 // img_process.set_frame(frame);
 
                 // 预处理

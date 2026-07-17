@@ -13,6 +13,7 @@ public:
     void close_camera();
     cv::Mat captureFrame();
     cv::Mat correctFrame(const cv::Mat &frame);
+    static cv::Mat perspectiveFrame(const cv::Mat &frame);
 
 private:
     int camera_index = 0;
@@ -24,6 +25,7 @@ private:
                    0.0, 423.22330218, 231.10564846,
                    0.0, 0.0, 1.0);
     cv::Mat dist = (cv::Mat_<double>(1, 5) << -0.34912917, 0.17532058, 0.01055267, -0.00249659, 0.0);
+    static cv::Mat perspective_matrix;
 
     bool is_camera_opened()
     {

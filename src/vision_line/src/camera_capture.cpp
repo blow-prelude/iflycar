@@ -1,5 +1,9 @@
 #include "camera_capture.h"
 
+cv::Mat CameraCapture::perspective_matrix = (cv::Mat_<double>(3, 3) << -0.288264, -1.302941, 204.591639,
+        0.001102, -2.166359, 298.550349,
+        0.000018, -0.008303, 1.000000);
+
 CameraCapture::CameraCapture()
 {
     cap.open(camera_index);
@@ -98,6 +102,27 @@ cv::Mat CameraCapture::correctFrame(const cv::Mat &frame)
     {
         std::cerr << "Error in correctFrame: " << e.what() << std::endl;
         return frame; // 返回原始帧
+    }
+}
+
+cv::Mat CameraCapture::perspectiveFrame(const cv::Mat &frame)
+{
+    try
+    {
+        if (perspective_matrix.empty())
+        {
+            throw std::invalid_argument("Perspective matrix is empty");
+        }
+
+        cv::Mat dst;
+        cv::warpPerspective(frame, dst, perspective_matrix, frame.size(), cv::INTER_LINEAR);
+
+        return dst;
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Error in perspectiveFrame: " << e.what() << std::endl;
+        return frame;
     }
 }
 

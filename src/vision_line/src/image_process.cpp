@@ -12,14 +12,6 @@ cv::Mat ImageProcess::preprocess(cv::Mat &img)
     {
         throw std::runtime_error("Input image is empty.");
     }
-    if (img.rows >= this->config_.process_max_h || img.cols >= this->config_.process_max_w)
-    {
-        int h = img.rows;
-        int w = img.cols;
-        float scale = std::min(float(this->config_.process_max_h) / h, float(this->config_.process_max_w) / w);
-
-        cv::resize(img, frame_, cv::Size(int(w * scale), int(h * scale)));
-    };
 
     cv::Mat gray;
     if (frame_.channels() != 3)
@@ -45,6 +37,18 @@ cv::Mat ImageProcess::preprocess(cv::Mat &img)
     cv::morphologyEx(binary, closed, cv::MORPH_CLOSE, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3)), cv::Point(-1, -1), 3);
 
     return closed;
+}
+
+void ImageProcess::resize_frame(cv::Mat &img)
+{
+    if (img.rows >= this->config_.process_max_h || img.cols >= this->config_.process_max_w)
+    {
+        int h = img.rows;
+        int w = img.cols;
+        float scale = std::min(float(this->config_.process_max_h) / h, float(this->config_.process_max_w) / w);
+
+        cv::resize(img, frame_, cv::Size(int(w * scale), int(h * scale)));
+    }
 }
 
 /*

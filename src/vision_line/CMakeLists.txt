@@ -182,6 +182,7 @@ target_link_libraries(find_way
 target_link_libraries(find_way_ros
   ${catkin_LIBRARIES}
   image_process
+  camera_capture
 )
 target_link_libraries(camera_capture
   ${catkin_LIBRARIES}

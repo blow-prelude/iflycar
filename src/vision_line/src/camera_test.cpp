@@ -10,7 +10,7 @@ int main()
     double fps = 0.0;
     try
     {
-        CameraCapture camera(0, 1920, 1080); // Initialize camera with index 0 and resolution 1920x1080
+        CameraCapture camera(0, 640, 480); // Initialize camera with index 0 and resolution 640x480
 
         cv::Mat frame;
         while (1)
@@ -24,12 +24,16 @@ int main()
                 fps = frame_count / dt;
                 std::cout << "FPS: " << fps << std::endl;
                 frame_count = 0;
+                dt = 0.0;
             }
 
             frame = camera.captureFrame();
             if (!frame.empty())
             {
                 cv::resize(frame, frame, cv::Size(320, 240));
+                camera.correctFrame(frame); // Apply distortion correction
+                cv::flip(frame, frame, 1);  // Flip the frame horizontally for a mirror effect
+                frame = CameraCapture::perspectiveFrame(frame);
                 cv::imshow("Captured Frame", frame);
                 cv::waitKey(1);
             }
