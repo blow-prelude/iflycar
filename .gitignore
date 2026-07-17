@@ -4,7 +4,6 @@
 **/.vscode/
 /.marscode
 /.claude
-/.worktrees
 /docs
 
 **/__pycache__/

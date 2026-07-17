@@ -13,12 +13,9 @@ enum State
 {
     IDLE = 0,
     STRAIGHT_TRACKING = 1,
-    RIGHT_TRACKING = 5,
-    LEFT_TRACKING = 6,
-    CORNER = 2,
-    CROSS = 3,
-    TURNING = 4,
-    TRACKING2 = 7
+    RIGHT_TRACKING = 2,
+    LEFT_TRACKING = 3,
+
 };
 
 const char *state_name(State s)
@@ -33,14 +30,6 @@ const char *state_name(State s)
         return "RIGHT_TRACKING";
     case LEFT_TRACKING:
         return "LEFT_TRACKING";
-    case CORNER:
-        return "CORNER";
-    case CROSS:
-        return "CROSS";
-    case TURNING:
-        return "TURNING";
-    case TRACKING2:
-        return "TRACKING2";
     default:
         return "UNKNOWN";
     }
