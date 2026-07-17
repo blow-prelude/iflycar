@@ -48,7 +48,7 @@ class PerspectiveCalibration:
         self.display_image = self.image.copy()
         self.window_name = "选择4个点: 左上 -> 右上 -> 右下 -> 左下"
 
-        self.dst_rect = (0.07, 0.94, 0.4, 0.6)  # 目标矩形归一化坐标,分别为 左右上下
+        self.dst_rect = (0.07, 0.94, 0.2, 0.8)  # 目标矩形归一化坐标,分别为 左右上下
 
     def mouse_callback(self, event, x, y, flags, param):  # noqa: ARG002
         """
@@ -319,7 +319,7 @@ def main():
     pictures_dir = os.path.join(os.path.dirname(script_dir), "pictures")
 
     # 手动填入文件名（位于上一级目录的 pictures/ 下）
-    image_name = ""
+    image_name = "captured_image_20260717_173335.jpg"
     image_path = os.path.join(pictures_dir, image_name)
 
     if not os.path.exists(image_path):
