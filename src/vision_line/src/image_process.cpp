@@ -1171,7 +1171,7 @@ void ImageProcess::get_side_line_task_1(cv::Mat &img, cv::Mat &canvas, bool is_d
 //     }
 // }
 
-void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_draw, bool find_corner)
+void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_draw, bool find_corner, SearchSide side)
 {
     int mid_x = int(img.cols / 2);
     int img_h = img.rows;
@@ -1220,185 +1220,160 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
             float y_norm = y / img_h;
             int cur_range = y_norm > this->config_.search_range_threshold ? this->config_.search_range_wide : this->config_.search_range_narrow;
 
-            // 搜索左边线
-            if (left_stable_flag)
-            {
-                // 左侧稳定时，围绕上一帧位置向左右搜索
-                search_left_start = std::min(prev_row_left_x + cur_range, img_w - 2);
-                search_left_end = std::max(prev_row_left_x - cur_range, 0);
-            }
-            else
-            {
-                // 左侧不稳定时，从中线偏左位置向左搜索到图像边缘
-                search_left_start = mid_x - this->config_.search_offset;
-                search_left_end = 0;
-            }
-
-            // // 调试输出：显示搜索区间
-            // if (y % 10 == 0) // 每10行输出一次，避免过多输出
-            // {
-            //     std::cout << "[LEFT] y: " << y << ", range: [" << search_left_end << ", " << search_left_start << "], prev_x: " << prev_row_left_x << std::endl;
-            // }
-
-            if (is_draw)
-            {
-                cv::circle(canvas, cv::Point(search_left_start, y), 1, cv::Scalar(0, 255, 255), -1);
-                cv::circle(canvas, cv::Point(search_left_end, y), 1, cv::Scalar(0, 255, 255), -1);
-            }
-
-            // 获取当前行的候选点
-            const uchar *row_ptr = row_diff.ptr<uchar>(0);             // 获取当前行的指针
-            lx = -1;                                                   // 重置x，避免使用旧值
-            for (int i = search_left_start; i >= search_left_end; i--) // 修复：应该用 >= 而不是 <=
-            {
-                if (row_ptr[i] != 0)
-                { // 非0表示存在黑白跳变点
-                    lx = i;
-                    break;
-                }
-            }
-
-            // 先进行稳定点判断
+            // 共用行指针与本行搜索结果/添加标志（左右搜索块及 L+R 距离检查都要用）
+            const uchar *row_ptr = row_diff.ptr<uchar>(0);
+            lx = -1; // 重置 x，避免使用旧值
+            rx = -1;
             bool left_added = false;
-            if (0 <= lx && lx < img_w) // 允许图像边缘的点
-            {
-                left_added = add_point_with_stable_start(this->left_line_, cv::Point(lx, y), left_stable_buf, left_stable_flag, this->config_.x_continual, this->config_.y_continual);
-            }
+            bool right_added = false;
 
-            // // 调试输出
-            // if (y % 10 == 0)
-            // {
-            //     std::cout << "[LEFT-TASK2] found x=" << lx << ", left_added=" << left_added << ", stable=" << left_stable_flag << std::endl;
-            // }
-
-            // 如果当前行的点没有加入左边线，则下一行的搜索起点不更新
-            if (left_added)
+            // 搜索左边线
+            if (side != RIGHT_ONLY)
             {
-                prev_row_left_x = lx;
-                // 只有稳定点才参与拐点检测
-                if (find_corner && !find_left_corner)
+                if (left_stable_flag)
                 {
-                    left_nxt_p = cv::Point(lx, y);
-                    if (left_cur_p.x != 0 && left_cur_p.y != 0 && left_pre_p.x != 0 && left_pre_p.y != 0)
-                    {
-                        float angle = get_angle_p(left_pre_p, left_cur_p, left_nxt_p);
-                        if (angle < this->config_.corner_angle_high && angle > this->config_.corner_angle_low)
-                        {
-                            find_left_corner = true;
-                            this->left_corners_ = left_cur_p;
-                            // std::cout << "[DEBUG] Find left corner at: " << left_cur_p << ", angle: " << angle << std::endl;
-                        }
-                    }
-                    // 更新拐点检测的点
-                    left_pre_p = left_cur_p;
-                    left_cur_p = left_nxt_p;
+                    // 左侧稳定时，围绕上一帧位置向左右搜索
+                    search_left_start = std::min(prev_row_left_x + cur_range, img_w - 2);
+                    search_left_end = std::max(prev_row_left_x - cur_range, 0);
                 }
-            }
+                else
+                {
+                    // 左侧不稳定时，从中线偏左位置向左搜索到图像边缘
+                    search_left_start = mid_x - this->config_.search_offset;
+                    search_left_end = 0;
+                }
 
-            // miss计数逻辑应该在left_added条件之外
-            if (left_stable_flag && !left_added)
-                miss_left_count++;
-            else
-                miss_left_count = 0;
-            if (miss_left_count > this->config_.miss_threshold)
-            {
-                miss_left_count = 0;
-                prev_row_left_x = mid_x - this->config_.search_offset;
-                left_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
-                left_stable_buf.clear();  // 清空稳定缓冲区
+                if (is_draw)
+                {
+                    cv::circle(canvas, cv::Point(search_left_start, y), 1, cv::Scalar(0, 255, 255), -1);
+                    cv::circle(canvas, cv::Point(search_left_end, y), 1, cv::Scalar(0, 255, 255), -1);
+                }
+
+                for (int i = search_left_start; i >= search_left_end; i--)
+                {
+                    if (row_ptr[i] != 0)
+                    { // 非0表示存在黑白跳变点
+                        lx = i;
+                        break;
+                    }
+                }
+
+                // 先进行稳定点判断
+                if (0 <= lx && lx < img_w) // 允许图像边缘的点
+                {
+                    left_added = add_point_with_stable_start(this->left_line_, cv::Point(lx, y), left_stable_buf, left_stable_flag, this->config_.x_continual, this->config_.y_continual);
+                }
+
+                // 如果当前行的点没有加入左边线，则下一行的搜索起点不更新
+                if (left_added)
+                {
+                    prev_row_left_x = lx;
+                    // 只有稳定点才参与拐点检测
+                    if (find_corner && !find_left_corner)
+                    {
+                        left_nxt_p = cv::Point(lx, y);
+                        if (left_cur_p.x != 0 && left_cur_p.y != 0 && left_pre_p.x != 0 && left_pre_p.y != 0)
+                        {
+                            float angle = get_angle_p(left_pre_p, left_cur_p, left_nxt_p);
+                            if (angle < this->config_.corner_angle_high && angle > this->config_.corner_angle_low)
+                            {
+                                find_left_corner = true;
+                                this->left_corners_ = left_cur_p;
+                            }
+                        }
+                        // 更新拐点检测的点
+                        left_pre_p = left_cur_p;
+                        left_cur_p = left_nxt_p;
+                    }
+                }
+
+                // miss计数逻辑应该在left_added条件之外
+                if (left_stable_flag && !left_added)
+                    miss_left_count++;
+                else
+                    miss_left_count = 0;
+                if (miss_left_count > this->config_.miss_threshold)
+                {
+                    miss_left_count = 0;
+                    prev_row_left_x = mid_x - this->config_.search_offset;
+                    left_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
+                    left_stable_buf.clear();  // 清空稳定缓冲区
+                }
             }
 
             // 搜索右边线
-            if (right_stable_flag)
+            if (side != LEFT_ONLY)
             {
-                // 右侧稳定时，围绕上一帧位置向左右搜索
-                search_right_start = std::max(prev_row_right_x - cur_range, 0);
-                search_right_end = std::min(prev_row_right_x + cur_range, img_w - 2);
-            }
-            else
-            {
-                // 右侧不稳定时，从中线偏右位置向右搜索到图像边缘
-                search_right_start = mid_x + this->config_.search_offset;
-                search_right_end = img_w - 2;
-            }
-
-            // 调试输出：显示搜索区间
-            // if (y % 10 == 0)
-            // {
-            //     std::cout << "[RIGHT-TASK2] y: " << y << ", range: [" << search_right_start << ", " << search_right_end << "], prev_x: " << prev_row_right_x << std::endl;
-            // }
-
-            if (is_draw)
-            {
-                cv::circle(canvas, cv::Point(search_right_start, y), 1, cv::Scalar(255, 255, 0), -1);
-                cv::circle(canvas, cv::Point(search_right_end, y), 1, cv::Scalar(255, 255, 0), -1);
-            }
-            // if (y % 4 == 0)
-            // {
-            //     std::cout << "[DEBUG] y: " << y << ", search_left_start: " << search_left_start << ", search_right_start: " << search_right_start << "search_left_end: " << search_left_end << ", search_right_end: " << search_right_end << std::endl;
-            // }
-
-            // 打印右边界跳变情况
-            // std::cout << "[DEBUG] right boundary jump:" << row_ptr[img_w - 3] << std::endl;
-
-            rx = -1; // 重置x，避免使用旧值
-            for (int i = search_right_start; i <= search_right_end; i++)
-            {
-                if (row_ptr[i] != 0)
-                { // 非0表示存在黑白跳变点
-                    rx = i;
-                    break; // 右侧搜索：找到第一个跳变点就停止
-                }
-            }
-            bool right_added = false;
-            if (0 <= rx && rx < img_w) // 允许图像边缘的点
-            {
-                right_added = add_point_with_stable_start(this->right_line_, cv::Point(rx, y), right_stable_buf, right_stable_flag, this->config_.x_continual, this->config_.y_continual);
-            }
-
-            // // 调试输出
-            // if (y % 10 == 0)
-            // {
-            //     std::cout << "[RIGHT-TASK2] found x=" << rx << ", right_added=" << right_added << ", stable=" << right_stable_flag << std::endl;
-            // }
-
-            if (right_added)
-            {
-                prev_row_right_x = rx;
-                // 只有稳定点才参与拐点检测
-                if (find_corner && !find_right_corner)
+                if (right_stable_flag)
                 {
-                    right_nxt_p = cv::Point(rx, y);
-                    if (right_cur_p.x != 0 && right_cur_p.y != 0 && right_pre_p.x != 0 && right_pre_p.y != 0)
-                    {
-                        float angle = get_angle_p(right_pre_p, right_cur_p, right_nxt_p);
-                        if (angle < this->config_.corner_angle_high && angle > this->config_.corner_angle_low)
-                        {
-                            find_right_corner = true;
-                            this->right_corners_ = right_cur_p;
-                            // std::cout << "[DEBUG] Find right corner at: " << right_cur_p << ", angle: " << angle << std::endl;
-                        }
-                    }
-                    // 更新拐点检测的点
-                    right_pre_p = right_cur_p;
-                    right_cur_p = right_nxt_p;
+                    // 右侧稳定时，围绕上一帧位置向左右搜索
+                    search_right_start = std::max(prev_row_right_x - cur_range, 0);
+                    search_right_end = std::min(prev_row_right_x + cur_range, img_w - 2);
                 }
-            }
+                else
+                {
+                    // 右侧不稳定时，从中线偏右位置向右搜索到图像边缘
+                    search_right_start = mid_x + this->config_.search_offset;
+                    search_right_end = img_w - 2;
+                }
 
-            // miss计数逻辑应该在right_added条件之外
-            if (right_stable_flag && !right_added)
-                miss_right_count++;
-            else
-                miss_right_count = 0;
-            if (miss_right_count > this->config_.miss_threshold)
-            {
-                miss_right_count = 0;
-                prev_row_right_x = mid_x + this->config_.search_offset;
-                right_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
-                right_stable_buf.clear();  // 清空稳定缓冲区
+                if (is_draw)
+                {
+                    cv::circle(canvas, cv::Point(search_right_start, y), 1, cv::Scalar(255, 255, 0), -1);
+                    cv::circle(canvas, cv::Point(search_right_end, y), 1, cv::Scalar(255, 255, 0), -1);
+                }
+
+                for (int i = search_right_start; i <= search_right_end; i++)
+                {
+                    if (row_ptr[i] != 0)
+                    { // 非0表示存在黑白跳变点
+                        rx = i;
+                        break; // 右侧搜索：找到第一个跳变点就停止
+                    }
+                }
+                if (0 <= rx && rx < img_w) // 允许图像边缘的点
+                {
+                    right_added = add_point_with_stable_start(this->right_line_, cv::Point(rx, y), right_stable_buf, right_stable_flag, this->config_.x_continual, this->config_.y_continual);
+                }
+
+                if (right_added)
+                {
+                    prev_row_right_x = rx;
+                    // 只有稳定点才参与拐点检测
+                    if (find_corner && !find_right_corner)
+                    {
+                        right_nxt_p = cv::Point(rx, y);
+                        if (right_cur_p.x != 0 && right_cur_p.y != 0 && right_pre_p.x != 0 && right_pre_p.y != 0)
+                        {
+                            float angle = get_angle_p(right_pre_p, right_cur_p, right_nxt_p);
+                            if (angle < this->config_.corner_angle_high && angle > this->config_.corner_angle_low)
+                            {
+                                find_right_corner = true;
+                                this->right_corners_ = right_cur_p;
+                            }
+                        }
+                        // 更新拐点检测的点
+                        right_pre_p = right_cur_p;
+                        right_cur_p = right_nxt_p;
+                    }
+                }
+
+                // miss计数逻辑应该在right_added条件之外
+                if (right_stable_flag && !right_added)
+                    miss_right_count++;
+                else
+                    miss_right_count = 0;
+                if (miss_right_count > this->config_.miss_threshold)
+                {
+                    miss_right_count = 0;
+                    prev_row_right_x = mid_x + this->config_.search_offset;
+                    right_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
+                    right_stable_buf.clear();  // 清空稳定缓冲区
+                }
             }
 
             // 检测左右边线距离，如果太小则认为是噪点，移除这一对
+            // (side != BOTH 时被跳过的一侧 *_added 为 false，这里自然短路)
             if (left_added && right_added)
             {
                 int distance = std::abs(lx - rx);

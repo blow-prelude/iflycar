@@ -77,6 +77,14 @@ enum MidLineMode
     RIGHT_OFFSET = 2 // supple_right - offset
 };
 
+// 边线搜索范围
+enum SearchSide
+{
+    BOTH = 0,
+    LEFT_ONLY = 1,
+    RIGHT_ONLY = 2,
+};
+
 struct LineFit
 {
     float k;
@@ -114,7 +122,7 @@ public:
     bool judge_enter_turning(std::vector<int> &stop_mid, int img_h, int img_w, float &y_norm);
     bool judge_turing_end(int img_w, int img_h, MissLineState &miss_line);
     void get_side_line_task_1(cv::Mat &img, cv::Mat &canvas, bool is_draw);
-    void get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_draw, bool find_corner);
+    void get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_draw, bool find_corner, SearchSide side = BOTH);
     void calculate_mid_line(cv::Mat &img);
 
     void draw_line(cv::Mat &canvas, float fps, std::string state);

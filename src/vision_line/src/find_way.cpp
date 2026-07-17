@@ -10,10 +10,7 @@ enum ProcessState
     STRAIGHT_TRACKING = 1,
     RIGHT_TURNING = 2,
     LEFT_TURNING = 3,
-    CORNERING = 4,
-    CROSS = 5,
-    TURNING = 6,
-    TRACKING2 = 7
+
 };
 
 const char *state_name(ProcessState s)
@@ -28,14 +25,6 @@ const char *state_name(ProcessState s)
         return "RIGHT_TURNING";
     case LEFT_TURNING:
         return "LEFT_TURNING";
-    case CORNERING:
-        return "CORNERING";
-    case CROSS:
-        return "CROSS";
-    case TURNING:
-        return "TURNING";
-    case TRACKING2:
-        return "TRACKING2";
     default:
         return "UNKNOWN";
     }
@@ -87,6 +76,26 @@ int main()
     // 参数
     int turning_end_x_error_abs_max_ = 15;                          // 转弯结束时 x_error 最大绝对值
     std::chrono::seconds corner_delay_s_ = std::chrono::seconds(3); // 直行状态延时进入CROSS状态的时间
+    SearchSide straight_track_side = LEFT_ONLY; // STRAIGHT_TRACKING 走哪一边：LEFT_ONLY / RIGHT_ONLY / BOTH
+
+    // 由 straight_track_side 一次性派生出的搜索侧与中线模式（循环外计算，避免每帧 switch）
+    SearchSide straight_side = BOTH;
+    MidLineMode straight_mode = MID_AVG;
+    switch (straight_track_side)
+    {
+    case LEFT_ONLY:
+        straight_side = LEFT_ONLY;
+        straight_mode = LEFT_OFFSET;
+        break;
+    case RIGHT_ONLY:
+        straight_side = RIGHT_ONLY;
+        straight_mode = RIGHT_OFFSET;
+        break;
+    default:
+        straight_side = BOTH;
+        straight_mode = MID_AVG;
+        break;
+    }
 
     auto pre_t = std::chrono::steady_clock::now();
     auto cur_t = pre_t;
@@ -166,62 +175,19 @@ int main()
 
                 else
                 {
+                    SearchSide side = BOTH;
+                    MidLineMode mode = MID_AVG;
                     if (state == ProcessState::STRAIGHT_TRACKING)
                     {
-                        // 延时3s后进入CROSS状态
-                        if (std::chrono::steady_clock::now() - t0 > corner_delay_s_)
-                        {
-                            std::cout << "state: STRAIGHT_TRACKING -> CORSS after 3s" << std::endl;
-                            state = ProcessState::CROSS;
-                        }
+                        side = straight_side;
+                        mode = straight_mode;
                     }
-
-                    // 非 TURNING 状态强制使用 MID_AVG，防止 mode 残留
-                    if (state == ProcessState::STRAIGHT_TRACKING || state == ProcessState::CROSS)
-                    {
-                        img_process.set_mid_line_mode(MID_AVG);
-                    }
+                    img_process.set_mid_line_mode(mode);
 
                     cv::Mat canvas = img_process.return_frame();
-                    img_process.get_side_line_task_2(binary_img, canvas, true, false);
+                    img_process.get_side_line_task_2(binary_img, canvas, true, false, side);
                     img_process.calculate_mid_line(binary_img);
                     img_process.fit_polynomial();
-
-                    if (state == ProcessState::CROSS)
-                    {
-
-                        std::vector<int> stop_mid = img_process.get_stop_line(binary_img, canvas, true);
-
-                        // 检查是否进入TURNING状态
-                        float y_norm = 0.0f;
-                        if (img_process.judge_enter_turning(stop_mid, binary_img.rows, binary_img.cols, y_norm))
-                        {
-                            state = ProcessState::TURNING;
-                            img_process.set_mid_line_mode(LEFT_OFFSET);
-                            miss_line = NO_MISS;
-                            std::cout << "state: CROSS -> TURNING at y=" << y_norm << std::endl;
-                        }
-                    }
-
-                    if (state == ProcessState::TURNING)
-                    {
-                        if (img_process.judge_turing_end(binary_img.cols, binary_img.rows, miss_line))
-                        {
-                            int x_error = track_target_p(img_process.get_fit_mid_line(), config.tracking2_target_p_index, binary_img.cols, binary_img.rows);
-                            // std::cout << "x_error = " << x_error << std::endl;
-                            if (std::abs(x_error) <= turning_end_x_error_abs_max_)
-                            {
-                                state = ProcessState::TRACKING2;
-                                img_process.set_mid_line_mode(MID_AVG);
-                                std::cout << "state: TURNING -> TRACKING2" << std::endl;
-                            }
-                        }
-                        // std::cout << "TURNING state: miss_line = " << miss_line << std::endl;
-                    }
-
-                    if (state == ProcessState::TRACKING2)
-                    {
-                    }
 
                     img_process.draw_line(canvas, fps, state_name(state));
 
