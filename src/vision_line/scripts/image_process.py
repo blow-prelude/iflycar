@@ -18,13 +18,9 @@ logging.basicConfig(
 
 class ProcessState(Enum):
     IDLE = 0  # 未收到指令，不处理
-    STRAIGHT_TRACKING = 1  # 直行循迹，find_corner=False
-    RIGHT_TRACKING = 5  # 右转循迹（占位）
-    LEFT_TRACKING = 6  # 左转循迹（占位）
-    CORNER = 2  # 延时已到，find_corner=True
-    CROSS = 3  # 双拐点触发，find_corner=False，执行额外处理
-    TURNING = 4  # 检测到停止线后的转弯状态
-    TRACKING2 = 7  # 转弯后继续循迹
+    STRAIGHT_TRACKING = 1  # 直行循迹（单边或双边）
+    RIGHT_TRACKING = 2  # 右转循迹
+    LEFT_TRACKING = 3  # 左转循迹
 
 
 class MissLineState(Enum):
@@ -33,6 +29,22 @@ class MissLineState(Enum):
     NO_MISS = 0  # 未丢线
     MISS = 1  # 丢线
     RECOVERED = 2  # 丢线后恢复，用于判断转弯结束
+
+
+class MidLineMode(Enum):
+    """mid_line 计算模式，对应 C++ 中的 MidLineMode 枚举"""
+
+    MID_AVG = 0  # (supple_left + supple_right) / 2
+    LEFT_OFFSET = 1  # supple_left + offset
+    RIGHT_OFFSET = 2  # supple_right - offset
+
+
+class SearchSide(Enum):
+    """边线搜索范围，对应 C++ 中的 SearchSide 枚举"""
+
+    BOTH = 0
+    LEFT_ONLY = 1
+    RIGHT_ONLY = 2
 
 
 @dataclass
@@ -95,6 +107,9 @@ class ImageProcessConfig:
     straight_target_p_index = -10
     tracking2_target_p_index = -48
     left_target_p_index = -25
+
+    # ---- TURNING/单边循迹时用单边线生成 mid_line 的横向偏移（像素） ----
+    turning_mid_offset: int = 40
 
 
 def compute_target_x_error(line_points, processed_shape, original_shape, index):
@@ -169,6 +184,17 @@ class ImageProcess:
         self.perspective_matrix = np.array(
             self.cfg.perspective_matrix, dtype=np.float64
         )
+
+        # mid_line 计算模式（单边循迹时使用 LEFT_OFFSET/RIGHT_OFFSET）
+        self.mid_line_mode_ = MidLineMode.MID_AVG
+
+    def set_mid_line_mode(self, mode: MidLineMode):
+        """设置 mid_line 计算模式"""
+        self.mid_line_mode_ = mode
+
+    def get_mid_line_mode(self) -> MidLineMode:
+        """获取 mid_line 计算模式"""
+        return self.mid_line_mode_
 
     def preprocess(self, frame):
         try:
@@ -1002,6 +1028,7 @@ class ImageProcess:
         canvas,
         is_draw=False,
         find_corner=False,
+        side=SearchSide.BOTH,
     ):
         """从图像的中线往两边搜索，获取赛道边线
 
@@ -1010,6 +1037,7 @@ class ImageProcess:
             canvas: 用于绘制的画布图像
             is_draw: 是否在canvas上绘制调试信息，默认为False
             find_corner: 是否搜寻拐点
+            side: 边线搜索范围（BOTH/LEFT_ONLY/RIGHT_ONLY）
         """
         # 从图像中间向两边搜索，获取边线
 
@@ -1062,139 +1090,141 @@ class ImageProcess:
                 )
 
                 # --- 左侧赛道线 ---
-                if left_stable[0]:
-                    search_start_left = min(prev_row_left_x + cur_range, img_w - 1)
-                    search_end_left = max(0, prev_row_left_x - cur_range)
-                # 默认从中间偏左一直搜索到左边界
-                else:
-                    search_start_left = mid_x - self.cfg.search_offset
-                    search_end_left = 0
-
-                if is_draw:
-                    cv2.circle(canvas, (search_start_left, y), 1, (0, 255, 255), -1)
-                    cv2.circle(canvas, (search_end_left, y), 1, (0, 255, 255), -1)
-
-                candidates = np.where(row_diff[search_end_left:search_start_left] == 1)[
-                    0
-                ]
                 left_added = False
-
-                if len(candidates) > 0:
-                    x = candidates[-1] + search_end_left
-
-                    # 先进行稳定点检测
-                    left_added = self._add_point_with_stable_start(
-                        local_left_line,
-                        (x, y),
-                        left_stable_buf,
-                        left_stable,
-                        self.cfg.x_continual,
-                        self.cfg.y_continual,
-                    )
-
-                    # 如果当前行的点没有被加入正式边线，则下一行的搜索起点不更新；反之才更新
-                    if left_added:
-                        prev_row_left_x = x
-                        # 只有稳定点才参与拐点检测
-                        if find_corner and not find_left_corner:
-                            left_nxt_p = (x, y)
-                            if left_cur_p is not None and left_pre_p is not None:
-                                angle = self.get_angle_p(
-                                    left_nxt_p, left_cur_p, left_pre_p
-                                )
-                                logging.debug(
-                                    f"left line angle: {angle} , pre_p: {left_pre_p},  cur_p: {left_cur_p} , nxt_p: {left_nxt_p}"
-                                )
-                                if (
-                                    self.cfg.corner_angle_low
-                                    < angle
-                                    < self.cfg.corner_angle_high
-                                ):
-                                    logging.debug(
-                                        f"slope mutation , angle: {angle} ,pre_p:{left_pre_p} , cur_p: {left_cur_p} , nxt_p: {left_nxt_p} "
-                                    )
-                                    self.left_c = left_cur_p
-                                    find_left_corner = True
-                            # 更新点
-                            left_pre_p = left_cur_p
-                            left_cur_p = left_nxt_p
-
-                    # miss 计数（只在 stable 后）,如果连续丢失多个点就恢复默认搜索范围
-                    if left_stable[0] and not left_added:
-                        left_miss_count += 1
+                if side != SearchSide.RIGHT_ONLY:
+                    if left_stable[0]:
+                        search_start_left = min(prev_row_left_x + cur_range, img_w - 1)
+                        search_end_left = max(0, prev_row_left_x - cur_range)
+                    # 默认从中间偏左一直搜索到左边界
                     else:
-                        left_miss_count = 0
+                        search_start_left = mid_x - self.cfg.search_offset
+                        search_end_left = 0
 
-                    if left_miss_count >= self.cfg.miss_threshold:
-                        prev_row_left_x = mid_x - self.cfg.search_offset
-                        left_miss_count = 0
+                    if is_draw:
+                        cv2.circle(canvas, (search_start_left, y), 1, (0, 255, 255), -1)
+                        cv2.circle(canvas, (search_end_left, y), 1, (0, 255, 255), -1)
+
+                    candidates = np.where(row_diff[search_end_left:search_start_left] == 1)[
+                        0
+                    ]
+
+                    if len(candidates) > 0:
+                        x = candidates[-1] + search_end_left
+
+                        # 先进行稳定点检测
+                        left_added = self._add_point_with_stable_start(
+                            local_left_line,
+                            (x, y),
+                            left_stable_buf,
+                            left_stable,
+                            self.cfg.x_continual,
+                            self.cfg.y_continual,
+                        )
+
+                        # 如果当前行的点没有被加入正式边线，则下一行的搜索起点不更新；反之才更新
+                        if left_added:
+                            prev_row_left_x = x
+                            # 只有稳定点才参与拐点检测
+                            if find_corner and not find_left_corner:
+                                left_nxt_p = (x, y)
+                                if left_cur_p is not None and left_pre_p is not None:
+                                    angle = self.get_angle_p(
+                                        left_nxt_p, left_cur_p, left_pre_p
+                                    )
+                                    logging.debug(
+                                        f"left line angle: {angle} , pre_p: {left_pre_p},  cur_p: {left_cur_p} , nxt_p: {left_nxt_p}"
+                                    )
+                                    if (
+                                        self.cfg.corner_angle_low
+                                        < angle
+                                        < self.cfg.corner_angle_high
+                                    ):
+                                        logging.debug(
+                                            f"slope mutation , angle: {angle} ,pre_p:{left_pre_p} , cur_p: {left_cur_p} , nxt_p: {left_nxt_p} "
+                                        )
+                                        self.left_c = left_cur_p
+                                        find_left_corner = True
+                                # 更新点
+                                left_pre_p = left_cur_p
+                                left_cur_p = left_nxt_p
+
+                        # miss 计数（只在 stable 后）,如果连续丢失多个点就恢复默认搜索范围
+                        if left_stable[0] and not left_added:
+                            left_miss_count += 1
+                        else:
+                            left_miss_count = 0
+
+                        if left_miss_count >= self.cfg.miss_threshold:
+                            prev_row_left_x = mid_x - self.cfg.search_offset
+                            left_miss_count = 0
 
                 # 右线
-                if right_stable[0]:
-                    search_start_right = max(
-                        0, min(prev_row_right_x - cur_range, img_w - 1)
-                    )
-                    search_end_right = min(img_w - 1, prev_row_right_x + cur_range)
-                else:
-                    search_start_right = mid_x + self.cfg.search_offset
-                    search_end_right = img_w - 1
-
-                if is_draw:
-                    cv2.circle(canvas, (search_start_right, y), 1, (255, 255, 0), -1)
-                    cv2.circle(canvas, (search_end_right, y), 1, (255, 255, 0), -1)
-
-                candidates = np.where(
-                    row_diff[search_start_right:search_end_right] == 1
-                )[0]
                 right_added = False
-                if len(candidates) > 0:
-                    x = candidates[0] + search_start_right
+                if side != SearchSide.LEFT_ONLY:
+                    if right_stable[0]:
+                        search_start_right = max(
+                            0, min(prev_row_right_x - cur_range, img_w - 1)
+                        )
+                        search_end_right = min(img_w - 1, prev_row_right_x + cur_range)
+                    else:
+                        search_start_right = mid_x + self.cfg.search_offset
+                        search_end_right = img_w - 1
 
-                    # 先进行稳定点检测
-                    right_added = self._add_point_with_stable_start(
-                        local_right_line,
-                        (x, y),
-                        right_stable_buf,
-                        right_stable,
-                        self.cfg.x_continual,
-                        self.cfg.y_continual,
-                    )
-                    if right_added:
-                        prev_row_right_x = x
+                    if is_draw:
+                        cv2.circle(canvas, (search_start_right, y), 1, (255, 255, 0), -1)
+                        cv2.circle(canvas, (search_end_right, y), 1, (255, 255, 0), -1)
 
-                        # 只有稳定点才参与拐点检测
-                        if find_corner and find_right_corner is False:
-                            right_nxt_p = (x, y)
-                            if right_cur_p is not None and right_pre_p is not None:
-                                angle = self.get_angle_p(
-                                    right_nxt_p, right_cur_p, right_pre_p
-                                )
-                                logging.debug(
-                                    f"right line angle: {angle} , pre_p: {right_pre_p},  cur_p: {right_cur_p} , nxt_p: {right_nxt_p}"
-                                )
-                                if (
-                                    self.cfg.corner_angle_low
-                                    < angle
-                                    < self.cfg.corner_angle_high
-                                ):
-                                    logging.debug(
-                                        f"slope mutation , angle: {angle} ,pre_p:{right_pre_p} cur_p: {right_cur_p} , nxt_p: {right_nxt_p} "
+                    candidates = np.where(
+                        row_diff[search_start_right:search_end_right] == 1
+                    )[0]
+                    if len(candidates) > 0:
+                        x = candidates[0] + search_start_right
+
+                        # 先进行稳定点检测
+                        right_added = self._add_point_with_stable_start(
+                            local_right_line,
+                            (x, y),
+                            right_stable_buf,
+                            right_stable,
+                            self.cfg.x_continual,
+                            self.cfg.y_continual,
+                        )
+                        if right_added:
+                            prev_row_right_x = x
+
+                            # 只有稳定点才参与拐点检测
+                            if find_corner and find_right_corner is False:
+                                right_nxt_p = (x, y)
+                                if right_cur_p is not None and right_pre_p is not None:
+                                    angle = self.get_angle_p(
+                                        right_nxt_p, right_cur_p, right_pre_p
                                     )
-                                    self.right_c = right_cur_p
-                                    find_right_corner = True
+                                    logging.debug(
+                                        f"right line angle: {angle} , pre_p: {right_pre_p},  cur_p: {right_cur_p} , nxt_p: {right_nxt_p}"
+                                    )
+                                    if (
+                                        self.cfg.corner_angle_low
+                                        < angle
+                                        < self.cfg.corner_angle_high
+                                    ):
+                                        logging.debug(
+                                            f"slope mutation , angle: {angle} ,pre_p:{right_pre_p} cur_p: {right_cur_p} , nxt_p: {right_nxt_p} "
+                                        )
+                                        self.right_c = right_cur_p
+                                        find_right_corner = True
                             # 更新点
                             right_pre_p = right_cur_p
                             right_cur_p = right_nxt_p
 
-                    # miss 计数（只在 stable 后）
-                    if right_stable[0] and not right_added:
-                        right_miss_count += 1
-                    else:
-                        right_miss_count = 0
+                        # miss 计数（只在 stable 后）
+                        if right_stable[0] and not right_added:
+                            right_miss_count += 1
+                        else:
+                            right_miss_count = 0
 
-                    if right_miss_count >= self.cfg.miss_threshold:
-                        prev_row_right_x = mid_x + self.cfg.search_offset
-                        right_miss_count = 0
+                        if right_miss_count >= self.cfg.miss_threshold:
+                            prev_row_right_x = mid_x + self.cfg.search_offset
+                            right_miss_count = 0
 
             # 转换为 numpy 数组
             self.left_line = (
@@ -1216,16 +1246,33 @@ class ImageProcess:
                 self.left_line, self.right_line, img.shape
             )
 
-            # 用优化后的边线计算中线（向量化）
-            n = min(len(self.supple_left_line), len(self.supple_right_line))
-            if n > 0:
-                mid_xs = (
-                    self.supple_left_line[:n, 0] + self.supple_right_line[:n, 0]
-                ) // 2
-                mid_ys = self.supple_left_line[:n, 1]
-                self.mid_line = np.stack([mid_xs, mid_ys], axis=1)
-            else:
-                self.mid_line = _empty.copy()
+            # 用优化后的边线计算中线（根据 mid_line_mode_ 选择计算方式）
+            if self.mid_line_mode_ == MidLineMode.LEFT_OFFSET:
+                if len(self.supple_left_line) > 0:
+                    mid_xs = self.supple_left_line[:, 0] + self.cfg.turning_mid_offset
+                    mid_ys = self.supple_left_line[:, 1]
+                    self.mid_line = np.stack([mid_xs, mid_ys], axis=1)
+                else:
+                    self.mid_line = _empty.copy()
+            elif self.mid_line_mode_ == MidLineMode.RIGHT_OFFSET:
+                if len(self.supple_right_line) > 0:
+                    mid_xs = (
+                        self.supple_right_line[:, 0] - self.cfg.turning_mid_offset
+                    )
+                    mid_ys = self.supple_right_line[:, 1]
+                    self.mid_line = np.stack([mid_xs, mid_ys], axis=1)
+                else:
+                    self.mid_line = _empty.copy()
+            else:  # MID_AVG
+                n = min(len(self.supple_left_line), len(self.supple_right_line))
+                if n > 0:
+                    mid_xs = (
+                        self.supple_left_line[:n, 0] + self.supple_right_line[:n, 0]
+                    ) // 2
+                    mid_ys = self.supple_left_line[:n, 1]
+                    self.mid_line = np.stack([mid_xs, mid_ys], axis=1)
+                else:
+                    self.mid_line = _empty.copy()
 
             # 多项式拟合中线
             # self.fit_polynomial()
@@ -1572,15 +1619,22 @@ def main_video():
     straight_received = True
     right_received = False
     left_received = False
-    corner_delay_s = 1.5  # 延时秒数，超过后启用拐点检测
+
+    # STRAIGHT_TRACKING 走哪一边：LEFT_ONLY / RIGHT_ONLY / BOTH
+    straight_track_side = SearchSide.LEFT_ONLY
+    # 由 straight_track_side 一次性派生（循环外算一次）
+    if straight_track_side == SearchSide.LEFT_ONLY:
+        straight_side = SearchSide.LEFT_ONLY
+        straight_mode = MidLineMode.LEFT_OFFSET
+    elif straight_track_side == SearchSide.RIGHT_ONLY:
+        straight_side = SearchSide.RIGHT_ONLY
+        straight_mode = MidLineMode.RIGHT_OFFSET
+    else:
+        straight_side = SearchSide.BOTH
+        straight_mode = MidLineMode.MID_AVG
 
     # 状态机变量
     state = ProcessState.IDLE
-    t0 = None  # 指令开始时刻
-    miss_line = [MissLineState.NO_MISS]
-    turning_end_x_error_abs_max = (
-        15.0  # TURNING -> TRACKING2 时中线 x_error 阈值（原始分辨率）
-    )
 
     try:
         while True:
@@ -1615,7 +1669,6 @@ def main_video():
             if state == ProcessState.IDLE:
                 if straight_received:
                     state = ProcessState.STRAIGHT_TRACKING
-                    t0 = time.perf_counter()
                     logging.info("State: IDLE -> STRAIGHT_TRACKING (straight received)")
                 elif right_received:
                     state = ProcessState.RIGHT_TRACKING
@@ -1626,100 +1679,10 @@ def main_video():
 
             # --- 非 IDLE 状态才执行图像处理 ---
             else:
-                # 保存当前帧到imgprocess
-                # imgprocess.frame = frame
-
                 # 预处理
                 binary_img = imgprocess.preprocess(frame)
 
-                if state not in (
-                    ProcessState.RIGHT_TRACKING,
-                    ProcessState.LEFT_TRACKING,
-                ):
-                    # STRAIGHT_TRACKING 超时检查
-                    if state == ProcessState.STRAIGHT_TRACKING and t0 is not None:
-                        if time.perf_counter() - t0 >= corner_delay_s:
-                            state = ProcessState.CORNER
-                            logging.info(
-                                f"State: STRAIGHT_TRACKING -> CORNER (after {corner_delay_s}s)"
-                            )
-
-                    # 获取用于绘制的画布
-                    canvas = imgprocess.return_frame()
-                    # 根据状态决定 find_corner 参数
-                    find_corner = state == ProcessState.CORNER
-
-                    # 获取边线（传入canvas用于绘制调试信息）
-                    imgprocess.get_side_line_task_2(
-                        binary_img,
-                        canvas,
-                        is_draw=True,
-                        find_corner=find_corner,
-                    )
-
-                    # CORNER 状态：处理完毕后检查是否进入 CROSS
-                    if state == ProcessState.CORNER:
-                        if imgprocess.judge_enter_cross_state(binary_img.shape):
-                            state = ProcessState.CROSS
-                            logging.info(
-                                "State: CORNER -> CROSS (dual corner detected)"
-                            )
-
-                    # CROSS 状态：检测停止线
-                    if state == ProcessState.CROSS:
-                        # 获取停止线
-                        stop_mid = imgprocess.get_stop_line(
-                            binary_img, is_draw=True, canvas=canvas
-                        )
-
-                        # 检查是否进入 TURNING
-                        if stop_mid is not None and imgprocess.judge_enter_turning(
-                            stop_mid, binary_img.shape
-                        ):
-                            state = ProcessState.TURNING
-                            y_norm = stop_mid[1] / binary_img.shape[0]
-                            logging.info(
-                                f"State: CROSS -> TURNING (stop line at y={stop_mid[1]}, y_norm={y_norm:.2f})"
-                            )
-
-                    if state == ProcessState.TURNING:
-                        # 视觉判断转弯结束：需要 miss_line 进入过 MISS 再到 RECOVERED，
-                        # 且中线 x_error 收敛到阈值内，才允许进入 TRACKING2。
-                        # 与 find_way_ros.cpp 的路径 B 一致（离线版无 ROS flag 路径 A）。
-                        if imgprocess.judge_turning_end(
-                            binary_img.shape, miss_line=miss_line
-                        ):
-                            if miss_line[0] == MissLineState.RECOVERED:
-                                x_error, y_pixel = compute_target_x_error(
-                                    imgprocess.fit_mid_line,
-                                    binary_img.shape,
-                                    frame.shape,
-                                    imgprocess.cfg.straight_target_p_index,
-                                )
-                                if (
-                                    y_pixel >= 0
-                                    and abs(x_error) <= turning_end_x_error_abs_max
-                                ):
-                                    state = ProcessState.TRACKING2
-                                    logging.info(
-                                        f"State: TURNING -> TRACKING2 (visual end detected, x_error={x_error:.1f})"
-                                    )
-
-                    # 多项式拟合
-                    imgprocess.fit_polynomial()
-
-                    canvas = imgprocess.draw_line(canvas, fps, state)
-
-                    # 显示二值化图像
-                    cv2.imshow("binary", binary_img)
-                    # img_sender.enqueue_image(binary_img, img_id=0)
-
-                    # 显示处理结果
-                    cv2.imshow("processed_img", canvas)
-                    # 发送处理结果
-                    # img_sender.enqueue_image(canvas, img_id=1)
-
-                elif state in (ProcessState.RIGHT_TRACKING, ProcessState.LEFT_TRACKING):
+                if state in (ProcessState.RIGHT_TRACKING, ProcessState.LEFT_TRACKING):
                     canvas = imgprocess.return_frame()
                     # 如果是左转，就翻转一次得到正常视角，右转则不翻转，保持原视角
                     if state == ProcessState.LEFT_TRACKING:
@@ -1736,13 +1699,26 @@ def main_video():
 
                     canvas = imgprocess.draw_line(canvas, state=state)
 
-                    # 可视化
                     cv2.imshow("binary", binary_img)
                     cv2.imshow("processed_img", canvas)
+                else:
+                    # STRAIGHT_TRACKING
+                    imgprocess.set_mid_line_mode(straight_mode)
+                    canvas = imgprocess.return_frame()
+                    imgprocess.get_side_line_task_2(
+                        binary_img,
+                        canvas,
+                        is_draw=True,
+                        find_corner=False,
+                        side=straight_side,
+                    )
+                    # 多项式拟合
+                    imgprocess.fit_polynomial()
 
-                    # 发送图像
-                    # img_sender.enqueue_image(binary_img, img_id=0)
-                    # img_sender.enqueue_image(canvas, img_id=1)
+                    canvas = imgprocess.draw_line(canvas, fps, state)
+
+                    cv2.imshow("binary", binary_img)
+                    cv2.imshow("processed_img", canvas)
 
             # 按键控制
             key = cv2.waitKey(1) & 0xFF
@@ -1861,15 +1837,22 @@ def main():
     straight_received = False
     right_received = True
     left_received = False
-    corner_delay_s = 1.5  # 延时秒数，超过后启用拐点检测
+
+    # STRAIGHT_TRACKING 走哪一边：LEFT_ONLY / RIGHT_ONLY / BOTH
+    straight_track_side = SearchSide.LEFT_ONLY
+    # 由 straight_track_side 一次性派生（循环外算一次）
+    if straight_track_side == SearchSide.LEFT_ONLY:
+        straight_side = SearchSide.LEFT_ONLY
+        straight_mode = MidLineMode.LEFT_OFFSET
+    elif straight_track_side == SearchSide.RIGHT_ONLY:
+        straight_side = SearchSide.RIGHT_ONLY
+        straight_mode = MidLineMode.RIGHT_OFFSET
+    else:
+        straight_side = SearchSide.BOTH
+        straight_mode = MidLineMode.MID_AVG
 
     # 状态机变量
     state = ProcessState.IDLE
-    t0 = None  # 指令开始时刻
-    miss_line = [MissLineState.NO_MISS]
-    turning_end_x_error_abs_max = (
-        15.0  # TURNING -> TRACKING2 时中线 x_error 阈值（原始分辨率）
-    )
 
     try:
         # 连接服务器，开启发送线程
@@ -1902,7 +1885,6 @@ def main():
             if state == ProcessState.IDLE:
                 if straight_received:
                     state = ProcessState.STRAIGHT_TRACKING
-                    t0 = time.perf_counter()
                     logging.info("State: IDLE -> STRAIGHT_TRACKING (straight received)")
                 elif right_received:
                     state = ProcessState.RIGHT_TRACKING
@@ -1918,97 +1900,8 @@ def main():
 
                 # 预处理
                 binary_img = imgprocess.preprocess(frame)
-                if state not in (
-                    ProcessState.RIGHT_TRACKING,
-                    ProcessState.LEFT_TRACKING,
-                ):
-                    # STRAIGHT_TRACKING 超时检查
-                    if state == ProcessState.STRAIGHT_TRACKING and t0 is not None:
-                        if time.perf_counter() - t0 >= corner_delay_s:
-                            state = ProcessState.CROSS
-                            logging.info(
-                                f"State: STRAIGHT_TRACKING -> CROSS(after {corner_delay_s}s)"
-                            )
 
-                    # 获取用于绘制的画布
-                    canvas = imgprocess.return_frame()
-                    # 根据状态决定 find_corner 参数
-                    find_corner = state == ProcessState.CORNER
-
-                    # 获取边线（传入canvas用于绘制调试信息）
-                    imgprocess.get_side_line_task_2(
-                        binary_img,
-                        canvas,
-                        is_draw=True,
-                        find_corner=find_corner,
-                    )
-
-                    # 多项式拟合
-                    imgprocess.fit_polynomial()
-
-                    # CORNER 状态：处理完毕后检查是否进入 CROSS
-                    if state == ProcessState.CORNER:
-                        if imgprocess.judge_enter_cross_state(binary_img.shape):
-                            state = ProcessState.CROSS
-                            logging.info(
-                                "State: CORNER -> CROSS (dual corner detected)"
-                            )
-
-                    # CROSS 状态：检测停止线
-                    if state == ProcessState.CROSS:
-                        # 获取停止线
-                        stop_mid = imgprocess.get_stop_line(
-                            binary_img, is_draw=True, canvas=canvas
-                        )
-
-                        # 检查是否进入 TURNING
-                        if stop_mid is not None and imgprocess.judge_enter_turning(
-                            stop_mid, binary_img.shape
-                        ):
-                            state = ProcessState.TURNING
-                            y_norm = stop_mid[1] / binary_img.shape[0]
-                            logging.info(
-                                f"State: CROSS -> TURNING (stop line at y={stop_mid[1]}, y_norm={y_norm:.2f})"
-                            )
-
-                    if state == ProcessState.TURNING:
-                        # 视觉判断转弯结束：需要 miss_line 进入过 MISS 再到 RECOVERED，
-                        # 且中线 x_error 收敛到阈值内，才允许进入 TRACKING2。
-                        # 与 find_way_ros.cpp 的路径 B 一致（离线版无 ROS flag 路径 A）。
-                        if imgprocess.judge_turning_end(
-                            binary_img.shape, miss_line=miss_line
-                        ):
-                            if miss_line[0] == MissLineState.RECOVERED:
-                                x_error, y_pixel = compute_target_x_error(
-                                    imgprocess.fit_mid_line,
-                                    binary_img.shape,
-                                    frame.shape,
-                                    imgprocess.cfg.straight_target_p_index,
-                                )
-                                if (
-                                    y_pixel >= 0
-                                    and abs(x_error) <= turning_end_x_error_abs_max
-                                ):
-                                    state = ProcessState.TRACKING2
-                                    logging.info(
-                                        f"State: TURNING -> TRACKING2 (visual end detected, x_error={x_error:.1f})"
-                                    )
-
-                    if state == ProcessState.TRACKING2:
-                        pass
-
-                    canvas = imgprocess.draw_line(canvas, fps, state)
-
-                    # 显示二值化图像
-                    cv2.imshow("binary", binary_img)
-                    # img_sender.enqueue_image(binary_img, img_id=0, img_name="binary")
-
-                    # 显示处理结果
-                    cv2.imshow("processed_img", canvas)
-                    # 发送处理结果
-                    # img_sender.enqueue_image(canvas, img_id=1, img_name="canvas")
-
-                elif state in (ProcessState.RIGHT_TRACKING, ProcessState.LEFT_TRACKING):
+                if state in (ProcessState.RIGHT_TRACKING, ProcessState.LEFT_TRACKING):
                     canvas = imgprocess.return_frame()
                     # 如果是左转，就翻转一次得到正常视角，右转则不翻转，保持原视角
                     # if state == ProcessState.LEFT_TRACKING:
@@ -2025,13 +1918,26 @@ def main():
 
                     canvas = imgprocess.draw_line(canvas, fps, state)
 
-                    # 可视化
                     cv2.imshow("binary", binary_img)
                     cv2.imshow("processed_img", canvas)
+                else:
+                    # STRAIGHT_TRACKING
+                    imgprocess.set_mid_line_mode(straight_mode)
+                    canvas = imgprocess.return_frame()
+                    imgprocess.get_side_line_task_2(
+                        binary_img,
+                        canvas,
+                        is_draw=True,
+                        find_corner=False,
+                        side=straight_side,
+                    )
+                    # 多项式拟合
+                    imgprocess.fit_polynomial()
 
-                    # 发送图像
-                    # img_sender.enqueue_image(binary_img, img_id=0, img_name="binary")
-                    # img_sender.enqueue_image(canvas, img_id=1, img_name="canvas")
+                    canvas = imgprocess.draw_line(canvas, fps, state)
+
+                    cv2.imshow("binary", binary_img)
+                    cv2.imshow("processed_img", canvas)
 
             # 按键控制
             key = cv2.waitKey(1) & 0xFF
