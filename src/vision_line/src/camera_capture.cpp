@@ -1,8 +1,8 @@
 #include "camera_capture.h"
 
 cv::Mat CameraCapture::perspective_matrix = (cv::Mat_<double>(3, 3) << -0.288264, -1.302941, 204.591639,
-        0.001102, -2.166359, 298.550349,
-        0.000018, -0.008303, 1.000000);
+                                             0.001102, -2.166359, 298.550349,
+                                             0.000018, -0.008303, 1.000000);
 
 CameraCapture::CameraCapture()
 {

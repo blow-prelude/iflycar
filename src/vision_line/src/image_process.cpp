@@ -14,11 +14,11 @@ cv::Mat ImageProcess::preprocess(cv::Mat &img)
     }
 
     cv::Mat gray;
-    if (frame_.channels() != 3)
+    if (img.channels() != 3)
     {
         throw std::runtime_error("Input image must have 3 channels.");
     }
-    cv::cvtColor(frame_, gray, cv::COLOR_BGR2GRAY);
+    cv::cvtColor(img, gray, cv::COLOR_BGR2GRAY);
 
     // 大尺寸高斯模糊获得背景光照分布
     cv::Mat background;
@@ -47,7 +47,7 @@ void ImageProcess::resize_frame(cv::Mat &img)
         int w = img.cols;
         float scale = std::min(float(this->config_.process_max_h) / h, float(this->config_.process_max_w) / w);
 
-        cv::resize(img, frame_, cv::Size(int(w * scale), int(h * scale)));
+        cv::resize(img, img, cv::Size(int(w * scale), int(h * scale)));
     }
 }
 

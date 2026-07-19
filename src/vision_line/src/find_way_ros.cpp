@@ -190,13 +190,32 @@ public:
                 processor_.resize_frame(frame);
 
                 // STRAIGHT_TRACKING 时先对图片做透视变换
+                cv::Mat pers_frame;
                 if (state_ == STRAIGHT_TRACKING)
                 {
-                    frame = CameraCapture::perspectiveFrame(frame);
+                    std::cout << "Applying perspective transform..." << std::endl;
+                    pers_frame = CameraCapture::perspectiveFrame(frame);
+                    if (pers_frame.empty())
+                    {
+                        std::cerr << "Error: Perspective transform failed, using original frame." << std::endl;
+                        pers_frame = frame; // 使用原始帧作为备用
+                    }
+                    else
+                    {
+                        std::cout << "Perspective transform successful." << std::endl;
+                    }
                 }
 
-                processor_.set_frame(frame);
-                cv::Mat binary_img = processor_.preprocess(frame);
+                processor_.set_frame(pers_frame);
+
+                if (pers_frame.empty())
+                {
+                    ROS_WARN("Perspective frame is empty, skipping processing.");
+                    // rate.sleep();
+                    continue;
+                }
+
+                cv::Mat binary_img = processor_.preprocess(pers_frame);
                 int proc_h = binary_img.rows;
                 int proc_w = binary_img.cols;
 

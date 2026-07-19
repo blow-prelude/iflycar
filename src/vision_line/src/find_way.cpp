@@ -131,7 +131,17 @@ int main()
             }
             pre_t = cur_t;
             cv::Mat frame = camera.captureFrame();
+            if (frame.empty())
+            {
+                std::cerr << "Error: Failed to capture frame from camera." << std::endl;
+                continue;
+            }
             cv::Mat frame_1 = camera.correctFrame(frame);
+            if (frame_1.empty())
+            {
+                std::cerr << "Error: Frame correction failed, using original frame." << std::endl;
+                frame_1 = frame;
+            }
             cv::flip(frame_1, frame, 1); // 水平翻转
 
             if (state == ProcessState::IDLE)
@@ -158,15 +168,35 @@ int main()
                 img_process.resize_frame(frame);
 
                 // STRAIGHT_TRACKING 时先对图片做透视变换
+                cv::Mat pers_frame;
                 if (state == ProcessState::STRAIGHT_TRACKING)
                 {
-                    frame = CameraCapture::perspectiveFrame(frame);
+                    std::cout << "Applying perspective transform..." << std::endl;
+                    pers_frame = CameraCapture::perspectiveFrame(frame);
+                    if (pers_frame.empty())
+                    {
+                        std::cerr << "Error: Perspective transform failed, using original frame." << std::endl;
+                        pers_frame = frame; // 使用原始帧作为备用
+                    }
+                    else
+                    {
+                        std::cout << "Perspective transform successful." << std::endl;
+                    }
+                }
+                else
+                {
+                    pers_frame = frame; // 非STRAIGHT_TRACKING状态使用原始帧
                 }
 
-                // img_process.set_frame(frame);
+                img_process.set_frame(pers_frame);
 
                 // 预处理
-                cv::Mat binary_img = img_process.preprocess(frame);
+                if (pers_frame.empty())
+                {
+                    std::cerr << "Error: Frame to preprocess is empty!" << std::endl;
+                    continue;
+                }
+                cv::Mat binary_img = img_process.preprocess(pers_frame);
 
                 if (state == ProcessState::RIGHT_TURNING || state == ProcessState::LEFT_TURNING)
                 {
@@ -199,6 +229,7 @@ int main()
 
                     img_process.draw_line(canvas, fps, state_name(state));
 
+                    cv::imshow("perspective", pers_frame);
                     cv::imshow("binary", binary_img);
                     cv::imshow("canvas", canvas);
                 }
