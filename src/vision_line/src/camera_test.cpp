@@ -5,7 +5,7 @@ int main()
     // 计算fps
     double prev_t = cv::getTickCount();
     double curr_t;
-    double dt;
+    double dt = 0.0;
     int frame_count = 0;
     double fps = 0.0;
     try
@@ -16,7 +16,7 @@ int main()
         while (1)
         {
             curr_t = cv::getTickCount();
-            dt = (curr_t - prev_t) / cv::getTickFrequency();
+            dt += (curr_t - prev_t) / cv::getTickFrequency();
             prev_t = curr_t;
             frame_count++;
             if (dt >= 1.0) // Update FPS every second
@@ -30,11 +30,13 @@ int main()
             frame = camera.captureFrame();
             if (!frame.empty())
             {
-                cv::resize(frame, frame, cv::Size(320, 240));
-                camera.correctFrame(frame); // Apply distortion correction
-                cv::flip(frame, frame, 1);  // Flip the frame horizontally for a mirror effect
-                frame = CameraCapture::perspectiveFrame(frame);
-                cv::imshow("Captured Frame", frame);
+                // cv::resize(frame, frame, cv::Size(320, 240));
+                cv::imshow("Original Frame", frame);
+                frame = camera.correctFrame(frame); // Apply distortion correction
+                cv::imshow("Corrected Frame", frame);
+
+                cv::flip(frame, frame, 1); // Flip the frame horizontally for a mirror effect
+                // frame = CameraCapture::perspectiveFrame(frame);
                 cv::waitKey(1);
             }
             else

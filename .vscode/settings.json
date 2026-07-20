@@ -87,8 +87,8 @@
         "xiosbase": "cpp",
         "xtr1common": "cpp"
     },
-    "python-envs.defaultEnvManager": "ms-python.python:conda",
-    "python-envs.defaultPackageManager": "ms-python.python:conda",
+    "python-envs.defaultEnvManager": "ms-python.python:system",
+    "python-envs.defaultPackageManager": "ms-python.python:pip",
     "linux": {
         "python.defaultInterpreterPath": "/home/ucar/venv3.9/bin/python3"
     }

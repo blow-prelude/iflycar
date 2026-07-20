@@ -75,8 +75,8 @@ class UcarCamera:
             if self.enable_undistort:
                 frame_1 = self.correct_img(frame_1)
             frame_1 = cv2.flip(frame_1, 1)
-            # cv2.imshow("frame", frame_1)
-            # cv2.waitKey(1)
+            cv2.imshow("frame", frame_1)
+            cv2.waitKey(1)
             frame_h, frame_w = frame_1.shape[:2]
             self.image_temp.header = Header(stamp=rospy.Time.now())  # 定义图片header
             self.image_temp.height = frame_h
