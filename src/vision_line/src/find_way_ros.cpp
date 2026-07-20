@@ -193,16 +193,12 @@ public:
                 cv::Mat pers_frame;
                 if (state_ == STRAIGHT_TRACKING)
                 {
-                    std::cout << "Applying perspective transform..." << std::endl;
+
                     pers_frame = CameraCapture::perspectiveFrame(frame);
                     if (pers_frame.empty())
                     {
                         std::cerr << "Error: Perspective transform failed, using original frame." << std::endl;
                         pers_frame = frame; // 使用原始帧作为备用
-                    }
-                    else
-                    {
-                        std::cout << "Perspective transform successful." << std::endl;
                     }
                 }
 
