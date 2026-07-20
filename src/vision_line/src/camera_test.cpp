@@ -13,6 +13,7 @@ int main()
         CameraCapture camera(0, 640, 480); // Initialize camera with index 0 and resolution 640x480
 
         cv::Mat frame;
+        cv::Mat mask;
         while (1)
         {
             curr_t = cv::getTickCount();
@@ -30,11 +31,12 @@ int main()
             frame = camera.captureFrame();
             if (!frame.empty())
             {
-                cv::resize(frame, frame, cv::Size(320, 240));
                 camera.correctFrame(frame); // Apply distortion correction
                 cv::flip(frame, frame, 1);  // Flip the frame horizontally for a mirror effect
+                cv::resize(frame, frame, cv::Size(320, 240));
+                cv::imshow("corrected Frame", frame);
                 frame = CameraCapture::perspectiveFrame(frame);
-                cv::imshow("Captured Frame", frame);
+                cv::imshow("perspective Frame", frame);
                 cv::waitKey(1);
             }
             else

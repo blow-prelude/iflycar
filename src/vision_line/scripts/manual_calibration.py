@@ -50,6 +50,22 @@ class PerspectiveCalibration:
 
         self.dst_rect = (0.30, 0.70, 0.25, 0.8)  # 目标矩形归一化坐标,分别为 左右上下
 
+    def set_det_rect(self, left: float, right: float, top: float, bottom: float):
+        """
+        设置目标矩形的归一化坐标
+
+        Args:
+            left: 左边界 (0.0 - 1.0)
+            right: 右边界 (0.0 - 1.0)
+            top: 上边界 (0.0 - 1.0)
+            bottom: 下边界 (0.0 - 1.0)
+        """
+        if not (0 <= left < right <= 1) or not (0 <= top < bottom <= 1):
+            raise ValueError(
+                "归一化坐标必须满足: 0 <= left < right <= 1 且 0 <= top < bottom <= 1"
+            )
+        self.dst_rect = (left, right, top, bottom)
+
     def mouse_callback(self, event, x, y, flags, param):  # noqa: ARG002
         """
         鼠标回调函数，处理点击事件
@@ -188,6 +204,11 @@ class PerspectiveCalibration:
             dst_points,  # type: ignore[arg-type]
         )
 
+        # 计算实际边界尺寸并调整矩阵平移量
+        transformation_matrix, output_width, output_height = calculate_size(
+            src_points, transformation_matrix
+        )
+
         # 应用透视变换
         assert self.image is not None  # 已在__init__中检查
         warped_image = cv2.warpPerspective(
@@ -233,10 +254,12 @@ class PerspectiveCalibration:
                 2,
             )
 
-        # 调整图像大小以便并排显示
-        h, w = result_image.shape[:2]
-        result_resized = cv2.resize(result_image, (w // 2, h // 2))
-        warped_resized = cv2.resize(warped_image, (w // 2, h // 2))
+        # 调整图像大小以便并排显示：按各自宽高比缩放至等高
+        target_h = result_image.shape[0] // 2
+        result_new_w = int(result_image.shape[1] * target_h / result_image.shape[0])
+        warped_new_w = int(warped_image.shape[1] * target_h / warped_image.shape[0])
+        result_resized = cv2.resize(result_image, (result_new_w, target_h))
+        warped_resized = cv2.resize(warped_image, (warped_new_w, target_h))
 
         # 水平拼接
         combined = np.hstack((result_resized, warped_resized))
@@ -257,7 +280,7 @@ class PerspectiveCalibration:
         cv2.putText(
             combined,
             "Bird's Eye View (Warped)",
-            (w // 2 + 10, 20),
+            (result_new_w + 10, 20),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (0, 0, 0),
@@ -312,6 +335,56 @@ class PerspectiveCalibration:
             traceback.print_exc()
 
 
+def calculate_size(src_points, M):
+    """
+    计算透视变换后的实际尺寸并调整矩阵平移量
+
+    利用 perspectiveTransform 得到四个顶点变换后的坐标，
+    计算 xmin, xmax, ymin, ymax，进而得到 new_width 和 new_height，
+    并利用 xmin, ymin 修改矩阵的平移量。
+
+    Args:
+        src_points: 源点列表 [(x1,y1), (x2,y2), (x3,y3), (x4,y4)]
+        M: 原始透视变换矩阵 (3x3)
+
+    Returns:
+        new_matrix: 调整平移量后的矩阵 (3x3)
+        new_width: 变换后的宽度 (xmax - xmin)
+        new_height: 变换后的高度 (ymax - ymin)
+    """
+    # perspectiveTransform 需要输入形状为 (N, 1, 2)
+    src_array = np.array(src_points, dtype=np.float32).reshape(-1, 1, 2)
+
+    # 计算四个顶点变换后的坐标
+    transformed_points = cv2.perspectiveTransform(src_array, M)
+    transformed_points = transformed_points.reshape(-1, 2)
+
+    # 计算 xmin, xmax, ymin, ymax
+    xmin = float(np.min(transformed_points[:, 0]))
+    xmax = float(np.max(transformed_points[:, 0]))
+    ymin = float(np.min(transformed_points[:, 1]))
+    ymax = float(np.max(transformed_points[:, 1]))
+
+    new_width = int(xmax - xmin)
+    new_height = int(ymax - ymin)
+
+    # 利用 xmin, ymin 修改矩阵的平移量
+    # 注意：透视变换不能仅靠修改 [0,2]/[1,2] 来平移，
+    # 因为最终坐标会除以 w = M[2,0]*x + M[2,1]*y + M[2,2]，
+    # 必须左乘平移矩阵 T，即 M' = T @ M
+    T = np.array(
+        [
+            [1, 0, -xmin],
+            [0, 1, -ymin],
+            [0, 0, 1],
+        ],
+        dtype=np.float32,
+    )
+    new_matrix = T @ M
+
+    return new_matrix, new_width, new_height
+
+
 def main():
     """主函数"""
     # 获取图片目录
@@ -319,7 +392,7 @@ def main():
     pictures_dir = os.path.join(os.path.dirname(script_dir), "pictures")
 
     # 手动填入文件名（位于上一级目录的 pictures/ 下）
-    image_name = "captured_image_20260717_201118.jpg"
+    image_name = "captured_image_20260720_151700.jpg"
     image_path = os.path.join(pictures_dir, image_name)
 
     if not os.path.exists(image_path):
@@ -331,6 +404,7 @@ def main():
 
     # 创建标定工具并运行
     calibration = PerspectiveCalibration(image_path)
+    calibration.set_det_rect(0.02, 0.98, 0.10, 0.75)  # 可根据需要调整目标矩形
     calibration.run()
 
 
