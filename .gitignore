@@ -3,7 +3,7 @@
 .catkin_workspace
 
 /.marscode
-/docs
+/docs/superpowers
 
 **/__pycache__/
 *.zip

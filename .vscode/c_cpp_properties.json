@@ -5,13 +5,15 @@
         {
             "name": "Linux (x64)",
             "includePath": [
+                "D:/programTools/opencv4_10/build/include/opencv2",
+                "${workspaceFolder}/3rd_party/**",
                 "${workspaceFolder}/**",
                 "${workspaceFolder}/devel/include",
                 "/opt/ros/${env:ROS_DISTRO}/include",
                 "/usr/include/opencv4",
                 "/usr/local/include/opencv4",
                 "/usr/include/**",
-                "/usr/local/include/**"
+                "/usr/local/include/**",
             ],
             "defines": [
                 // 按需补充目标平台的宏,例如嵌入式板子上可能定义的板卡宏
@@ -19,7 +21,10 @@
             // 本机编译场景下 /usr/bin/gcc 在两种架构上都是“当前架构的 gcc”,通用
             // 若做交叉编译,改成 aarch64-linux-gnu-gcc 的绝对路径,例如:
             //   "/usr/bin/aarch64-linux-gnu-gcc"
-            "compilerPath": "/usr/bin/gcc",
+            "compilerPath": [
+                "/usr/bin/gcc",
+                "D:/programTools/mingw64/bin/gcc.exe"
+            ],
             "cStandard": "c11",
             "cppStandard": "c++17",
             "intelliSenseMode": "linux-gcc-x64",
