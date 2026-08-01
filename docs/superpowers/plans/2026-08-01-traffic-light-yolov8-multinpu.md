@@ -30,7 +30,7 @@
 - Create: src/traffic_light/src/traffic_light_demo.cc — 固定模型路径的相机采集、线程池提交/取回和窗口显示。
 - Create: src/traffic_light/test/test_rknn_pool.cpp — 不依赖 RKNN 硬件的线程池 FIFO 与 core id 测试。
 - Create: src/traffic_light/test/test_yolov8_postprocess.cpp — 自定义 score tensor 类别数测试。
-- Modify: src/traffic_light/include/yolov8.h — 增加带共享 context/core mask 的初始化接口和 core 映射声明。
+- Modify: src/traffic_light/include/yolov8.h — 增加带共享 context/core mask 的初始化接口和无硬件依赖的 inline core 映射。
 - Modify: src/traffic_light/src/yolov8.cc — 保留现有官方流程，支持 rknn_init/rknn_dup_context、core mask 和失败清理。
 - Modify: src/traffic_light/include/postprocess.h — 暴露类别数读取辅助函数。
 - Modify: src/traffic_light/src/postprocess.cc — 让 output branch 按 score tensor channel 动态遍历类别。
@@ -274,7 +274,7 @@ Run the test before adding the mapping. Expected: compile failure because the de
 
 - [ ] Step 2: Add explicit core mapping
 
-Declare the functions in yolov8.h and implement the worker mapping with a switch for ids 0, 1, and 2; return RKNN_NPU_CORE_UNDEFINED for every other id. The model adapter must call this function instead of relying on implicit global round-robin state.
+Declare `init_yolov8_model_on_core` in yolov8.h and define `yolov8_core_mask_for_worker` as an inline switch in the same header for ids 0, 1, and 2; return RKNN_NPU_CORE_UNDEFINED for every other id. Keeping this pure mapping inline lets test_rknn_pool link without the RKNN runtime. The model adapter must call this function instead of relying on implicit global round-robin state.
 
 - [ ] Step 3: Extend model initialization without changing the existing wrapper contract
 
