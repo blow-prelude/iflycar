@@ -121,7 +121,7 @@ Create a fake model that never touches RKNN:
 
 - [ ] Step 2: Run the test to verify it fails
 
-    g++ -std=c++11 -pthread -Isrc/traffic_light/include src/traffic_light/test/test_rknn_pool.cpp -lgtest -lgtest_main -o /tmp/test_rknn_pool
+    g++ -std=c++11 -pthread -I3rdparty/librknn/include -Isrc/traffic_light/include src/traffic_light/test/test_rknn_pool.cpp -lgtest -lgtest_main -o /tmp/test_rknn_pool
 
 Expected: compilation fails because rknn_pool.hpp does not exist.
 
@@ -149,7 +149,7 @@ Keep put as round-robin model selection and get as FIFO future::get. The pool de
 
 - [ ] Step 3: Run the test to verify it passes
 
-    g++ -std=c++11 -pthread -Isrc/traffic_light/include src/traffic_light/test/test_rknn_pool.cpp -lgtest -lgtest_main -o /tmp/test_rknn_pool
+    g++ -std=c++11 -pthread -I3rdparty/librknn/include -Isrc/traffic_light/include src/traffic_light/test/test_rknn_pool.cpp -lgtest -lgtest_main -o /tmp/test_rknn_pool
     /tmp/test_rknn_pool
 
 Expected: the test compiles and reports one passing test, including worker ids [0, 1, 2] and outputs 10, 20, 30 in submission order.
