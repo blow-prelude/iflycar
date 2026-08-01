@@ -1,9 +1,154 @@
 #include "image_process.h"
 
+#include <cstddef>
+#include <limits>
+#include <stdexcept>
+
+#include "im2d.hpp"
+
+namespace
+{
+
+int get_rga_color_space(ImageProcess::YuyvColorSpace color_space)
+{
+    switch (color_space)
+    {
+    case ImageProcess::YUYV_BT601_LIMIT:
+        return IM_YUV_TO_RGB_BT601_LIMIT;
+    case ImageProcess::YUYV_BT601_FULL:
+        return IM_YUV_TO_RGB_BT601_FULL;
+    case ImageProcess::YUYV_BT709_LIMIT:
+        return IM_YUV_TO_RGB_BT709_LIMIT;
+    default:
+        throw std::invalid_argument("Unsupported YUYV color space.");
+    }
+}
+
+void check_rga_buffer_size(std::size_t size, const char *name)
+{
+    if (size == 0 || size > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+    {
+        throw std::invalid_argument(std::string(name) + " buffer is too large for RGA.");
+    }
+}
+
+} // namespace
+
 ImageProcess::ImageProcess(const ImageProcessConfig &config)
     : config_(config)
 {
     std::cout << "ImageProcess initialized with config" << std::endl;
+}
+
+cv::Mat ImageProcess::yuyv_to_rgb(const cv::Mat &yuyv, YuyvColorSpace color_space) const
+{
+    if (yuyv.empty())
+    {
+        throw std::invalid_argument("YUYV image is empty.");
+    }
+    if (yuyv.depth() != CV_8U || (yuyv.channels() != 1 && yuyv.channels() != 2))
+    {
+        throw std::invalid_argument("YUYV image must be CV_8UC1 or CV_8UC2.");
+    }
+
+    // OpenCV/V4L2 既可能将 YUYV 表示成 [H, W] 的 CV_8UC2，也可能表示成
+    // [H, 2W] 的 CV_8UC1。RGA 以像素宽度接收 YUYV，单个像素占 2 字节。
+    const int width = yuyv.channels() == 2 ? yuyv.cols : yuyv.cols / 2;
+    if (width <= 0 || (width & 1) != 0 ||
+        (yuyv.channels() == 1 && (yuyv.cols & 1) != 0) ||
+        yuyv.step[0] < static_cast<std::size_t>(width) * 2)
+    {
+        throw std::invalid_argument("YUYV image width must be a positive even number.");
+    }
+
+    return yuyv_to_rgb(yuyv.data, width, yuyv.rows, yuyv.step[0], color_space);
+}
+
+cv::Mat ImageProcess::yuyv_to_rgb(const void *yuyv_data, int width, int height,
+                                  std::size_t stride_bytes,
+                                  YuyvColorSpace color_space) const
+{
+    if (yuyv_data == nullptr)
+    {
+        throw std::invalid_argument("YUYV data is null.");
+    }
+    if (width <= 0 || height <= 0 || (width & 1) != 0)
+    {
+        throw std::invalid_argument("YUYV width must be a positive even number and height must be positive.");
+    }
+
+    const std::size_t packed_row_bytes = static_cast<std::size_t>(width) * 2;
+    if (stride_bytes == 0)
+    {
+        stride_bytes = packed_row_bytes;
+    }
+    if (stride_bytes < packed_row_bytes || (stride_bytes % 2) != 0)
+    {
+        throw std::invalid_argument("YUYV stride must be at least width * 2 and aligned to two bytes.");
+    }
+    if (stride_bytes / 2 > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+    {
+        throw std::invalid_argument("YUYV stride is too large for RGA.");
+    }
+
+    const std::size_t src_size = stride_bytes * static_cast<std::size_t>(height);
+    const std::size_t dst_size = static_cast<std::size_t>(width) *
+                                 static_cast<std::size_t>(height) * 3;
+    if (src_size / stride_bytes != static_cast<std::size_t>(height))
+    {
+        throw std::invalid_argument("YUYV buffer size overflows.");
+    }
+    check_rga_buffer_size(src_size, "YUYV source");
+    check_rga_buffer_size(dst_size, "RGB destination");
+
+    const int src_format = RK_FORMAT_YUYV_422;
+    const int dst_format = RK_FORMAT_RGB_888;
+    const int color_mode = get_rga_color_space(color_space);
+
+    cv::Mat rgb(height, width, CV_8UC3);
+    rga_buffer_handle_t src_handle = importbuffer_virtualaddr(
+        const_cast<void *>(yuyv_data), static_cast<int>(src_size));
+    rga_buffer_handle_t dst_handle = importbuffer_virtualaddr(
+        rgb.data, static_cast<int>(dst_size));
+
+    if (src_handle == 0 || dst_handle == 0)
+    {
+        if (src_handle != 0)
+        {
+            releasebuffer_handle(src_handle);
+        }
+        if (dst_handle != 0)
+        {
+            releasebuffer_handle(dst_handle);
+        }
+        throw std::runtime_error("RGA importbuffer_virtualaddr() failed.");
+    }
+
+    const int src_wstride = static_cast<int>(stride_bytes / 2);
+    rga_buffer_t src_img = wrapbuffer_handle(src_handle, width, height,
+                                              src_format, src_wstride, height);
+    rga_buffer_t dst_img = wrapbuffer_handle(dst_handle, width, height,
+                                              dst_format, width, height);
+
+    int ret = imcheck(src_img, dst_img, {}, {});
+    if (ret != IM_STATUS_NOERROR)
+    {
+        releasebuffer_handle(src_handle);
+        releasebuffer_handle(dst_handle);
+        throw std::runtime_error(std::string("RGA imcheck() failed: ") + imStrError((IM_STATUS)ret));
+    }
+
+    ret = imcvtcolor(src_img, dst_img, src_format, dst_format, color_mode);
+
+    releasebuffer_handle(src_handle);
+    releasebuffer_handle(dst_handle);
+
+    if (ret != IM_STATUS_SUCCESS)
+    {
+        throw std::runtime_error(std::string("RGA imcvtcolor() failed: ") + imStrError((IM_STATUS)ret));
+    }
+
+    return rgb;
 }
 
 cv::Mat ImageProcess::preprocess(cv::Mat &img)

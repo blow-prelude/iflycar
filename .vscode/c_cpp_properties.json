@@ -5,8 +5,8 @@
         {
             "name": "Linux (x64)",
             "includePath": [
-                "D:/programTools/opencv4_10/build/include/opencv2",
-                "${workspaceFolder}/3rd_party/**",
+                "${workspaceFolder}/3rdparty/**",
+                "${workspaceFolder}/3rdparty/rga/include",
                 "${workspaceFolder}/**",
                 "${workspaceFolder}/devel/include",
                 "/opt/ros/${env:ROS_DISTRO}/include",
@@ -21,10 +21,7 @@
             // 本机编译场景下 /usr/bin/gcc 在两种架构上都是“当前架构的 gcc”,通用
             // 若做交叉编译,改成 aarch64-linux-gnu-gcc 的绝对路径,例如:
             //   "/usr/bin/aarch64-linux-gnu-gcc"
-            "compilerPath": [
-                "/usr/bin/gcc",
-                "D:/programTools/mingw64/bin/gcc.exe"
-            ],
+            "compilerPath": "/usr/bin/g++",
             "cStandard": "c11",
             "cppStandard": "c++17",
             "intelliSenseMode": "linux-gcc-x64",

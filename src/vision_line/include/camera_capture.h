@@ -8,11 +8,12 @@ public:
     CameraCapture();
     CameraCapture(int index, int width, int height);
     CameraCapture(int index, int width, int height, cv::Mat mtx, cv::Mat dist);
-    CameraCapture(int index, int width, int height, cv::Mat mtx, cv::Mat dist, bool use_rga = true);
+    // convert_rgb=false 时保留相机输出的原始 YUYV，便于测试 ImageProcess 的 OpenCV 转换。
+    CameraCapture(int index, int width, int height, cv::Mat mtx, cv::Mat dist, bool convert_rgb);
     ~CameraCapture();
 
     void closeCamera();
-    void captureFrame(cv::Mat &frame);
+    cv::Mat captureFrame();
     cv::Mat correctFrame(const cv::Mat &frame);
     static cv::Mat perspectiveFrame(const cv::Mat &frame);
 
@@ -22,12 +23,6 @@ private:
     int frame_height = 480;
 
     cv::VideoCapture *cap;
-    std::vector<int> cap_params = {
-        cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('Y', 'U', 'Y', 'V'),
-        cv::CAP_PROP_FRAME_WIDTH, 640, cv::CAP_PROP_FRAME_HEIGHT, 480,
-        cv::CAP_PROP_FPS, 30, cv::CAP_PROP_BUFFERSIZE, 3,
-        cv::CAP_PROP_CONVERT_RGB, 1};
-
     cv::Mat mtx = (cv::Mat_<double>(3, 3) << 420.88617453, 0.0, 322.17160714,
                    0.0, 423.22330218, 231.10564846,
                    0.0, 0.0, 1.0);

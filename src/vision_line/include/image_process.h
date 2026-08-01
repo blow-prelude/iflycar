@@ -1,7 +1,11 @@
 #pragma once
 #include <opencv2/opencv.hpp>
 // #include <Eigen/Dense>
+#include <cstddef>
 #include <iostream>
+#include <string>
+#include <vector>
+#include <array>
 
 struct ImageProcessConfig
 {
@@ -94,8 +98,27 @@ struct LineFit
 class ImageProcess
 {
 public:
+    // 使用 RGA 进行 YUYV 色域转换。
+    enum YuyvColorSpace
+    {
+        YUYV_BT601_LIMIT = 1,
+        YUYV_BT601_FULL = 2,
+        YUYV_BT709_LIMIT = 3,
+    };
+
     ImageProcess(const ImageProcessConfig &config);
     // ~ImageProcess();
+
+    // 将 cv::Mat 中的 YUYV422 转成 CV_8UC3，通道顺序为 R、G、B。
+    // 支持 CV_8UC2(height, width) 和 CV_8UC1(height, width * 2)。
+    cv::Mat yuyv_to_rgb(const cv::Mat &yuyv,
+                        YuyvColorSpace color_space = YUYV_BT601_LIMIT) const;
+
+    // 将裸 YUYV422 缓冲区转成 CV_8UC3。stride_bytes 为每行字节数，0 表示
+    // 使用紧凑布局 width * 2；输入缓冲区在转换完成前必须保持有效。
+    cv::Mat yuyv_to_rgb(const void *yuyv_data, int width, int height,
+                        std::size_t stride_bytes = 0,
+                        YuyvColorSpace color_space = YUYV_BT601_LIMIT) const;
 
     cv::Mat preprocess(cv::Mat &img);
     void resize_frame(cv::Mat &img);
