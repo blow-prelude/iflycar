@@ -14,6 +14,13 @@ find_package(catkin REQUIRED COMPONENTS
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
 
+find_package(OpenCV REQUIRED)
+
+set(RKNN_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/librknn)
+set(RGA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/rga)
+set(RKNN_LIBRARY ${RKNN_ROOT}/librknnrt.so)
+set(RGA_LIBRARY ${RGA_ROOT}/libs/librga.so)
+
 
 ## Uncomment this if the package has a setup.py. This macro ensures
 ## modules and global scripts declared therein get installed
@@ -114,8 +121,11 @@ catkin_package(
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
 include_directories(
-# include
+  include
   ${catkin_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
+  ${RKNN_ROOT}/include
+  ${RGA_ROOT}/include
 )
 
 ## Declare a C++ library
@@ -133,20 +143,24 @@ include_directories(
 ## The recommended prefix ensures that target names across packages don't collide
 # add_executable(${PROJECT_NAME}_node src/traffic_light_node.cpp)
 
-## Rename C++ executable without prefix
-## The above recommended prefix causes long target names, the following renames the
-## target back to the shorter version for ease of user use
-## e.g. "rosrun someones_pkg node" instead of "rosrun someones_pkg someones_pkg_node"
-# set_target_properties(${PROJECT_NAME}_node PROPERTIES OUTPUT_NAME node PREFIX "")
-
-## Add cmake target dependencies of the executable
-## same as for the library above
-# add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-
-## Specify libraries to link a library or executable target against
-# target_link_libraries(${PROJECT_NAME}_node
-#   ${catkin_LIBRARIES}
-# )
+add_executable(traffic_light_demo
+  src/traffic_light_demo.cc
+  src/yolov8_model.cc
+  src/yolov8.cc
+  src/postprocess.cc
+  src/camera_capture.cpp
+  src/image_utils.c
+  src/file_utils.c
+)
+target_link_libraries(traffic_light_demo
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBS}
+  ${RKNN_LIBRARY}
+  ${RGA_LIBRARY}
+  pthread
+  dl
+  m
+)
 
 #############
 ## Install ##
@@ -199,6 +213,18 @@ include_directories(
 # if(TARGET ${PROJECT_NAME}-test)
 #   target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME})
 # endif()
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_rknn_pool test/test_rknn_pool.cpp)
+  if(TARGET test_rknn_pool)
+    target_link_libraries(test_rknn_pool pthread gtest_main)
+  endif()
+
+  catkin_add_gtest(test_yolov8_postprocess test/test_yolov8_postprocess.cpp src/postprocess.cc)
+  if(TARGET test_yolov8_postprocess)
+    target_link_libraries(test_yolov8_postprocess m gtest_main)
+  endif()
+endif()
 
 ## Add folders to be run by python nosetests
 # catkin_add_nosetests(test)
