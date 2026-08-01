@@ -18,6 +18,7 @@ find_package(OpenCV REQUIRED)
 
 set(RKNN_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/librknn)
 set(RGA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/rga)
+set(STB_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/stb_image)
 set(RKNN_LIBRARY ${RKNN_ROOT}/librknnrt.so)
 set(RGA_LIBRARY ${RGA_ROOT}/libs/librga.so)
 
@@ -126,6 +127,7 @@ include_directories(
   ${OpenCV_INCLUDE_DIRS}
   ${RKNN_ROOT}/include
   ${RGA_ROOT}/include
+  ${STB_ROOT}
 )
 
 ## Declare a C++ library
