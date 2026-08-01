@@ -3,6 +3,7 @@
 #include <vector>
 #include "rknn_api.h"
 #include "rknn_pool.hpp"
+#include "yolov8.h"
 
 class FakeModel {
 public:
@@ -41,4 +42,11 @@ TEST(RknnPool, InitializesThreeWorkersAndPreservesFifoResults) {
     ASSERT_EQ(pool.get(output), 0);
     EXPECT_EQ(output, 30);
     EXPECT_EQ(pool.get(output), 1);
+}
+
+TEST(YoloV8Core, MapsWorkerIdsToDedicatedCores) {
+    EXPECT_EQ(yolov8_core_mask_for_worker(0), RKNN_NPU_CORE_0);
+    EXPECT_EQ(yolov8_core_mask_for_worker(1), RKNN_NPU_CORE_1);
+    EXPECT_EQ(yolov8_core_mask_for_worker(2), RKNN_NPU_CORE_2);
+    EXPECT_EQ(yolov8_core_mask_for_worker(3), RKNN_NPU_CORE_UNDEFINED);
 }
