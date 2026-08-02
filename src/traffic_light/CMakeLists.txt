@@ -19,6 +19,7 @@ find_package(OpenCV REQUIRED)
 set(RKNN_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/librknn)
 set(RGA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/rga)
 set(STB_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/stb_image)
+set(RKNN_UTILS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/rknn_utils)
 set(RKNN_LIBRARY ${RKNN_ROOT}/librknnrt.so)
 set(RGA_LIBRARY ${RGA_ROOT}/libs/librga.so)
 
@@ -127,6 +128,7 @@ include_directories(
   ${OpenCV_INCLUDE_DIRS}
   ${RKNN_ROOT}/include
   ${RGA_ROOT}/include
+  ${RKNN_UTILS_ROOT}
   ${STB_ROOT}
 )
 
@@ -151,8 +153,8 @@ add_executable(traffic_light_demo
   src/yolov8.cc
   src/postprocess.cc
   src/camera_capture.cpp
-  src/image_utils.c
-  src/file_utils.c
+  ${RKNN_UTILS_ROOT}/image_utils.c
+  ${RKNN_UTILS_ROOT}/file_utils.c
 )
 target_link_libraries(traffic_light_demo
   ${catkin_LIBRARIES}
