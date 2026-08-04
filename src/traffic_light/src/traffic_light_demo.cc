@@ -1,3 +1,4 @@
+#include <chrono>
 #include <iostream>
 #include <stdexcept>
 
@@ -38,12 +39,52 @@ int main()
 
     int frames = 0;
     bool stop = false;
+    using Clock = std::chrono::steady_clock;
+    auto fps_window_start = Clock::now();
+    int displayed_frames = 0;
+    double current_fps = 0.0;
+
+    auto show_result = [&](cv::Mat &result) {
+        ++displayed_frames;
+        const auto now = Clock::now();
+        const double elapsed =
+            std::chrono::duration<double>(now - fps_window_start).count();
+        if (elapsed >= 1.0)
+        {
+            current_fps = displayed_frames / elapsed;
+            displayed_frames = 0;
+            fps_window_start = now;
+        }
+
+        const std::string fps_text = cv::format("FPS: %.2f", current_fps);
+        int baseline = 0;
+        const cv::Size text_size = cv::getTextSize(
+            fps_text, cv::FONT_HERSHEY_SIMPLEX, 0.7, 2, &baseline);
+        const int margin = 10;
+        const cv::Point text_origin(
+            std::max(margin, result.cols - text_size.width - margin),
+            text_size.height + margin);
+        const cv::Rect background(
+            text_origin.x - 6,
+            text_origin.y - text_size.height - 6,
+            text_size.width + 12,
+            text_size.height + baseline + 12);
+
+        cv::rectangle(result, background, cv::Scalar(0, 0, 0), cv::FILLED);
+        cv::putText(result, fps_text, text_origin,
+                    cv::FONT_HERSHEY_SIMPLEX, 0.7,
+                    cv::Scalar(0, 255, 255), 2, cv::LINE_AA);
+        cv::imshow("Camera FPS", result);
+    };
+
     while (!stop)
     {
         cv::Mat frame;
         try
         {
             frame = camera->captureFrame();
+            camera->correctFrame(frame);
+            cv::flip(frame, frame, 1);
         }
         catch (const std::exception &e)
         {
@@ -63,7 +104,7 @@ int main()
             {
                 break;
             }
-            cv::imshow("Camera FPS", result);
+            show_result(result);
         }
 
         if (cv::waitKey(1) == 'q')
@@ -80,7 +121,7 @@ int main()
         {
             break;
         }
-        cv::imshow("Camera FPS", result);
+        show_result(result);
         if (cv::waitKey(1) == 'q')
         {
             break;

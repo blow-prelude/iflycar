@@ -21,7 +21,9 @@ find_package(OpenCV REQUIRED)
 # RGA 用于硬件色域转换。该库和目标板架构相关，请在目标板或对应交叉编译环境中使用。
 set(RGA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/rga)
 set(RGA_INCLUDE_DIR ${RGA_ROOT}/include)
-set(RGA_LIBRARY ${RGA_ROOT}/libs/librga.so)
+# Use the static RGA archive: the bundled shared object requires
+# exp@GLIBC_2.29, while the target system provides glibc 2.28.
+set(RGA_LIBRARY ${RGA_ROOT}/libs/librga.a)
 
 if(OpenCV_FOUND)
   include_directories(${OpenCV_INCLUDE_DIRS})
