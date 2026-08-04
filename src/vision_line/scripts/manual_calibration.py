@@ -367,6 +367,7 @@ def calculate_size(src_points, M):
 
     new_width = int(xmax - xmin)
     new_height = int(ymax - ymin)
+    print("new_width:", new_width, "new_height:", new_height)
 
     # 利用 xmin, ymin 修改矩阵的平移量
     # 注意：透视变换不能仅靠修改 [0,2]/[1,2] 来平移，
@@ -392,7 +393,7 @@ def main():
     pictures_dir = os.path.join(os.path.dirname(script_dir), "pictures")
 
     # 手动填入文件名（位于上一级目录的 pictures/ 下）
-    image_name = "captured_image_20260720_151700.jpg"
+    image_name = "captured_image_20260720_165810.jpg"
     image_path = os.path.join(pictures_dir, image_name)
 
     if not os.path.exists(image_path):
@@ -404,7 +405,7 @@ def main():
 
     # 创建标定工具并运行
     calibration = PerspectiveCalibration(image_path)
-    calibration.set_det_rect(0.02, 0.98, 0.10, 0.75)  # 可根据需要调整目标矩形
+    calibration.set_det_rect(0.3, 0.7, 0.20, 0.60)  # 可根据需要调整目标矩形
     calibration.run()
 
 

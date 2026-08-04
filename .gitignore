@@ -3,7 +3,8 @@
 .catkin_workspace
 
 /.marscode
-/docs
+
 
 **/__pycache__/
 *.zip
+.worktrees/

@@ -202,6 +202,11 @@ public:
                     }
                 }
 
+                else
+                {
+                    pers_frame = frame;
+                }
+
                 processor_.set_frame(pers_frame);
 
                 if (pers_frame.empty())
@@ -216,7 +221,7 @@ public:
                 int proc_w = binary_img.cols;
 
                 // 调试：检查图像尺寸
-                static int debug_count = 0;
+                // static int debug_count = 0;
                 // if (debug_count++ % 30 == 0)
                 // {
                 //     ROS_INFO("Frame dimensions: orig_h=%d, orig_w=%d, proc_h=%d, proc_w=%d",
