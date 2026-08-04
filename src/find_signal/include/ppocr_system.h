@@ -47,8 +47,8 @@ typedef struct ppocr_det_postprocess_params {
     float threshold;
     float box_threshold;
     bool use_dilate;
-    char* db_score_mode;
-    char* db_box_type;
+    const char* db_score_mode;
+    const char* db_box_type;
     float db_unclip_ratio;
 } ppocr_det_postprocess_params;
 
@@ -72,6 +72,24 @@ typedef struct ppocr_text_recog_array_result_t
 } ppocr_text_recog_array_result_t;
 
 int init_ppocr_model(const char* model_path, rknn_app_context_t* app_ctx);
+
+int init_ppocr_model_on_core(const char* model_path, rknn_app_context_t* app_ctx,
+                             rknn_core_mask core_mask);
+
+inline rknn_core_mask ppocr_core_mask_for_worker(int worker_id)
+{
+    switch (worker_id)
+    {
+    case 0:
+        return RKNN_NPU_CORE_0;
+    case 1:
+        return RKNN_NPU_CORE_1;
+    case 2:
+        return RKNN_NPU_CORE_2;
+    default:
+        return RKNN_NPU_CORE_UNDEFINED;
+    }
+}
 
 int release_ppocr_model(rknn_app_context_t* app_ctx);
 
