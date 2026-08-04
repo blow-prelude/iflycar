@@ -1,8 +1,12 @@
 #include "camera_capture.h"
 
-cv::Mat CameraCapture::perspective_matrix = (cv::Mat_<double>(3, 3) << -0.498790, -1.220723, 227.487557,
-                                             -0.040653, -1.748066, 250.989823,
-                                             -0.000237, -0.007806, 1.000000);
+// cv::Mat CameraCapture::perspective_matrix = (cv::Mat_<double>(3, 3) << -0.493484, -1.133680, 215.265780,
+//                                              -0.052136, -2.137570, 309.269947,
+//                                              -0.000221, -0.007728, 1.000000);
+
+cv::Mat CameraCapture::perspective_matrix = (cv::Mat_<double>(3, 3) << -0.288264, -1.302941, 204.591639,
+                                             0.001102, -2.166359, 298.550349,
+                                             0.000018, -0.008303, 1.000000);
 
 CameraCapture::CameraCapture()
 {
@@ -115,7 +119,7 @@ cv::Mat CameraCapture::perspectiveFrame(const cv::Mat &frame)
         }
 
         cv::Mat dst;
-        cv::warpPerspective(frame, dst, perspective_matrix, frame.size(), cv::INTER_LINEAR);
+        cv::warpPerspective(frame, dst, perspective_matrix, cv::Size(160, 144), cv::INTER_LINEAR);
 
         return dst;
     }
