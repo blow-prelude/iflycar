@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <algorithm>
+#include <array>
 #include <vector>
 
 #include "opencv2/opencv.hpp"
@@ -12,13 +14,13 @@
 
 bool CompareBox(const std::array<int, 8>& result1, const std::array<int, 8>& result2)
 {
-    if (result1[1] < result2[1]) 
+    if (result1[1] < result2[1])
     {
         return true;
-    } else if (result1[1] == result2[1]) 
+    } else if (result1[1] == result2[1])
     {
         return result1[0] < result2[0];
-    } else 
+    } else
     {
         return false;
     }
@@ -32,50 +34,75 @@ void SortBoxes(std::vector<std::array<int, 8>>* boxes)
     {
         return;
     }
-    
-    for (int i = 0; i < boxes->size() - 1; i++) {
-        for (int j = i; j >=0 ; j--){
-            if (std::abs((*boxes)[j + 1][1] - (*boxes)[j][1]) < 10 && ((*boxes)[j + 1][0] < (*boxes)[j][0])) 
+
+    for (size_t i = 0; i + 1 < boxes->size(); i++)
+    {
+        for (size_t j = i + 1; j > 0; j--)
+        {
+            if (std::abs((*boxes)[j][1] - (*boxes)[j - 1][1]) < 10 &&
+                (*boxes)[j][0] < (*boxes)[j - 1][0])
             {
-                std::swap((*boxes)[i], (*boxes)[i + 1]);
+                std::swap((*boxes)[j], (*boxes)[j - 1]);
+            }
+            else
+            {
+                break;
             }
         }
     }
-
 }
 
 cv::Mat GetRotateCropImage(const cv::Mat& srcimage, const std::array<int, 8>& box)
 {
-    cv::Mat image;
-    srcimage.copyTo(image);
-
-    std::vector<std::vector<int>> points;
-
-    for (int i = 0; i < 4; ++i) {
-        std::vector<int> tmp;
-        tmp.push_back(box[2 * i]);
-        tmp.push_back(box[2 * i + 1]);
-        points.push_back(tmp);
-    }
-    int x_collect[4] = {box[0], box[2], box[4], box[6]};
-    int y_collect[4] = {box[1], box[3], box[5], box[7]};
-    int left = int(*std::min_element(x_collect, x_collect + 4));
-    int right = int(*std::max_element(x_collect, x_collect + 4));
-    int top = int(*std::min_element(y_collect, y_collect + 4));
-    int bottom = int(*std::max_element(y_collect, y_collect + 4));
-
-    cv::Mat img_crop;
-    image(cv::Rect(left, top, right - left, bottom - top)).copyTo(img_crop);
-
-    for (int i = 0; i < points.size(); i++) {
-        points[i][0] -= left;
-        points[i][1] -= top;
+    if (srcimage.empty() || srcimage.cols < 2 || srcimage.rows < 2)
+    {
+        return cv::Mat();
     }
 
-    int img_crop_width = int(sqrt(pow(points[0][0] - points[1][0], 2) +
-                                    pow(points[0][1] - points[1][1], 2)));
-    int img_crop_height = int(sqrt(pow(points[0][0] - points[3][0], 2) +
-                                    pow(points[0][1] - points[3][1], 2)));
+    const int max_x = srcimage.cols - 1;
+    const int max_y = srcimage.rows - 1;
+    std::array<cv::Point2f, 4> points;
+    for (int i = 0; i < 4; ++i)
+    {
+        points[i].x = static_cast<float>(std::max(0, std::min(max_x, box[2 * i])));
+        points[i].y = static_cast<float>(std::max(0, std::min(max_y, box[2 * i + 1])));
+    }
+
+    float left = points[0].x;
+    float right = points[0].x;
+    float top = points[0].y;
+    float bottom = points[0].y;
+    for (size_t i = 1; i < points.size(); ++i)
+    {
+        left = std::min(left, points[i].x);
+        right = std::max(right, points[i].x);
+        top = std::min(top, points[i].y);
+        bottom = std::max(bottom, points[i].y);
+    }
+
+    const int crop_left = static_cast<int>(left);
+    const int crop_top = static_cast<int>(top);
+    const int crop_right = static_cast<int>(right);
+    const int crop_bottom = static_cast<int>(bottom);
+    if (crop_right <= crop_left || crop_bottom <= crop_top)
+    {
+        return cv::Mat();
+    }
+
+    cv::Rect crop_rect(crop_left, crop_top,
+                       crop_right - crop_left + 1,
+                       crop_bottom - crop_top + 1);
+    cv::Mat img_crop = srcimage(crop_rect).clone();
+    for (size_t i = 0; i < points.size(); ++i)
+    {
+        points[i].x -= static_cast<float>(crop_left);
+        points[i].y -= static_cast<float>(crop_top);
+    }
+
+    const int img_crop_width = std::max(
+        1, static_cast<int>(std::round(cv::norm(points[0] - points[1]))));
+    const int img_crop_height = std::max(
+        1, static_cast<int>(std::round(cv::norm(points[0] - points[3]))));
 
     cv::Point2f pts_std[4];
     pts_std[0] = cv::Point2f(0., 0.);
@@ -83,21 +110,15 @@ cv::Mat GetRotateCropImage(const cv::Mat& srcimage, const std::array<int, 8>& bo
     pts_std[2] = cv::Point2f(img_crop_width, img_crop_height);
     pts_std[3] = cv::Point2f(0.f, img_crop_height);
 
-    cv::Point2f pointsf[4];
-    pointsf[0] = cv::Point2f(points[0][0], points[0][1]);
-    pointsf[1] = cv::Point2f(points[1][0], points[1][1]);
-    pointsf[2] = cv::Point2f(points[2][0], points[2][1]);
-    pointsf[3] = cv::Point2f(points[3][0], points[3][1]);
-
-    cv::Mat M = cv::getPerspectiveTransform(pointsf, pts_std);
+    cv::Mat M = cv::getPerspectiveTransform(points.data(), pts_std);
 
     cv::Mat dst_img;
     cv::warpPerspective(img_crop, dst_img, M,
                         cv::Size(img_crop_width, img_crop_height),
-                        cv::BORDER_REPLICATE);
+                        cv::INTER_LINEAR, cv::BORDER_REPLICATE);
 
     if (float(dst_img.rows) >= float(dst_img.cols) * 1.5) {
-        cv::Mat srcCopy = cv::Mat(dst_img.rows, dst_img.cols, dst_img.depth());
+        cv::Mat srcCopy;
         cv::transpose(dst_img, srcCopy);
         cv::flip(srcCopy, srcCopy, 0);
         return srcCopy;
@@ -117,84 +138,126 @@ static void dump_tensor_attr(rknn_tensor_attr* attr)
 
 int init_ppocr_model(const char* model_path, rknn_app_context_t* app_ctx)
 {
-    int ret;
-    int model_len = 0;
-    char* model;
-    rknn_context ctx = 0;
+    return init_ppocr_model_on_core(model_path, app_ctx, RKNN_NPU_CORE_AUTO);
+}
 
-    // Load RKNN Model
-    model_len = read_data_from_file(model_path, &model);
-    if (model == NULL) {
-        printf("load_model fail!\n");
+int init_ppocr_model_on_core(const char* model_path, rknn_app_context_t* app_ctx,
+                             rknn_core_mask core_mask)
+{
+    if (model_path == NULL || app_ctx == NULL)
+    {
+        printf("init_ppocr_model_on_core invalid argument\n");
         return -1;
     }
+
+    memset(app_ctx, 0, sizeof(rknn_app_context_t));
+
+    int model_len = 0;
+    char* model = NULL;
+    rknn_context ctx = 0;
+    int ret = read_data_from_file(model_path, &model);
+    if (ret < 0 || model == NULL)
+    {
+        printf("load_model fail! path=%s\n", model_path);
+        return -1;
+    }
+    model_len = ret;
 
     ret = rknn_init(&ctx, model, model_len, 0, NULL);
     free(model);
-    if (ret < 0) {
-        printf("rknn_init fail! ret=%d\n", ret);
+    if (ret < 0)
+    {
+        printf("rknn_init fail! ret=%d path=%s\n", ret, model_path);
         return -1;
     }
 
-    // Get Model Input Output Number
+    ret = rknn_set_core_mask(ctx, core_mask);
+    if (ret < 0)
+    {
+        printf("rknn_set_core_mask fail! ret=%d core=%d path=%s\n",
+               ret, static_cast<int>(core_mask), model_path);
+        rknn_destroy(ctx);
+        return -1;
+    }
+
     rknn_input_output_num io_num;
+    memset(&io_num, 0, sizeof(io_num));
     ret = rknn_query(ctx, RKNN_QUERY_IN_OUT_NUM, &io_num, sizeof(io_num));
-    if (ret != RKNN_SUCC) {
-        printf("rknn_query fail! ret=%d\n", ret);
+    if (ret != RKNN_SUCC || io_num.n_input <= 0 || io_num.n_output <= 0)
+    {
+        printf("rknn_query in/out num fail! ret=%d path=%s\n", ret, model_path);
+        rknn_destroy(ctx);
         return -1;
     }
-    printf("model input num: %d, output num: %d\n", io_num.n_input, io_num.n_output);
+    printf("model input num: %d, output num: %d, core=%d\n",
+           io_num.n_input, io_num.n_output, static_cast<int>(core_mask));
 
-    // Get Model Input Info
-    printf("input tensors:\n");
-    rknn_tensor_attr input_attrs[io_num.n_input];
-    memset(input_attrs, 0, sizeof(input_attrs));
-    for (int i = 0; i < io_num.n_input; i++) {
+    std::vector<rknn_tensor_attr> input_attrs(io_num.n_input);
+    std::vector<rknn_tensor_attr> output_attrs(io_num.n_output);
+    for (int i = 0; i < io_num.n_input; ++i)
+    {
+        memset(&input_attrs[i], 0, sizeof(rknn_tensor_attr));
         input_attrs[i].index = i;
-        ret = rknn_query(ctx, RKNN_QUERY_INPUT_ATTR, &(input_attrs[i]), sizeof(rknn_tensor_attr));
-        if (ret != RKNN_SUCC) {
-            printf("rknn_query fail! ret=%d\n", ret);
+        ret = rknn_query(ctx, RKNN_QUERY_INPUT_ATTR,
+                         &input_attrs[i], sizeof(rknn_tensor_attr));
+        if (ret != RKNN_SUCC)
+        {
+            printf("rknn_query input attr fail! ret=%d path=%s\n", ret, model_path);
+            rknn_destroy(ctx);
             return -1;
         }
-        dump_tensor_attr(&(input_attrs[i]));
+        dump_tensor_attr(&input_attrs[i]);
     }
 
-    // Get Model Output Info
-    printf("output tensors:\n");
-    rknn_tensor_attr output_attrs[io_num.n_output];
-    memset(output_attrs, 0, sizeof(output_attrs));
-    for (int i = 0; i < io_num.n_output; i++) {
+    for (int i = 0; i < io_num.n_output; ++i)
+    {
+        memset(&output_attrs[i], 0, sizeof(rknn_tensor_attr));
         output_attrs[i].index = i;
-        ret = rknn_query(ctx, RKNN_QUERY_OUTPUT_ATTR, &(output_attrs[i]), sizeof(rknn_tensor_attr));
-        if (ret != RKNN_SUCC) {
-            printf("rknn_query fail! ret=%d\n", ret);
+        ret = rknn_query(ctx, RKNN_QUERY_OUTPUT_ATTR,
+                         &output_attrs[i], sizeof(rknn_tensor_attr));
+        if (ret != RKNN_SUCC)
+        {
+            printf("rknn_query output attr fail! ret=%d path=%s\n", ret, model_path);
+            rknn_destroy(ctx);
             return -1;
         }
-        dump_tensor_attr(&(output_attrs[i]));
+        dump_tensor_attr(&output_attrs[i]);
     }
 
-    // Set to context
+    app_ctx->input_attrs = static_cast<rknn_tensor_attr*>(
+        malloc(io_num.n_input * sizeof(rknn_tensor_attr)));
+    app_ctx->output_attrs = static_cast<rknn_tensor_attr*>(
+        malloc(io_num.n_output * sizeof(rknn_tensor_attr)));
+    if (app_ctx->input_attrs == NULL || app_ctx->output_attrs == NULL)
+    {
+        printf("allocate tensor attributes fail! path=%s\n", model_path);
+        release_ppocr_model(app_ctx);
+        rknn_destroy(ctx);
+        app_ctx->rknn_ctx = 0;
+        return -1;
+    }
+
+    memcpy(app_ctx->input_attrs, input_attrs.data(),
+           io_num.n_input * sizeof(rknn_tensor_attr));
+    memcpy(app_ctx->output_attrs, output_attrs.data(),
+           io_num.n_output * sizeof(rknn_tensor_attr));
     app_ctx->rknn_ctx = ctx;
     app_ctx->io_num = io_num;
-    app_ctx->input_attrs = (rknn_tensor_attr*)malloc(io_num.n_input * sizeof(rknn_tensor_attr));
-    memcpy(app_ctx->input_attrs, input_attrs, io_num.n_input * sizeof(rknn_tensor_attr));
-    app_ctx->output_attrs = (rknn_tensor_attr*)malloc(io_num.n_output * sizeof(rknn_tensor_attr));
-    memcpy(app_ctx->output_attrs, output_attrs, io_num.n_output * sizeof(rknn_tensor_attr));
 
-    if (input_attrs[0].fmt == RKNN_TENSOR_NCHW) {
-        printf("model is NCHW input fmt\n");
+    if (input_attrs[0].fmt == RKNN_TENSOR_NCHW)
+    {
         app_ctx->model_channel = input_attrs[0].dims[1];
-        app_ctx->model_height  = input_attrs[0].dims[2];
-        app_ctx->model_width   = input_attrs[0].dims[3];
-    } else {
-        printf("model is NHWC input fmt\n");
-        app_ctx->model_height  = input_attrs[0].dims[1];
-        app_ctx->model_width   = input_attrs[0].dims[2];
+        app_ctx->model_height = input_attrs[0].dims[2];
+        app_ctx->model_width = input_attrs[0].dims[3];
+    }
+    else
+    {
+        app_ctx->model_height = input_attrs[0].dims[1];
+        app_ctx->model_width = input_attrs[0].dims[2];
         app_ctx->model_channel = input_attrs[0].dims[3];
     }
     printf("model input height=%d, width=%d, channel=%d\n",
-        app_ctx->model_height, app_ctx->model_width, app_ctx->model_channel);
-
+           app_ctx->model_height, app_ctx->model_width, app_ctx->model_channel);
     return 0;
 }
 
@@ -217,14 +280,25 @@ int release_ppocr_model(rknn_app_context_t* app_ctx)
 
 int inference_ppocr_det_model(rknn_app_context_t* app_ctx, image_buffer_t* src_img, ppocr_det_postprocess_params* params, ppocr_det_result* out_result)
 {
-    int ret;
+    if (app_ctx == NULL || src_img == NULL || params == NULL || out_result == NULL ||
+        app_ctx->rknn_ctx == 0 || src_img->virt_addr == NULL ||
+        src_img->width <= 0 || src_img->height <= 0)
+    {
+        return -1;
+    }
+
+    int ret = -1;
     image_buffer_t img;
     rknn_input inputs[1];
     rknn_output outputs[1];
+    bool outputs_acquired = false;
+    float scale_w = 0.0f;
+    float scale_h = 0.0f;
 
     memset(&img, 0, sizeof(image_buffer_t));
     memset(inputs, 0, sizeof(inputs));
     memset(outputs, 0, sizeof(outputs));
+    memset(out_result, 0, sizeof(ppocr_det_result));
 
     // Pre Process
     img.width = app_ctx->model_width;
@@ -240,7 +314,7 @@ int inference_ppocr_det_model(rknn_app_context_t* app_ctx, image_buffer_t* src_i
     ret = convert_image(src_img, &img, NULL, NULL, 0);
     if (ret < 0) {
         printf("convert_image fail! ret=%d\n", ret);
-        return -1;
+        goto out;
     }
 
     // Set Input Data
@@ -250,13 +324,13 @@ int inference_ppocr_det_model(rknn_app_context_t* app_ctx, image_buffer_t* src_i
     inputs[0].size  = app_ctx->model_width * app_ctx->model_height * app_ctx->model_channel;
     inputs[0].buf   = img.virt_addr;
 
-    float scale_w = (float)src_img->width / (float)img.width;
-    float scale_h = (float)src_img->height / (float)img.height;
+    scale_w = (float)src_img->width / (float)img.width;
+    scale_h = (float)src_img->height / (float)img.height;
 
     ret = rknn_inputs_set(app_ctx->rknn_ctx, 1, inputs);
     if (ret < 0) {
         printf("rknn_input_set fail! ret=%d\n", ret);
-        return -1;
+        goto out;
     }
 
     // Run
@@ -264,7 +338,7 @@ int inference_ppocr_det_model(rknn_app_context_t* app_ctx, image_buffer_t* src_i
     ret = rknn_run(app_ctx->rknn_ctx, nullptr);
     if (ret < 0) {
         printf("rknn_run fail! ret=%d\n", ret);
-        return -1;
+        goto out;
     }
 
     // Get Output
@@ -274,17 +348,21 @@ int inference_ppocr_det_model(rknn_app_context_t* app_ctx, image_buffer_t* src_i
         printf("rknn_outputs_get fail! ret=%d\n", ret);
         goto out;
     }
+    outputs_acquired = true;
 
     // Post Process
-    ret = dbnet_postprocess((float*)outputs[0].buf, app_ctx->model_width, app_ctx->model_height, 
-                                                params->threshold, params->box_threshold, params->use_dilate, params->db_score_mode, 
+    ret = dbnet_postprocess((float*)outputs[0].buf, app_ctx->model_width, app_ctx->model_height,
+                                                params->threshold, params->box_threshold, params->use_dilate, params->db_score_mode,
                                                 params->db_unclip_ratio, params->db_box_type,
                                                 scale_w, scale_h, out_result);
-    
-    // Remeber to release rknn output
-    rknn_outputs_release(app_ctx->rknn_ctx, 1, outputs);
 
 out:
+    if (outputs_acquired)
+    {
+        int release_ret = rknn_outputs_release(app_ctx->rknn_ctx, 1, outputs);
+        if (ret == 0 && release_ret < 0)
+            ret = release_ret;
+    }
     if (img.virt_addr != NULL) {
         free(img.virt_addr);
     }
@@ -294,18 +372,32 @@ out:
 
 int inference_ppocr_rec_model(rknn_app_context_t* app_ctx, image_buffer_t* src_img, ppocr_rec_result* out_result)
 {
-    int ret;
+    if (app_ctx == NULL || src_img == NULL || out_result == NULL ||
+        app_ctx->rknn_ctx == 0 || src_img->virt_addr == NULL ||
+        src_img->width <= 0 || src_img->height <= 0)
+    {
+        return -1;
+    }
+
+    int ret = -1;
     rknn_input inputs[1];
     rknn_output outputs[1];
-    int allow_slight_change = 1;
+    bool outputs_acquired = false;
+    int resized_w = 0;
+    int out_len_seq = 0;
+    const int imgW = app_ctx->model_width;
+    const int imgH = app_ctx->model_height;
 
     memset(inputs, 0, sizeof(inputs));
     memset(outputs, 0, sizeof(outputs));
+    memset(out_result, 0, sizeof(ppocr_rec_result));
+    inputs[0].buf = NULL;
+
+    if (imgW <= 0 || imgH <= 0 || app_ctx->model_channel <= 0)
+        return -1;
 
     // Pre Process
     float ratio = src_img->width / float(src_img->height);
-    int resized_w;
-    int imgW = app_ctx->model_width, imgH = app_ctx->model_height;
     if (std::ceil(imgH*ratio) > imgW) {
         resized_w = imgW;
     }
@@ -326,14 +418,18 @@ int inference_ppocr_rec_model(rknn_app_context_t* app_ctx, image_buffer_t* src_i
     inputs[0].type  = RKNN_TENSOR_FLOAT32;
     inputs[0].fmt   = RKNN_TENSOR_NHWC;
     inputs[0].size  = app_ctx->model_width * app_ctx->model_height * app_ctx->model_channel * sizeof(float);
-    // inputs[0].buf   = img.virt_addr;
     inputs[0].buf = malloc(inputs[0].size);
+    if (inputs[0].buf == NULL)
+    {
+        printf("malloc recognition input size:%d fail!\n", inputs[0].size);
+        goto out;
+    }
     memcpy(inputs[0].buf, img_M.data, inputs[0].size);
 
     ret = rknn_inputs_set(app_ctx->rknn_ctx, 1, inputs);
     if (ret < 0) {
         printf("rknn_input_set fail! ret=%d\n", ret);
-        return -1;
+        goto out;
     }
 
     // Run
@@ -341,25 +437,29 @@ int inference_ppocr_rec_model(rknn_app_context_t* app_ctx, image_buffer_t* src_i
     ret = rknn_run(app_ctx->rknn_ctx, nullptr);
     if (ret < 0) {
         printf("rknn_run fail! ret=%d\n", ret);
-        return -1;
+        goto out;
     }
 
     // Get Output
-    int out_len_seq = app_ctx->model_width / 8;
+    out_len_seq = app_ctx->model_width / 8;
     outputs[0].want_float = 1;
     ret = rknn_outputs_get(app_ctx->rknn_ctx, 1, outputs, NULL);
     if (ret < 0) {
         printf("rknn_outputs_get fail! ret=%d\n", ret);
         goto out;
     }
+    outputs_acquired = true;
 
     // Post Process
     ret = rec_postprocess((float*)outputs[0].buf, MODEL_OUT_CHANNEL, out_len_seq, out_result);
-    
-    // Remeber to release rknn output
-    rknn_outputs_release(app_ctx->rknn_ctx, 1, outputs);
 
 out:
+    if (outputs_acquired)
+    {
+        int release_ret = rknn_outputs_release(app_ctx->rknn_ctx, 1, outputs);
+        if (ret == 0 && release_ret < 0)
+            ret = release_ret;
+    }
     if (inputs[0].buf != NULL) {
         free(inputs[0].buf);
     }
@@ -369,9 +469,15 @@ out:
 
 int inference_ppocr_system_model(ppocr_system_app_context* sys_app_ctx, image_buffer_t* src_img, ppocr_det_postprocess_params* params, ppocr_text_recog_array_result_t* out_result)
 {
-    int ret;
+    if (sys_app_ctx == NULL || src_img == NULL || params == NULL || out_result == NULL)
+        return -1;
+
+    int ret = -1;
+    memset(out_result, 0, sizeof(ppocr_text_recog_array_result_t));
+
     // Detect Text
     ppocr_det_result det_results;
+    memset(&det_results, 0, sizeof(det_results));
     ret = inference_ppocr_det_model(&sys_app_ctx->det_context, src_img, params, &det_results);
     if (ret != 0) {
         printf("inference_ppocr_det_model fail! ret=%d\n", ret);
@@ -379,7 +485,6 @@ int inference_ppocr_system_model(ppocr_system_app_context* sys_app_ctx, image_bu
     }
 
     // Recogize Text
-    out_result->count = 0;
     if (det_results.count == 0) {           // detect nothing
         return 0;
     }
@@ -403,9 +508,14 @@ int inference_ppocr_system_model(ppocr_system_app_context* sys_app_ctx, image_bu
     SortBoxes(&boxes_result);
 
     // text recognize
-    for (int i=0; i < boxes_result.size(); i++) {
+    for (size_t i = 0; i < boxes_result.size(); i++) {
         cv::Mat in_image = cv::Mat(src_img->height, src_img->width, CV_8UC3,(uint8_t*)src_img->virt_addr);
         cv::Mat crop_image = GetRotateCropImage(in_image, boxes_result[i]);
+        if (crop_image.empty())
+        {
+            continue;
+        }
+
         image_buffer_t text_img;
         memset(&text_img, 0, sizeof(image_buffer_t));
         text_img.width = crop_image.cols;
@@ -418,12 +528,13 @@ int inference_ppocr_system_model(ppocr_system_app_context* sys_app_ctx, image_bu
             return -1;
         }
         memcpy((void *)text_img.virt_addr, crop_image.data, text_img.size);
-        
+
         ppocr_rec_result text_result;
         text_result.score = 1.0;
         ret = inference_ppocr_rec_model(&sys_app_ctx->rec_context, &text_img, &text_result);
         if (ret != 0) {
             printf("inference_ppocr_rec_model fail! ret=%d\n", ret);
+            free(text_img.virt_addr);
             return -1;
         }
         if (text_img.virt_addr != NULL) {
@@ -433,6 +544,9 @@ int inference_ppocr_system_model(ppocr_system_app_context* sys_app_ctx, image_bu
         if (text_result.score < TEXT_SCORE) {
             continue;
         }
+        if (out_result->count >= 1000)
+            break;
+
         out_result->text_result[out_result->count].box.left_top.x = boxes_result[i][0];
         out_result->text_result[out_result->count].box.left_top.y = boxes_result[i][1];
         out_result->text_result[out_result->count].box.right_top.x = boxes_result[i][2];

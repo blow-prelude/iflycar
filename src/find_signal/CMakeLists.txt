@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.0.2)
 project(find_signal)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
-# add_compile_options(-std=c++11)
+add_compile_options(-std=c++11)
 
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
@@ -14,6 +14,15 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   std_msgs
 )
+
+find_package(OpenCV REQUIRED)
+
+set(RKNN_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/librknn)
+set(RGA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/rga)
+set(STB_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/stb_image)
+set(RKNN_UTILS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/rknn_utils)
+set(RKNN_LIBRARY ${RKNN_ROOT}/librknnrt.so)
+set(RGA_LIBRARY ${RGA_ROOT}/libs/librga.so)
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -118,8 +127,13 @@ catkin_package(
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
 include_directories(
-# include
+  include
   ${catkin_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
+  ${RKNN_ROOT}/include
+  ${RGA_ROOT}/include
+  ${RKNN_UTILS_ROOT}
+  ${STB_ROOT}
 )
 
 ## Declare a C++ library
@@ -206,3 +220,50 @@ include_directories(
 
 ## Add folders to be run by python nosetests
 # catkin_add_nosetests(test)
+
+add_executable(find_signal_demo
+  src/find_signal_demo.cc
+  src/ppocr_model.cc
+  src/ppocr_visualization.cc
+  src/ppocr_system.cc
+  src/postprocess.cc
+  src/clipper.cc
+  src/camera_capture.cpp
+  ${RKNN_UTILS_ROOT}/image_utils.c
+  ${RKNN_UTILS_ROOT}/file_utils.c
+)
+target_link_libraries(find_signal_demo
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBS}
+  ${RKNN_LIBRARY}
+  ${RGA_LIBRARY}
+  pthread
+  dl
+  m
+)
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_find_signal_rknn_pool
+    test/test_find_signal_rknn_pool.cpp
+  )
+  if(TARGET test_find_signal_rknn_pool)
+    target_link_libraries(test_find_signal_rknn_pool pthread gtest_main)
+  endif()
+
+  catkin_add_gtest(test_find_signal_ppocr_model
+    test/test_ppocr_model.cpp
+    src/ppocr_visualization.cc
+  )
+  if(TARGET test_find_signal_ppocr_model)
+    target_compile_options(test_find_signal_ppocr_model PRIVATE
+      -ffunction-sections
+      -fdata-sections
+    )
+    target_link_libraries(test_find_signal_ppocr_model
+      ${OpenCV_LIBS}
+      pthread
+      "-Wl,--gc-sections"
+      gtest_main
+    )
+  endif()
+endif()
