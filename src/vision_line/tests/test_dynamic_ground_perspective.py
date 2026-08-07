@@ -10,80 +10,14 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 import dynamic_ground_perspective as perspective
 
 
-def synthetic_component(
-    width: int,
-    height: int,
-    intercept: float,
-    slope: float,
-) -> np.ndarray:
-    component = np.zeros((height, width), dtype=bool)
-    boundary = np.rint(intercept + slope * np.arange(width)).astype(int)
-    for x, y in enumerate(boundary):
-        component[y:, x] = True
-    return component
-
-
-def test_select_bottom_component_ignores_larger_floating_region():
-    binary = np.zeros((60, 80), dtype=np.uint8)
-    binary[2:30, 5:75] = 255
-    binary[40:60, 20:60] = 255
-
-    selected = perspective.select_bottom_connected_component(
-        binary,
-        min_area_ratio=0.01,
-        bottom_band_height=2,
-    )
-
-    assert selected is not None
-    assert not selected[10, 10]
-    assert selected[50, 30]
-
-
-def test_fit_top_boundary_recovers_sloped_edge():
-    component = synthetic_component(
-        width=80,
-        height=60,
-        intercept=18,
-        slope=0.1,
-    )
-
-    boundary = perspective.fit_top_boundary(component, fallback_y=25)
-
-    np.testing.assert_allclose(boundary[[0, 79]], [18, 26], atol=1)
-
-
-def test_fit_top_boundary_uses_fallback_for_empty_component():
-    component = np.zeros((60, 80), dtype=bool)
-
-    boundary = perspective.fit_top_boundary(component, fallback_y=25)
-
-    np.testing.assert_array_equal(boundary, np.full(80, 25.0))
-
-
-def test_smooth_boundary_limits_frame_to_frame_motion():
-    previous = np.full(8, 20.0)
-    detected = np.full(8, 40.0)
-
-    actual = perspective.smooth_boundary(
-        detected,
-        previous,
-        alpha=1.0,
-        max_step=4.0,
-    )
-
-    np.testing.assert_array_equal(actual, np.full(8, 24.0))
-
-
-def test_boundary_to_mask_keeps_everything_below_each_column_boundary():
-    boundary = np.array([1.0, 2.0, 3.0])
-
-    mask = perspective.boundary_to_mask(boundary, height=5)
+def test_fixed_ground_mask_keeps_everything_at_or_below_start_row():
+    mask = perspective.fixed_ground_mask(height=5, width=3, start_y=2)
 
     expected = np.array(
         [
             [0, 0, 0],
-            [255, 0, 0],
-            [255, 255, 0],
+            [0, 0, 0],
+            [255, 255, 255],
             [255, 255, 255],
             [255, 255, 255],
         ],
@@ -154,62 +88,19 @@ def test_expanded_homography_translates_roi_inside_output_canvas():
 
 
 def test_ground_roi_points_follow_mask_top_and_bottom_edges():
-    mask = perspective.boundary_to_mask(
-        np.array([2.0, 3.0, 4.0, 5.0]),
-        height=8,
-    )
+    mask = perspective.fixed_ground_mask(height=8, width=4, start_y=2)
 
     points = perspective.ground_roi_points(mask)
 
     expected = np.array(
         [
             [0.0, 2.0],
-            [3.0, 5.0],
+            [3.0, 2.0],
             [3.0, 7.0],
             [0.0, 7.0],
         ]
     )
     np.testing.assert_array_equal(points, expected)
-
-
-def test_tracker_reuses_previous_boundary_when_detection_fails():
-    tracker = perspective.GroundBoundaryTracker(
-        perspective.GroundDetectionConfig(
-            fallback_y=25,
-            min_area_ratio=0.01,
-            alpha=1.0,
-            max_step=50.0,
-        )
-    )
-    component = (
-        synthetic_component(
-            width=80,
-            height=60,
-            intercept=18,
-            slope=0.1,
-        ).astype(np.uint8)
-        * 255
-    )
-
-    _, first_boundary = tracker.update_from_blue_mask(component)
-    _, second_boundary = tracker.update_from_blue_mask(np.zeros_like(component))
-
-    np.testing.assert_array_equal(second_boundary, first_boundary)
-
-
-def test_tracker_uses_fallback_without_detection_history():
-    tracker = perspective.GroundBoundaryTracker(
-        perspective.GroundDetectionConfig(
-            fallback_y=25,
-            min_area_ratio=0.01,
-        )
-    )
-
-    mask, boundary = tracker.update_from_blue_mask(np.zeros((60, 80), dtype=np.uint8))
-
-    np.testing.assert_array_equal(boundary, np.full(80, 25.0))
-    assert np.all(mask[:25] == 0)
-    assert np.all(mask[25:] == 255)
 
 
 def test_runtime_parameters_are_defined_in_module():
@@ -222,7 +113,9 @@ def test_runtime_parameters_are_defined_in_module():
     assert perspective.REAL_WIDTH_M > 0.0
     assert perspective.REAL_LENGTH_M > 0.0
     assert perspective.PIXELS_PER_M > 0.0
-    assert perspective.FALLBACK_Y == 139
+    assert perspective.GROUND_START_Y == 139
+    assert not hasattr(perspective, "GroundBoundaryTracker")
+    assert not hasattr(perspective, "LOWER_HSV")
 
 
 def test_main_does_not_accept_command_line_parameters():
@@ -268,6 +161,46 @@ def test_should_exit_accepts_q_and_escape_only():
     assert perspective.should_exit(27)
     assert not perspective.should_exit(-1)
     assert not perspective.should_exit(ord("a"))
+
+
+def test_process_camera_frame_uses_fixed_y_ground_mask(monkeypatch):
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    bird_view = np.zeros((10, 20, 3), dtype=np.uint8)
+    captured_masks = []
+
+    class CameraSpy:
+        def correct_img(self, raw):
+            return raw
+
+    class Cv2Spy:
+        INTER_AREA = 3
+
+        @staticmethod
+        def flip(raw, _axis):
+            return raw
+
+        @staticmethod
+        def resize(raw, _size, interpolation):
+            assert interpolation == 3
+            return raw
+
+    def fake_warp(_frame, mask, *_args, **_kwargs):
+        captured_masks.append(mask)
+        return bird_view
+
+    monkeypatch.setattr(perspective, "warp_ground", fake_warp)
+
+    actual_frame, actual_bird, mask = perspective.process_camera_frame(
+        frame,
+        CameraSpy(),
+        Cv2Spy(),
+    )
+
+    assert actual_frame is frame
+    assert actual_bird is bird_view
+    assert captured_masks == [mask]
+    assert np.all(mask[:139] == 0)
+    assert np.all(mask[139:] == 255)
 
 
 def test_camera_stream_displays_frames_nonblocking_and_releases_resources():
