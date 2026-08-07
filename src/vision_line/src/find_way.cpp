@@ -1,5 +1,6 @@
 #include <opencv2/opencv.hpp>
 #include "camera_capture.h"
+#include "ground_perspective.h"
 #include "image_process.h"
 #include <chrono>
 #include <thread>
@@ -167,32 +168,15 @@ int main()
             {
                 img_process.resize_frame(frame);
 
-                // STRAIGHT_TRACKING 时先对图片做透视变换
-                cv::Mat pers_frame;
+                cv::Mat process_frame = frame;
                 if (state == ProcessState::STRAIGHT_TRACKING)
                 {
-
-                    pers_frame = CameraCapture::perspectiveFrame(frame);
-                    if (pers_frame.empty())
-                    {
-                        std::cerr << "Error: Perspective transform failed, using original frame." << std::endl;
-                        pers_frame = frame; // 使用原始帧作为备用
-                    }
+                    process_frame = vision_line::warpFixedGroundPerspective(frame);
                 }
-                else
-                {
-                    pers_frame = frame; // 非STRAIGHT_TRACKING状态使用原始帧
-                }
-
-                img_process.set_frame(pers_frame);
+                img_process.set_frame(process_frame);
 
                 // 预处理
-                if (pers_frame.empty())
-                {
-                    std::cerr << "Error: Frame to preprocess is empty!" << std::endl;
-                    continue;
-                }
-                cv::Mat binary_img = img_process.preprocess(pers_frame);
+                cv::Mat binary_img = img_process.preprocess(process_frame);
 
                 if (state == ProcessState::RIGHT_TURNING || state == ProcessState::LEFT_TURNING)
                 {
@@ -225,7 +209,7 @@ int main()
 
                     img_process.draw_line(canvas, fps, state_name(state));
 
-                    cv::imshow("perspective", pers_frame);
+                    cv::imshow("perspective", process_frame);
                     cv::imshow("binary", binary_img);
                     cv::imshow("canvas", canvas);
                 }

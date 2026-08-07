@@ -7,6 +7,17 @@
 #include <limits>
 #include <stdexcept>
 
+namespace
+{
+const cv::Size kFixedInputSize(320, 240);
+const cv::Size kFixedOutputSize(484, 299);
+const int kFixedGroundStartY = 139;
+const cv::Matx33d kFixedPerspectiveMatrix(
+    -0.214974396135, -1.920230497309, 266.769032700576,
+     0.006976740047, -2.918053000379, 403.289239923271,
+     0.000068399412, -0.008376745778, 1.0);
+} // namespace
+
 namespace vision_line
 {
 cv::Mat makeFixedGroundMask(const cv::Size &frame_size, int start_y)
@@ -126,6 +137,31 @@ cv::Mat warpGround(
     cv::Mat warped;
     cv::warpPerspective(masked_frame, warped, geometry.homography,
                         geometry.output_size, cv::INTER_LINEAR);
+    return warped;
+}
+
+cv::Mat warpFixedGroundPerspective(const cv::Mat &frame)
+{
+    if (frame.empty() || frame.type() != CV_8UC3)
+    {
+        throw std::invalid_argument(
+            "fixed ground perspective requires a non-empty CV_8UC3 frame");
+    }
+    if (frame.size() != kFixedInputSize)
+    {
+        throw std::invalid_argument(
+            "fixed ground perspective requires a 320x240 frame");
+    }
+
+    const cv::Mat ground_mask =
+        makeFixedGroundMask(frame.size(), kFixedGroundStartY);
+    cv::Mat masked_frame;
+    cv::bitwise_and(frame, frame, masked_frame, ground_mask);
+
+    cv::Mat warped;
+    cv::warpPerspective(masked_frame, warped,
+                        cv::Mat(kFixedPerspectiveMatrix),
+                        kFixedOutputSize, cv::INTER_LINEAR);
     return warped;
 }
 

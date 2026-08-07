@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 #include <opencv2/core.hpp>
 
+#include <stdexcept>
 #include <vector>
 
 namespace
@@ -28,6 +29,14 @@ TEST(FixedGroundMask, ClampsStartRowToImage)
                      vision_line::makeFixedGroundMask({4, 3}, 9)));
 }
 
+TEST(InputValidation, RejectsNonPositiveFrameSizes)
+{
+    EXPECT_THROW(vision_line::makeFixedGroundMask({0, 3}, 0),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::makeFixedGroundMask({3, 0}, 0),
+                 std::invalid_argument);
+}
+
 TEST(MetricDestination, ConvertsMetresToPixels)
 {
     const auto points = vision_line::makeMetricDestination(0.5, 0.75, 200.0);
@@ -36,6 +45,40 @@ TEST(MetricDestination, ConvertsMetresToPixels)
     EXPECT_EQ(cv::Point2f(100.0F, 0.0F), points[1]);
     EXPECT_EQ(cv::Point2f(100.0F, 150.0F), points[2]);
     EXPECT_EQ(cv::Point2f(0.0F, 150.0F), points[3]);
+}
+
+TEST(InputValidation, RejectsNonPositiveMetricDimensions)
+{
+    EXPECT_THROW(vision_line::makeMetricDestination(0.0, 0.75, 200.0),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::makeMetricDestination(0.5, -0.75, 200.0),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::makeMetricDestination(0.5, 0.75, 0.0),
+                 std::invalid_argument);
+}
+
+TEST(InputValidation, RejectsInvalidHomographyInputs)
+{
+    const std::vector<cv::Point2f> points{
+        {0.0F, 0.0F}, {3.0F, 0.0F}, {3.0F, 3.0F}, {0.0F, 3.0F}};
+    const cv::Mat valid_mask = cv::Mat::ones(4, 4, CV_8UC1);
+
+    EXPECT_THROW(vision_line::makeExpandedHomography(
+                     {points.begin(), points.begin() + 3}, points,
+                     valid_mask),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::makeExpandedHomography(
+                     points, {points.begin(), points.begin() + 3},
+                     valid_mask),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::makeExpandedHomography(points, points, cv::Mat()),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::makeExpandedHomography(
+                     points, points, cv::Mat::ones(4, 4, CV_8UC3)),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::makeExpandedHomography(
+                     points, points, cv::Mat::zeros(4, 4, CV_8UC1)),
+                 std::invalid_argument);
 }
 
 TEST(ExpandedHomography, PreservesCalibrationGeometryAndContainsGroundRoi)
@@ -83,6 +126,29 @@ TEST(WarpGround, KeepsTheCompleteFixedGroundRoi)
     EXPECT_EQ(cv::Vec3b(10, 20, 30), warped.at<cv::Vec3b>(0, 0));
 }
 
+TEST(InputValidation, RejectsInvalidWarpFrameAndMaskInputs)
+{
+    const std::vector<cv::Point2f> source{
+        {0.0F, 0.0F}, {3.0F, 0.0F}, {3.0F, 3.0F}, {0.0F, 3.0F}};
+    const cv::Mat valid_frame(4, 4, CV_8UC3);
+    const cv::Mat valid_mask = cv::Mat::ones(4, 4, CV_8UC1);
+
+    EXPECT_THROW(vision_line::warpGround(cv::Mat(), valid_mask, source,
+                                          3.0, 3.0, 1.0),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::warpGround(cv::Mat::ones(4, 4, CV_8UC1),
+                                          valid_mask, source, 3.0, 3.0, 1.0),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::warpGround(valid_frame,
+                                          cv::Mat::ones(3, 4, CV_8UC1),
+                                          source, 3.0, 3.0, 1.0),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::warpGround(valid_frame,
+                                          cv::Mat::ones(4, 4, CV_8UC3),
+                                          source, 3.0, 3.0, 1.0),
+                 std::invalid_argument);
+}
+
 TEST(FramePreparation, FlipsCorrectedFrameBeforeResize)
 {
     cv::Mat corrected(1, 2, CV_8UC1);
@@ -93,10 +159,92 @@ TEST(FramePreparation, FlipsCorrectedFrameBeforeResize)
     EXPECT_EQ(1, prepared.at<unsigned char>(0, 1));
 }
 
+TEST(InputValidation, RejectsInvalidFramePreparationInputs)
+{
+    const cv::Mat frame(1, 1, CV_8UC1);
+    EXPECT_THROW(vision_line::flipAndResize(cv::Mat(), {1, 1}),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::flipAndResize(frame, {0, 1}),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::flipAndResize(frame, {1, -1}),
+                 std::invalid_argument);
+}
+
 TEST(KeyHandling, AcceptsQUppercaseQAndEscape)
 {
     EXPECT_TRUE(vision_line::shouldExit('q'));
     EXPECT_TRUE(vision_line::shouldExit('Q'));
     EXPECT_TRUE(vision_line::shouldExit(27));
     EXPECT_FALSE(vision_line::shouldExit('x'));
+}
+
+TEST(FixedGroundPerspective, UsesCalibratedOutputGeometry)
+{
+    const cv::Mat frame(240, 320, CV_8UC3, cv::Scalar(10, 20, 30));
+
+    const cv::Mat warped = vision_line::warpFixedGroundPerspective(frame);
+
+    EXPECT_EQ(cv::Size(484, 299), warped.size());
+    EXPECT_EQ(CV_8UC3, warped.type());
+}
+
+TEST(FixedGroundPerspective, RemovesPixelsAboveGroundStartBeforeWarp)
+{
+    cv::Mat frame = cv::Mat::zeros(240, 320, CV_8UC3);
+    frame(cv::Rect(0, 0, 320, 139)).setTo(cv::Scalar(10, 20, 30));
+
+    const cv::Mat warped = vision_line::warpFixedGroundPerspective(frame);
+
+    EXPECT_EQ(0, cv::countNonZero(warped.reshape(1)));
+}
+
+TEST(FixedGroundPerspective, MapsCalibratedLandmarksToExpectedLocations)
+{
+    cv::Mat frame = cv::Mat::zeros(240, 320, CV_8UC3);
+    frame(cv::Rect(109, 141, 11, 11)).setTo(cv::Scalar(255, 0, 0));
+    frame(cv::Rect(201, 141, 11, 11)).setTo(cv::Scalar(0, 255, 0));
+    frame(cv::Rect(266, 179, 11, 11)).setTo(cv::Scalar(0, 0, 255));
+    frame(cv::Rect(30, 182, 11, 11)).setTo(cv::Scalar(0, 255, 255));
+
+    const cv::Mat warped = vision_line::warpFixedGroundPerspective(frame);
+
+    const cv::Vec3b blue = warped.at<cv::Vec3b>(102, 177);
+    EXPECT_GT(blue[0], 200);
+    EXPECT_LT(blue[1], 20);
+    EXPECT_LT(blue[2], 20);
+
+    const cv::Vec3b green = warped.at<cv::Vec3b>(102, 277);
+    EXPECT_LT(green[0], 20);
+    EXPECT_GT(green[1], 200);
+    EXPECT_LT(green[2], 20);
+
+    const cv::Vec3b red = warped.at<cv::Vec3b>(252, 277);
+    EXPECT_LT(red[0], 20);
+    EXPECT_LT(red[1], 20);
+    EXPECT_GT(red[2], 200);
+
+    const cv::Vec3b yellow = warped.at<cv::Vec3b>(252, 177);
+    EXPECT_LT(yellow[0], 20);
+    EXPECT_GT(yellow[1], 200);
+    EXPECT_GT(yellow[2], 200);
+}
+
+TEST(FixedGroundPerspective, RejectsEmptyFrame)
+{
+    EXPECT_THROW(vision_line::warpFixedGroundPerspective(cv::Mat()),
+                 std::invalid_argument);
+}
+
+TEST(FixedGroundPerspective, RejectsNonBgr8BitFrame)
+{
+    const cv::Mat gray(240, 320, CV_8UC1);
+    EXPECT_THROW(vision_line::warpFixedGroundPerspective(gray),
+                 std::invalid_argument);
+}
+
+TEST(FixedGroundPerspective, RejectsUncalibratedFrameSize)
+{
+    const cv::Mat wrong_size(239, 320, CV_8UC3);
+    EXPECT_THROW(vision_line::warpFixedGroundPerspective(wrong_size),
+                 std::invalid_argument);
 }
