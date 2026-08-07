@@ -211,7 +211,19 @@ cv::Mat binary_img = img_process.preprocess(process_frame);
 
 Remove the old `CameraCapture::perspectiveFrame` call, its original-frame fallback, and the redundant empty check. Leave all logic after `preprocess` unchanged apart from renaming `pers_frame` to `process_frame` in the perspective preview.
 
-- [ ] **Step 2: Link `find_way` after the library target exists**
+- [ ] **Step 2: Mirror only `find_way.cpp` and verify the integration RED**
+
+Confirm the WSL runtime files are clean, mirror `find_way.cpp` without changing CMake, and build only the `find_way` target:
+
+```powershell
+wsl.exe -d Ubuntu-20.04 -- bash -lc "cd /home/wtr/program/iflycar && git status --short src/vision_line/src/find_way.cpp src/vision_line/CMakeLists.txt"
+wsl.exe -d Ubuntu-20.04 -- bash -lc "cp /mnt/d/programs/ucar_ws/src/vision_line/src/find_way.cpp /home/wtr/program/iflycar/src/vision_line/src/find_way.cpp"
+wsl.exe -d Ubuntu-20.04 -- bash -lc "source /opt/ros/noetic/setup.bash && cd /home/wtr/program/iflycar && catkin_make --pkg vision_line --make-args find_way"
+```
+
+Expected: the `find_way` link fails with an undefined reference to `vision_line::warpFixedGroundPerspective`, proving that the new call is compiled and that the missing library edge is the reason the focused target is not yet green.
+
+- [ ] **Step 3: Link `find_way` after the library target exists**
 
 Immediately after the existing `ground_perspective` target definition and its include directories, add:
 
@@ -221,19 +233,12 @@ target_link_libraries(find_way ground_perspective)
 
 Keep the `target_compile_options(... -std=c++11)` lines from commit `5de5ec3` exactly as they are.
 
-- [ ] **Step 3: Mirror only the touched runtime files to WSL2**
+- [ ] **Step 4: Mirror CMake and verify the focused GREEN targets**
 
-Confirm the WSL copies are clean first, then mirror them:
+Mirror only CMake, then compile `find_way` and run the fixed-perspective tests:
 
 ```powershell
-wsl.exe -d Ubuntu-20.04 -- bash -lc "cd /home/wtr/program/iflycar && git status --short src/vision_line/src/find_way.cpp src/vision_line/CMakeLists.txt"
-wsl.exe -d Ubuntu-20.04 -- bash -lc "cp /mnt/d/programs/ucar_ws/src/vision_line/src/find_way.cpp /home/wtr/program/iflycar/src/vision_line/src/find_way.cpp"
 wsl.exe -d Ubuntu-20.04 -- bash -lc "cp /mnt/d/programs/ucar_ws/src/vision_line/CMakeLists.txt /home/wtr/program/iflycar/src/vision_line/CMakeLists.txt"
-```
-
-- [ ] **Step 4: Build and test only the smallest relevant targets**
-
-```powershell
 wsl.exe -d Ubuntu-20.04 -- bash -lc "source /opt/ros/noetic/setup.bash && cd /home/wtr/program/iflycar && catkin_make --pkg vision_line --make-args find_way"
 wsl.exe -d Ubuntu-20.04 -- bash -lc "source /opt/ros/noetic/setup.bash && cd /home/wtr/program/iflycar && catkin_make --pkg vision_line --make-args test_ground_perspective && devel/lib/vision_line/test_ground_perspective --gtest_filter=FixedGroundPerspective.*"
 ```
