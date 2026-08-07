@@ -3,8 +3,8 @@
 #include <chrono>
 
 // 导航点宏定义
-#define goto_B sendPos(-1.56, -0.7, 3.14)
-#define goto_D sendPos(3.7, 4.0, 0.0)
+#define goto_B sendPos(-1.56, -0.5, 3.14)
+#define goto_D sendPos(0.2, -3.2, -1.57)
 
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseAction;
 
@@ -591,9 +591,9 @@ void OURSWITCH::GotoC(int target_num)
     };
 
     std::vector<Pose> search_points = {
-        {-1.3, -2.3, 1.57},
-        {0.6, -2.1, 1.57},
-        {0.6, -2.4, 1.57}
+        {-1.3, -2.4, 1.57},
+        {0.6, -2.3, 1.57},
+        {2.0, -2.3, 1.57}
     };
 
     bool target_found = false;
@@ -731,7 +731,7 @@ void OURSWITCH::GotoC(int target_num)
 
                     kk -= M_PI / 2.0;
 
-                    double stop_distance = 0.45;
+                    double stop_distance = 0.3;
                     target_point.x -= stop_distance * std::cos(kk);
                     target_point.y -= stop_distance * std::sin(kk);
 
@@ -818,32 +818,32 @@ void OURSWITCH::GotoC(int target_num)
 // =========================================================================
 void OURSWITCH::Gazebo()
 {
-    ROS_INFO("Entering Gazebo state: Simulation Task Collaboration");
+    // ROS_INFO("Entering Gazebo state: Simulation Task Collaboration");
 
-    nh_.setParam("start_gazebo_sim", 1);
-    nh_.setParam("gazebo_sim_done", 0);
+    // nh_.setParam("start_gazebo_sim", 1);
+    // nh_.setParam("gazebo_sim_done", 0);
     
-    int sim_done = 0;
-    while (sim_done == 0 && ros::ok())
-    {
-        nh_.getParam("gazebo_sim_done", sim_done);
-        ros::Duration(0.1).sleep();
-        ros::spinOnce();
-    }
+    // int sim_done = 0;
+    // while (sim_done == 0 && ros::ok())
+    // {
+    //     nh_.getParam("gazebo_sim_done", sim_done);
+    //     ros::Duration(0.1).sleep();
+    //     ros::spinOnce();
+    // }
     
-    ROS_INFO("Gazebo simulation task reported as COMPLETE!");
-    nh_.setParam("start_gazebo_sim", 0);
+    // ROS_INFO("Gazebo simulation task reported as COMPLETE!");
+    // nh_.setParam("start_gazebo_sim", 0);
 
-    // ========== 语音播报 3：仿真任务完成 ==========
-    std::string sim_item, sim_room;
-    nh_.getParam("sim_item", sim_item);
-    nh_.getParam("sim_room", sim_room);
-    char tts_cmd[512];
+    // // ========== 语音播报 3：仿真任务完成 ==========
+    // std::string sim_item, sim_room;
+    // nh_.getParam("sim_item", sim_item);
+    // nh_.getParam("sim_room", sim_room);
+    // char tts_cmd[512];
     
-    // 拼接发音指令：仿真任务已完成，已将毛巾放入电子产品生产车间
-    sprintf(tts_cmd, "espeak -v zh+f2 \"仿真任务已完成，已将%s放入%s\" -s 130", sim_item.c_str(), sim_room.c_str());
-    ROS_INFO("Broadcasting Gazebo task completion...");
-    system(tts_cmd);
+    // // 拼接发音指令：仿真任务已完成，已将毛巾放入电子产品生产车间
+    // sprintf(tts_cmd, "espeak -v zh+f2 \"仿真任务已完成，已将%s放入%s\" -s 130", sim_item.c_str(), sim_room.c_str());
+    // ROS_INFO("Broadcasting Gazebo task completion...");
+    // system(tts_cmd);
 
     current_state = GOTOD_; 
 }
