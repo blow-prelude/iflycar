@@ -255,6 +255,7 @@ target_include_directories(ground_perspective PUBLIC
   include
   ${catkin_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(find_way ground_perspective)
 target_compile_options(ground_perspective PRIVATE -std=c++11)
 
 add_executable(dynamic_ground_perspective_cpp
