@@ -7,6 +7,7 @@ from enum import Enum
 import cv2
 import numpy as np
 from camera_capture import CameraCapture
+from dynamic_ground_perspective import fixed_ground_mask, warp_ground
 from picture_cli import ImageSender
 
 logging.basicConfig(
@@ -103,6 +104,20 @@ class ImageProcessConfig:
         ]
     )
 
+    # ---- 地面鸟瞰透视变换（与 dynamic_ground_perspective.py 对齐） ----
+    ground_start_y: int = 139  # 只保留 y >= ground_start_y 的地面区域
+    real_width_m: float = 0.5  # 四点围成区域的实际宽度（米）
+    real_length_m: float = 0.75  # 四点围成区域的实际长度（米）
+    pixels_per_m: float = 200.0  # 鸟瞰图分辨率（像素/米）
+    source_points: list = field(
+        default_factory=lambda: [
+            [114.0, 146.0],
+            [206.0, 146.0],
+            [271.0, 184.0],
+            [35.0, 187.0],
+        ]
+    )
+
     # ---- 拟合曲线上的目标点索引（负数表示从末尾倒数，与 image_process_ros 对齐） ----
     straight_target_p_index = -10
     tracking2_target_p_index = -48
@@ -196,6 +211,61 @@ class ImageProcess:
         """获取 mid_line 计算模式"""
         return self.mid_line_mode_
 
+    def resize_frame(self, frame):
+        """如果图像过大，按比例缩小到 preprocess_max_h × preprocess_max_w 以内。
+
+        Args:
+            frame: 输入图像（BGR）
+
+        Returns:
+            缩放后的图像，并同步更新 self.frame；输入为 None 时返回 None
+        """
+        if frame is None:
+            return None
+        if (
+            frame.shape[0] >= self.cfg.preprocess_max_h
+            or frame.shape[1] >= self.cfg.preprocess_max_w
+        ):
+            h, w = frame.shape[:2]
+            scale = min(
+                self.cfg.preprocess_max_h / h, self.cfg.preprocess_max_w / w
+            )
+            new_h = int(h * scale)
+            new_w = int(w * scale)
+            frame = cv2.resize(
+                frame, (new_w, new_h), interpolation=cv2.INTER_AREA
+            )
+        self.frame = frame
+        return frame
+
+    def ground_perspective(self, frame):
+        """对地面区域做鸟瞰透视变换，流程与 dynamic_ground_perspective.py 保持一致。
+
+        先用固定地面掩膜剔除非地面像素，再依据四点对应关系把地面 ROI 透视到鸟瞰图，
+        并同步更新 self.frame，使后续 preprocess / return_frame 都基于鸟瞰图。
+
+        Args:
+            frame: 输入图像（BGR，建议已缩放到配置尺寸）
+
+        Returns:
+            鸟瞰透视变换后的图像
+        """
+        ground_mask = fixed_ground_mask(
+            height=frame.shape[0],
+            width=frame.shape[1],
+            start_y=self.cfg.ground_start_y,
+        )
+        bird_view = warp_ground(
+            frame,
+            ground_mask,
+            self.cfg.source_points,
+            width_m=self.cfg.real_width_m,
+            length_m=self.cfg.real_length_m,
+            pixels_per_m=self.cfg.pixels_per_m,
+        )
+        self.frame = bird_view
+        return bird_view
+
     def preprocess(self, frame):
         try:
             if self.img_path is not None:
@@ -206,21 +276,6 @@ class ImageProcess:
                 frame = self.frame
 
             if frame is not None:
-                # 如果图片太大，按比例缩小
-                if (
-                    frame.shape[0] >= self.cfg.preprocess_max_h
-                    or frame.shape[1] >= self.cfg.preprocess_max_w
-                ):
-                    h, w = frame.shape[:2]
-                    scale = min(
-                        self.cfg.preprocess_max_h / h, self.cfg.preprocess_max_w / w
-                    )
-                    new_h = int(h * scale)
-                    new_w = int(w * scale)
-                    frame = cv2.resize(
-                        frame, (new_w, new_h), interpolation=cv2.INTER_AREA
-                    )
-                    self.frame = frame.copy()
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
                 # 大尺寸高斯模糊获取背景光照分布
@@ -1679,6 +1734,9 @@ def main_video():
 
             # --- 非 IDLE 状态才执行图像处理 ---
             else:
+                # 缩放图像并保存到 imgprocess
+                frame = imgprocess.resize_frame(frame)
+
                 # 预处理
                 binary_img = imgprocess.preprocess(frame)
 
@@ -1788,6 +1846,7 @@ def main_perspective():
             # cv2.imshow("perspective", perspective_frame)
             img_sender.enqueue_image(perspective_frame, img_id=0, img_name="perspect")
 
+            perspective_frame = imgprocess.resize_frame(perspective_frame)
             binary_img = imgprocess.preprocess(perspective_frame)
             # cv2.imshow("binary", binary_img)
             img_sender.enqueue_image(binary_img, img_id=0, img_name="binary")
@@ -1867,8 +1926,8 @@ def main():
 
         while True:
             frame = cap.get_picture()
-            # frame = cap.correct_img(frame)
-            # frame = cv2.flip(frame, 1)  # 水平翻转
+            frame = cap.correct_img(frame)
+            frame = cv2.flip(frame, 1)  # 水平翻转
 
             # 实时 FPS 计算
             now_t = time.perf_counter()
@@ -1895,8 +1954,12 @@ def main():
 
             # --- 非 IDLE 状态才执行图像处理 ---
             else:
-                # 保存当前帧到imgprocess
-                imgprocess.frame = frame
+                # 缩放图像并保存到 imgprocess
+                frame = imgprocess.resize_frame(frame)
+
+                # STRAIGHT_TRACKING 先做地面透视变换（流程与 dynamic_ground_perspective.py 一致）
+                if state == ProcessState.STRAIGHT_TRACKING:
+                    frame = imgprocess.ground_perspective(frame)
 
                 # 预处理
                 binary_img = imgprocess.preprocess(frame)
