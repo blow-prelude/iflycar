@@ -177,3 +177,43 @@ TEST(KeyHandling, AcceptsQUppercaseQAndEscape)
     EXPECT_TRUE(vision_line::shouldExit(27));
     EXPECT_FALSE(vision_line::shouldExit('x'));
 }
+
+TEST(FixedGroundPerspective, UsesCalibratedOutputGeometry)
+{
+    const cv::Mat frame(240, 320, CV_8UC3, cv::Scalar(10, 20, 30));
+
+    const cv::Mat warped = vision_line::warpFixedGroundPerspective(frame);
+
+    EXPECT_EQ(cv::Size(484, 299), warped.size());
+    EXPECT_EQ(CV_8UC3, warped.type());
+}
+
+TEST(FixedGroundPerspective, RemovesPixelsAboveGroundStartBeforeWarp)
+{
+    cv::Mat frame = cv::Mat::zeros(240, 320, CV_8UC3);
+    frame(cv::Rect(0, 0, 320, 139)).setTo(cv::Scalar(10, 20, 30));
+
+    const cv::Mat warped = vision_line::warpFixedGroundPerspective(frame);
+
+    EXPECT_EQ(0, cv::countNonZero(warped.reshape(1)));
+}
+
+TEST(FixedGroundPerspective, RejectsEmptyFrame)
+{
+    EXPECT_THROW(vision_line::warpFixedGroundPerspective(cv::Mat()),
+                 std::invalid_argument);
+}
+
+TEST(FixedGroundPerspective, RejectsNonBgr8BitFrame)
+{
+    const cv::Mat gray(240, 320, CV_8UC1);
+    EXPECT_THROW(vision_line::warpFixedGroundPerspective(gray),
+                 std::invalid_argument);
+}
+
+TEST(FixedGroundPerspective, RejectsUncalibratedFrameSize)
+{
+    const cv::Mat wrong_size(239, 320, CV_8UC3);
+    EXPECT_THROW(vision_line::warpFixedGroundPerspective(wrong_size),
+                 std::invalid_argument);
+}

@@ -26,6 +26,7 @@ cv::Mat warpGround(
     double width_m,
     double length_m,
     double pixels_per_m);
+cv::Mat warpFixedGroundPerspective(const cv::Mat &frame);
 cv::Mat flipAndResize(const cv::Mat &corrected_frame,
                       const cv::Size &output_size);
 bool shouldExit(int key_code);
