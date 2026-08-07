@@ -1022,12 +1022,12 @@ std::vector<cv::Point> &supple_left_line, &supple_right_line: 用于存储填充
 逻辑：
 1. 根据图像高度计算填充的底部y坐标限制，通常为图像高度的某个比例位置
 2. 判断左右边线的存在情况：
-   a. 如果两边都有线，则对两边线进行插值，并将两边线的底部y坐标取较小值作为填充起点，向下填充到底部y坐标限制
+   a. 如果两边都有线，则对两边线进行插值；extend_downward 为 true 时再向下补齐底部较短边
    b. 如果左线丢失但右线存在，则以右线为基准进行插值，并从右线的底部y坐标开始向下填充，同时将左线的填充点x坐标设置为0
    c. 如果右线丢失但左线存在，则以左线为基准进行插值，并从左线的底部y坐标开始向下填充，同时将右线的填充点x坐标设置为图像宽度减1
 */
 /** 插值并补齐左右边线，必要时使用上一帧结果作为回退。 */
-void ImageProcess::fill_boundary(std::vector<cv::Point> &left_line, std::vector<cv::Point> &right_line, std::vector<int> img_shape, std::vector<cv::Point> &supple_left_line, std::vector<cv::Point> &supple_right_line, bool allow_prev_fallack)
+void ImageProcess::fill_boundary(std::vector<cv::Point> &left_line, std::vector<cv::Point> &right_line, std::vector<int> img_shape, std::vector<cv::Point> &supple_left_line, std::vector<cv::Point> &supple_right_line, bool allow_prev_fallack, bool extend_downward)
 {
     if (img_shape.size() < 2 || img_shape[0] <= 0 || img_shape[1] <= 0)
     {
@@ -1043,7 +1043,7 @@ void ImageProcess::fill_boundary(std::vector<cv::Point> &left_line, std::vector<
     // std::cout << "[fill_boundary] left_line.size()=" << left_line.size()
     //           << ", right_line.size()=" << right_line.size() << std::endl;
 
-    // 两边都有线：插值 + 把较短的边补齐到较长的边
+    // 两边都有线：始终插值，按调用方要求决定是否向下补齐。
     if (!left_line.empty() && !right_line.empty())
     {
         // std::cout << "[fill_boundary] Both lines exist, interpolating..." << std::endl;
@@ -1051,21 +1051,24 @@ void ImageProcess::fill_boundary(std::vector<cv::Point> &left_line, std::vector<
         linear_interpolation(left_line, supple_left_line);
         linear_interpolation(right_line, supple_right_line);
 
-        // 先判断哪边 y 值更大，把另一边填充到对应的 y（插值点按 y 从小到大，push_back 即可）
-        int left_bottom_y = clamp_int(int(supple_left_line.back().y), 0, img_h - 1);
-        int right_bottom_y = clamp_int(int(supple_right_line.back().y), 0, img_h - 1);
-        if (left_bottom_y > right_bottom_y)
+        // 可选地把底部较短边向下补齐。find_way_ros 关闭该行为，只保留顶部斜率外推。
+        if (extend_downward)
         {
-            for (int y = right_bottom_y + 2; y <= left_bottom_y; y += 2)
+            int left_bottom_y = clamp_int(int(supple_left_line.back().y), 0, img_h - 1);
+            int right_bottom_y = clamp_int(int(supple_right_line.back().y), 0, img_h - 1);
+            if (left_bottom_y > right_bottom_y)
             {
-                supple_right_line.push_back(cv::Point(img_w - 1, y));
+                for (int y = right_bottom_y + 2; y <= left_bottom_y; y += 2)
+                {
+                    supple_right_line.push_back(cv::Point(img_w - 1, y));
+                }
             }
-        }
-        else if (right_bottom_y > left_bottom_y)
-        {
-            for (int y = left_bottom_y + 2; y <= right_bottom_y; y += 2)
+            else if (right_bottom_y > left_bottom_y)
             {
-                supple_left_line.push_back(cv::Point(0, y));
+                for (int y = left_bottom_y + 2; y <= right_bottom_y; y += 2)
+                {
+                    supple_left_line.push_back(cv::Point(0, y));
+                }
             }
         }
     }
@@ -2049,12 +2052,12 @@ void ImageProcess::extend_shorter_line_to_match_min_y(int img_width)
  * 根据当前左右原始边线插值+填充，并计算中线
  * img: 当前二值化图像（仅用于获取宽高）
  * 逻辑：
- * 1. 调用 fill_boundary 对左右边线做插值和底部填充，得到 supple_left_line_/supple_right_line_
+ * 1. 调用 fill_boundary 对左右边线做插值，并按需执行底部填充，得到 supple_left_line_/supple_right_line_
  * 2. 按相同索引对左右填充线的点求中点，写入 mid_line_
  * 3. 更新 prev_* 成员，供下一帧 fill_boundary 的 allow_prev_fallack 使用
  */
 /** 根据当前左右边线补线，并按照当前模式计算中线。 */
-void ImageProcess::calculate_mid_line(cv::Mat &img)
+void ImageProcess::calculate_mid_line(cv::Mat &img, bool extend_downward)
 {
     if (img.empty() || img.dims != 2 || img.rows <= 0 || img.cols <= 0)
     {
@@ -2065,8 +2068,9 @@ void ImageProcess::calculate_mid_line(cv::Mat &img)
     int img_h = img.rows;
     int img_w = img.cols;
 
-    // 插值+填充边线（同时处理边线情况）
-    fill_boundary(this->left_line_, this->right_line_, {img_h, img_w}, this->supple_left_line_, this->supple_right_line_, true);
+    // 插值边线；是否把底部较短边向下补齐由调用方决定。
+    fill_boundary(this->left_line_, this->right_line_, {img_h, img_w},
+                  this->supple_left_line_, this->supple_right_line_, true, extend_downward);
 
     if (this->mid_line_mode_ == LEFT_OFFSET)
     {

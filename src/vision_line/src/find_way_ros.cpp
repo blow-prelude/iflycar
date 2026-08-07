@@ -287,7 +287,8 @@ public:
                         }
                     }
 
-                    processor_.calculate_mid_line(binary_img);
+                    // 本节点只在顶部按斜率向上补线，不向下补齐边线。
+                    processor_.calculate_mid_line(binary_img, false);
                     processor_.fit_polynomial();
 
                     auto msg = buildVisionLineMsg(processor_.get_fit_mid_line(),

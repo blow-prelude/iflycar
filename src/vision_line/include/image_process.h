@@ -142,7 +142,7 @@ public:
     bool add_point_with_stable_start(std::vector<cv::Point> &line, cv::Point point, std::vector<cv::Point> &stable_buf, bool &stable, int x_thresh, int y_thresh);
     int get_search_start_point(std::vector<cv::Point> &pre_line, int cur_y, int img_w, bool is_left);
     // void fill_boundary(Eigen::MatrixX2d &left_line, Eigen::MatrixX2d &right_line, std::vector<int> img_shape, Eigen::MatrixX2d &supple_left_line, Eigen::MatrixX2d &supple_right_line);
-    void fill_boundary(std::vector<cv::Point> &left_line, std::vector<cv::Point> &right_line, std::vector<int> img_shape, std::vector<cv::Point> &supple_left_line, std::vector<cv::Point> &supple_right_line, bool allow_prev_fallack = false);
+    void fill_boundary(std::vector<cv::Point> &left_line, std::vector<cv::Point> &right_line, std::vector<int> img_shape, std::vector<cv::Point> &supple_left_line, std::vector<cv::Point> &supple_right_line, bool allow_prev_fallack = false, bool extend_downward = true);
     void fit_polynomial();
     void fit_polynomial2();
     std::vector<int> get_stop_line(cv::Mat &binary, cv::Mat &canvas, bool is_draw);
@@ -151,7 +151,7 @@ public:
     void get_side_line_task_1(cv::Mat &img, cv::Mat &canvas, bool is_draw);
     void get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_draw, bool find_corner, SearchSide side = BOTH);
     void extend_shorter_line_to_match_min_y(int img_width);
-    void calculate_mid_line(cv::Mat &img);
+    void calculate_mid_line(cv::Mat &img, bool extend_downward = true);
 
     void draw_line(cv::Mat &canvas, float fps, std::string state);
 
