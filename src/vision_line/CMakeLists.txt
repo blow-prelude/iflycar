@@ -256,6 +256,18 @@ target_include_directories(ground_perspective PUBLIC
   ${catkin_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS})
 
+add_executable(dynamic_ground_perspective_cpp
+  src/dynamic_ground_perspective.cpp)
+target_link_libraries(dynamic_ground_perspective_cpp
+  camera_capture
+  ground_perspective
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBS})
+target_include_directories(dynamic_ground_perspective_cpp PUBLIC
+  include
+  ${catkin_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS})
+
 if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(test_ground_perspective
     test/test_ground_perspective.cpp)
