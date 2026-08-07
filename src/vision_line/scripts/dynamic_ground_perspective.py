@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 
 # ======================== 直接修改以下运行参数 ========================
-SCRIPT_DIR = Path(__file__).resolve().parent
-PICTURES_DIR = SCRIPT_DIR.parent / "pictures"
-
-INPUT_IMAGE = PICTURES_DIR / "captured_image_20260720_150144.jpg"
+CAMERA_INDEX = 0
+CAMERA_WIDTH = 640
+CAMERA_HEIGHT = 480
+FRAME_WIDTH = 320
+FRAME_HEIGHT = 240
 
 # 四点围成区域的实际尺寸；请替换为现场测量值。
 REAL_WIDTH_M = 0.5
@@ -443,37 +443,32 @@ def warp_ground(
     )
 
 
-def show_results(
-    bird_view: np.ndarray,
-    ground_mask: np.ndarray,
-    cv2_module=None,
-) -> None:
-    """Display the bird view and ground mask until the user presses a key."""
-    if cv2_module is None:
-        try:
-            import cv2 as cv2_module  # type: ignore
-        except (ImportError, OSError) as exc:
-            raise RuntimeError("OpenCV (cv2) is required to display images") from exc
-
-    cv2_module.imshow("Bird's Eye View", bird_view)
-    cv2_module.imshow("Ground Mask", ground_mask)
-    cv2_module.waitKey(0)
-    cv2_module.destroyAllWindows()
+def prepare_camera_frame(frame, camera, cv2_module) -> np.ndarray:
+    """Match the correction, flip, and resize pipeline used for calibration."""
+    corrected = camera.correct_img(frame)
+    corrected = cv2_module.flip(corrected, 1)
+    return cv2_module.resize(
+        corrected,
+        (FRAME_WIDTH, FRAME_HEIGHT),
+        interpolation=cv2_module.INTER_AREA,
+    )
 
 
-def main() -> int:
-    """Process the image configured in the module-level parameter block."""
-    try:
-        import cv2  # type: ignore
-    except (ImportError, OSError) as exc:
-        raise RuntimeError("OpenCV (cv2) is required to run this command") from exc
+def should_exit(key_code: int) -> bool:
+    """Return whether an OpenCV key code requests stream termination."""
+    key = key_code & 0xFF
+    return key in (27, ord("q"), ord("Q"))
 
-    frame = cv2.imread(str(INPUT_IMAGE))
-    if frame is None:
-        raise ValueError(f"cannot read input image: {INPUT_IMAGE}")
 
-    tracker = GroundBoundaryTracker(GroundDetectionConfig())
-    ground_mask, boundary = tracker.detect(frame)
+def process_camera_frame(
+    raw_frame,
+    camera,
+    tracker: GroundBoundaryTracker,
+    cv2_module,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Prepare, segment, and warp one frame from the camera."""
+    frame = prepare_camera_frame(raw_frame, camera, cv2_module)
+    ground_mask, _boundary = tracker.detect(frame)
     bird_view = warp_ground(
         frame,
         ground_mask,
@@ -482,13 +477,48 @@ def main() -> int:
         length_m=REAL_LENGTH_M,
         pixels_per_m=PIXELS_PER_M,
     )
+    return frame, bird_view, ground_mask
 
-    print(
-        "ground boundary: "
-        f"left={boundary[0]:.1f}, right={boundary[-1]:.1f}; "
-        f"bird view={bird_view.shape[1]}x{bird_view.shape[0]}"
-    )
-    show_results(bird_view, ground_mask, cv2_module=cv2)
+
+def run_camera_stream(camera, cv2_module, frame_processor=None) -> None:
+    """Process camera frames until q/Esc and always release GUI resources."""
+    tracker = GroundBoundaryTracker(GroundDetectionConfig())
+    if frame_processor is None:
+        frame_processor = lambda raw: process_camera_frame(
+            raw,
+            camera,
+            tracker,
+            cv2_module,
+        )
+
+    try:
+        while True:
+            raw_frame = camera.get_picture()
+            frame, bird_view, ground_mask = frame_processor(raw_frame)
+            cv2_module.imshow("Camera Frame", frame)
+            cv2_module.imshow("Bird's Eye View", bird_view)
+            cv2_module.imshow("Ground Mask", ground_mask)
+            if should_exit(cv2_module.waitKey(1)):
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        camera.close()
+        cv2_module.destroyAllWindows()
+
+
+def main() -> int:
+    """Open the configured camera and process frames until q/Esc."""
+    try:
+        import cv2  # type: ignore
+    except (ImportError, OSError) as exc:
+        raise RuntimeError("OpenCV (cv2) is required to run this command") from exc
+
+    from camera_capture import CameraCapture
+
+    camera = CameraCapture(CAMERA_INDEX, CAMERA_WIDTH, CAMERA_HEIGHT)
+    print("Camera stream started. Press q or Esc to exit.")
+    run_camera_stream(camera, cv2)
     return 0
 
 

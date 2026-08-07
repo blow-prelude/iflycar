@@ -213,9 +213,12 @@ def test_tracker_uses_fallback_without_detection_history():
 
 
 def test_runtime_parameters_are_defined_in_module():
-    assert perspective.INPUT_IMAGE.name == "captured_image_20260720_164057.jpg"
-    assert not hasattr(perspective, "OUTPUT_IMAGE")
-    assert not hasattr(perspective, "MASK_OUTPUT_IMAGE")
+    assert not hasattr(perspective, "INPUT_IMAGE")
+    assert perspective.CAMERA_INDEX == 0
+    assert perspective.CAMERA_WIDTH == 640
+    assert perspective.CAMERA_HEIGHT == 480
+    assert perspective.FRAME_WIDTH == 320
+    assert perspective.FRAME_HEIGHT == 240
     assert perspective.REAL_WIDTH_M > 0.0
     assert perspective.REAL_LENGTH_M > 0.0
     assert perspective.PIXELS_PER_M > 0.0
@@ -226,7 +229,58 @@ def test_main_does_not_accept_command_line_parameters():
     assert list(inspect.signature(perspective.main).parameters) == []
 
 
-def test_show_results_displays_bird_view_and_mask_without_writing_files():
+def test_prepare_camera_frame_corrects_flips_then_resizes():
+    calls = []
+    raw = object()
+    corrected = object()
+    flipped = object()
+    prepared = object()
+
+    class CameraSpy:
+        def correct_img(self, frame):
+            calls.append(("correct", frame))
+            return corrected
+
+    class Cv2Spy:
+        INTER_AREA = 3
+
+        def flip(self, frame, axis):
+            calls.append(("flip", frame, axis))
+            return flipped
+
+        def resize(self, frame, size, interpolation):
+            calls.append(("resize", frame, size, interpolation))
+            return prepared
+
+    actual = perspective.prepare_camera_frame(raw, CameraSpy(), Cv2Spy())
+
+    assert actual is prepared
+    assert calls == [
+        ("correct", raw),
+        ("flip", corrected, 1),
+        ("resize", flipped, (320, 240), 3),
+    ]
+
+
+def test_should_exit_accepts_q_and_escape_only():
+    assert perspective.should_exit(ord("q"))
+    assert perspective.should_exit(ord("Q"))
+    assert perspective.should_exit(27)
+    assert not perspective.should_exit(-1)
+    assert not perspective.should_exit(ord("a"))
+
+
+def test_camera_stream_displays_frames_nonblocking_and_releases_resources():
+    class CameraSpy:
+        def __init__(self):
+            self.closed = False
+
+        def get_picture(self):
+            return "raw"
+
+        def close(self):
+            self.closed = True
+
     class DisplaySpy:
         def __init__(self):
             self.windows = []
@@ -243,15 +297,24 @@ def test_show_results_displays_bird_view_and_mask_without_writing_files():
         def destroyAllWindows(self):
             self.destroyed = True
 
+    frame = np.zeros((10, 15, 3), dtype=np.uint8)
     bird_view = np.zeros((20, 30, 3), dtype=np.uint8)
     ground_mask = np.zeros((10, 15), dtype=np.uint8)
+    camera = CameraSpy()
     display = DisplaySpy()
+    display.waitKey = lambda delay: display.wait_delays.append(delay) or ord("q")
 
-    perspective.show_results(bird_view, ground_mask, cv2_module=display)
+    perspective.run_camera_stream(
+        camera,
+        display,
+        frame_processor=lambda raw: (frame, bird_view, ground_mask),
+    )
 
+    assert camera.closed
     assert display.windows == [
+        ("Camera Frame", frame),
         ("Bird's Eye View", bird_view),
         ("Ground Mask", ground_mask),
     ]
-    assert display.wait_delays == [0]
+    assert display.wait_delays == [1]
     assert display.destroyed
