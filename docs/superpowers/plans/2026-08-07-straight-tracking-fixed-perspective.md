@@ -19,6 +19,7 @@
 - Do not calculate the homography from calibration parameters at runtime.
 - Do not remove or change `CameraCapture::perspectiveFrame` in this task.
 - This machine lacks many unrelated project dependencies: compile and test only the smallest relevant targets; do not build the full `vision_line` package or run package-wide tests.
+- The bundled RGA archive is AArch64 (`EM: 183`) while the WSL host is x86_64, so do not link `image_process` or the complete `find_way` executable in WSL; compile the `find_way.cpp` translation unit and verify its generated CMake link edge instead.
 
 ---
 
@@ -211,17 +212,18 @@ cv::Mat binary_img = img_process.preprocess(process_frame);
 
 Remove the old `CameraCapture::perspectiveFrame` call, its original-frame fallback, and the redundant empty check. Leave all logic after `preprocess` unchanged apart from renaming `pers_frame` to `process_frame` in the perspective preview.
 
-- [ ] **Step 2: Mirror only `find_way.cpp` and verify the integration RED**
+- [ ] **Step 2: Mirror only `find_way.cpp` and verify the focused integration RED**
 
-Confirm the WSL runtime files are clean, mirror `find_way.cpp` without changing CMake, and build only the `find_way` target:
+Confirm the WSL runtime files are clean, mirror `find_way.cpp` without changing CMake, compile only its translation unit, then query the generated link command for the missing dependency:
 
 ```powershell
 wsl.exe -d Ubuntu-20.04 -- bash -lc "cd /home/wtr/program/iflycar && git status --short src/vision_line/src/find_way.cpp src/vision_line/CMakeLists.txt"
 wsl.exe -d Ubuntu-20.04 -- bash -lc "cp /mnt/d/programs/ucar_ws/src/vision_line/src/find_way.cpp /home/wtr/program/iflycar/src/vision_line/src/find_way.cpp"
-wsl.exe -d Ubuntu-20.04 -- bash -lc "source /opt/ros/noetic/setup.bash && cd /home/wtr/program/iflycar && catkin_make --pkg vision_line --make-args find_way"
+wsl.exe -d Ubuntu-20.04 -- bash -lc "source /opt/ros/noetic/setup.bash && cd /home/wtr/program/iflycar && make -C build/vision_line src/find_way.o -j2"
+wsl.exe -d Ubuntu-20.04 -- bash -lc "cd /home/wtr/program/iflycar && grep -n ground_perspective build/vision_line/CMakeFiles/find_way.dir/link.txt"
 ```
 
-Expected: the `find_way` link fails with an undefined reference to `vision_line::warpFixedGroundPerspective`, proving that the new call is compiled and that the missing library edge is the reason the focused target is not yet green.
+Expected: `find_way.cpp` compiles successfully, while `grep` exits 1 with no match. This is the integration RED: the call is accepted by the compiler, but the generated link command does not yet contain the library that defines it.
 
 - [ ] **Step 3: Link `find_way` after the library target exists**
 
@@ -235,15 +237,16 @@ Keep the `target_compile_options(... -std=c++11)` lines from commit `5de5ec3` ex
 
 - [ ] **Step 4: Mirror CMake and verify the focused GREEN targets**
 
-Mirror only CMake, then compile `find_way` and run the fixed-perspective tests:
+Mirror only CMake, regenerate the build graph without linking RGA-dependent targets, verify the link edge, recompile the translation unit, and run the fixed-perspective tests:
 
 ```powershell
 wsl.exe -d Ubuntu-20.04 -- bash -lc "cp /mnt/d/programs/ucar_ws/src/vision_line/CMakeLists.txt /home/wtr/program/iflycar/src/vision_line/CMakeLists.txt"
-wsl.exe -d Ubuntu-20.04 -- bash -lc "source /opt/ros/noetic/setup.bash && cd /home/wtr/program/iflycar && catkin_make --pkg vision_line --make-args find_way"
-wsl.exe -d Ubuntu-20.04 -- bash -lc "source /opt/ros/noetic/setup.bash && cd /home/wtr/program/iflycar && catkin_make --pkg vision_line --make-args test_ground_perspective && devel/lib/vision_line/test_ground_perspective --gtest_filter=FixedGroundPerspective.*"
+wsl.exe -d Ubuntu-20.04 -- bash -lc "source /opt/ros/noetic/setup.bash && cd /home/wtr/program/iflycar && cmake --build build --target cmake_check_build_system"
+wsl.exe -d Ubuntu-20.04 -- bash -lc "cd /home/wtr/program/iflycar && grep -n ground_perspective build/vision_line/CMakeFiles/find_way.dir/link.txt"
+wsl.exe -d Ubuntu-20.04 -- bash -lc "source /opt/ros/noetic/setup.bash && cd /home/wtr/program/iflycar && make -C build/vision_line src/find_way.o test_ground_perspective -j2 && devel/lib/vision_line/test_ground_perspective --gtest_filter=FixedGroundPerspective.*"
 ```
 
-Expected: `find_way` links successfully; all focused `FixedGroundPerspective` cases pass. Do not build unrelated package targets or run package-wide tests.
+Expected: the generated `find_way` link command contains `ground_perspective`, the updated translation unit compiles, and all focused `FixedGroundPerspective` cases pass. Do not link the RGA-dependent executable, build unrelated targets, or run package-wide tests.
 
 - [ ] **Step 5: Verify scope and data-flow requirements**
 
