@@ -18,6 +18,7 @@
 - Fixed output is exactly 484×299.
 - Do not calculate the homography from calibration parameters at runtime.
 - Do not remove or change `CameraCapture::perspectiveFrame` in this task.
+- This machine lacks many unrelated project dependencies: compile and test only the smallest relevant targets; do not build the full `vision_line` package or run package-wide tests.
 
 ---
 
@@ -230,14 +231,14 @@ wsl.exe -d Ubuntu-20.04 -- bash -lc "cp /mnt/d/programs/ucar_ws/src/vision_line/
 wsl.exe -d Ubuntu-20.04 -- bash -lc "cp /mnt/d/programs/ucar_ws/src/vision_line/CMakeLists.txt /home/wtr/program/iflycar/src/vision_line/CMakeLists.txt"
 ```
 
-- [ ] **Step 4: Build `find_way` and run the full package tests**
+- [ ] **Step 4: Build and test only the smallest relevant targets**
 
 ```powershell
 wsl.exe -d Ubuntu-20.04 -- bash -lc "source /opt/ros/noetic/setup.bash && cd /home/wtr/program/iflycar && catkin_make --pkg vision_line --make-args find_way"
-wsl.exe -d Ubuntu-20.04 -- bash -lc "source /opt/ros/noetic/setup.bash && cd /home/wtr/program/iflycar && catkin_make run_tests_vision_line && catkin_test_results --verbose"
+wsl.exe -d Ubuntu-20.04 -- bash -lc "source /opt/ros/noetic/setup.bash && cd /home/wtr/program/iflycar && catkin_make --pkg vision_line --make-args test_ground_perspective && devel/lib/vision_line/test_ground_perspective --gtest_filter=FixedGroundPerspective.*"
 ```
 
-Expected: `find_way` links successfully; all `vision_line` tests pass with zero failures.
+Expected: `find_way` links successfully; all focused `FixedGroundPerspective` cases pass. Do not build unrelated package targets or run package-wide tests.
 
 - [ ] **Step 5: Verify scope and data-flow requirements**
 
