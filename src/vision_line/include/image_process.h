@@ -120,7 +120,10 @@ public:
                         std::size_t stride_bytes = 0,
                         YuyvColorSpace color_space = YUYV_BT601_LIMIT) const;
 
+    // 预处理图像；未提供掩膜时，将纯黑区域视为透视变换产生的无效区域。
     cv::Mat preprocess(cv::Mat &img);
+    // 使用显式有效区域掩膜进行预处理。掩膜必须是单通道且尺寸与图像一致。
+    cv::Mat preprocess(cv::Mat &img, const cv::Mat &valid_mask);
     void resize_frame(cv::Mat &img);
     void set_frame(const cv::Mat &frame);
     cv::Mat return_frame();
@@ -159,6 +162,7 @@ public:
     cv::Point &get_right_corners() { return right_corners_; }
 
 private:
+    cv::Mat preprocess_impl(cv::Mat &img, const cv::Mat *valid_mask);
     MidLineMode mid_line_mode_ = MID_AVG; // TURNING 时单边线 mid_line 模式
     ImageProcessConfig config_;
     cv::Mat frame_;

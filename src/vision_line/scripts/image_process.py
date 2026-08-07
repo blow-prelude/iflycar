@@ -3,6 +3,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from dynamic_ground_perspective import fixed_ground_mask, warp_ground
 
 import cv2
 import numpy as np
@@ -209,6 +210,61 @@ class ImageProcess:
     def get_mid_line_mode(self) -> MidLineMode:
         """获取 mid_line 计算模式"""
         return self.mid_line_mode_
+    
+    def resize_frame(self, frame):
+            """如果图像过大，按比例缩小到 preprocess_max_h × preprocess_max_w 以内。
+    
+            Args:
+                frame: 输入图像（BGR）
+    
+            Returns:
+                缩放后的图像，并同步更新 self.frame；输入为 None 时返回 None
+            """
+            if frame is None:
+                return None
+            if (
+                frame.shape[0] >= self.cfg.preprocess_max_h
+                or frame.shape[1] >= self.cfg.preprocess_max_w
+            ):
+                h, w = frame.shape[:2]
+                scale = min(
+                    self.cfg.preprocess_max_h / h, self.cfg.preprocess_max_w / w
+                )
+                new_h = int(h * scale)
+                new_w = int(w * scale)
+                frame = cv2.resize(
+                    frame, (new_w, new_h), interpolation=cv2.INTER_AREA
+                )
+            self.frame = frame
+            return frame
+    
+    def ground_perspective(self, frame):
+        """对地面区域做鸟瞰透视变换，流程与 dynamic_ground_perspective.py 保持一致。
+
+        先用固定地面掩膜剔除非地面像素，再依据四点对应关系把地面 ROI 透视到鸟瞰图，
+        并同步更新 self.frame，使后续 preprocess / return_frame 都基于鸟瞰图。
+
+        Args:
+            frame: 输入图像（BGR，建议已缩放到配置尺寸）
+
+        Returns:
+            鸟瞰透视变换后的图像
+        """
+        ground_mask = fixed_ground_mask(
+            height=frame.shape[0],
+            width=frame.shape[1],
+            start_y=self.cfg.ground_start_y,
+        )
+        bird_view = warp_ground(
+            frame,
+            ground_mask,
+            self.cfg.source_points,
+            width_m=self.cfg.real_width_m,
+            length_m=self.cfg.real_length_m,
+            pixels_per_m=self.cfg.pixels_per_m,
+        )
+        self.frame = bird_view
+        return bird_view
 
     def preprocess(self, frame, valid_mask=None):
         try:

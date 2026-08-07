@@ -166,16 +166,18 @@ int main()
             }
             else
             {
-                img_process.resize_frame(frame);
-
                 cv::Mat process_frame = frame;
                 if (state == ProcessState::STRAIGHT_TRACKING)
                 {
-                    process_frame = vision_line::warpFixedGroundPerspective(frame);
+                    // 固定透视矩阵要求输入尺寸为 320x240；这一步不能交给
+                    // preprocess，否则必须先完成透视变换才能得到处理图像。
+                    cv::Mat perspective_input = frame;
+                    img_process.resize_frame(perspective_input);
+                    process_frame = vision_line::warpFixedGroundPerspective(perspective_input);
                 }
                 img_process.set_frame(process_frame);
 
-                // 预处理
+                // preprocess 负责按配置缩放、有效区域背景估计、二值化和闭运算。
                 cv::Mat binary_img = img_process.preprocess(process_frame);
 
                 if (state == ProcessState::RIGHT_TURNING || state == ProcessState::LEFT_TURNING)

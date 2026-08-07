@@ -187,18 +187,19 @@ public:
             }
             else
             {
-                processor_.resize_frame(frame);
-
                 // STRAIGHT_TRACKING 时先对图片做透视变换
                 cv::Mat pers_frame;
                 if (state_ == STRAIGHT_TRACKING)
                 {
-
-                    pers_frame = CameraCapture::perspectiveFrame(frame);
+                    // 透视变换前保留原有的 320x240 输入缩放；普通帧的缩放
+                    // 由 preprocess 统一完成。
+                    cv::Mat perspective_input = frame;
+                    processor_.resize_frame(perspective_input);
+                    pers_frame = CameraCapture::perspectiveFrame(perspective_input);
                     if (pers_frame.empty())
                     {
                         std::cerr << "Error: Perspective transform failed, using original frame." << std::endl;
-                        pers_frame = frame; // 使用原始帧作为备用
+                        pers_frame = perspective_input; // 使用缩放后的帧作为备用
                     }
                 }
 
@@ -216,6 +217,7 @@ public:
                     continue;
                 }
 
+                // preprocess 负责按配置缩放、有效区域背景估计、二值化和闭运算。
                 cv::Mat binary_img = processor_.preprocess(pers_frame);
                 int proc_h = binary_img.rows;
                 int proc_w = binary_img.cols;

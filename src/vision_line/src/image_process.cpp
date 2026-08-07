@@ -330,40 +330,129 @@ cv::Mat ImageProcess::yuyv_to_rgb(const void *yuyv_data, int width, int height,
     return rgb;
 }
 
-/** 对输入彩色图像执行灰度化、背景抑制、二值化和形态学闭运算。 */
+/** 使用默认的黑色无效区域推断规则执行预处理。 */
 cv::Mat ImageProcess::preprocess(cv::Mat &img)
+{
+    return preprocess_impl(img, nullptr);
+}
+
+/** 使用显式有效区域掩膜执行预处理。 */
+cv::Mat ImageProcess::preprocess(cv::Mat &img, const cv::Mat &valid_mask)
+{
+    return preprocess_impl(img, &valid_mask);
+}
+
+/** 对输入彩色图像执行与 Python 版本一致的预处理。 */
+cv::Mat ImageProcess::preprocess_impl(cv::Mat &img, const cv::Mat *valid_mask_input)
 {
     if (img.empty())
     {
         throw std::runtime_error("Input image is empty.");
     }
 
-    cv::Mat gray;
     if (img.dims != 2 || img.channels() != 3 || img.depth() != CV_8U)
     {
         throw std::runtime_error("Input image must be a 2D CV_8UC3 image.");
     }
-    cv::cvtColor(img, gray, cv::COLOR_BGR2GRAY);
 
-    // 大尺寸高斯模糊获得背景光照分布
-    cv::Mat background;
-    int kernel_w = std::max(1, (gray.cols / 5) | 1);
-    int kernel_h = std::max(1, (gray.rows / 5) | 1);
-    kernel_w = std::min(kernel_w, gray.cols | 1);
-    kernel_h = std::min(kernel_h, gray.rows | 1);
-    const auto kernel_size = cv::Size(kernel_w, kernel_h);
-    cv::GaussianBlur(gray, background, kernel_size, 0);
-    // 原图减去背景，得到滤除光照后的特征
-    cv::Mat foreground;
-    cv::subtract(gray, background, foreground);
+    const bool explicit_mask = valid_mask_input != nullptr;
+    cv::Mat valid_mask;
+    if (explicit_mask)
+    {
+        if (valid_mask_input->empty() || valid_mask_input->dims != 2 ||
+            valid_mask_input->channels() != 1 ||
+            valid_mask_input->rows != img.rows || valid_mask_input->cols != img.cols)
+        {
+            throw std::runtime_error("valid_mask shape must match the input frame height and width");
+        }
 
-    // 二值化
+        // 与 Python 中 (valid_mask != 0).astype(np.uint8) 等价。
+        cv::compare(*valid_mask_input, cv::Scalar::all(0), valid_mask, cv::CMP_NE);
+        if (cv::countNonZero(valid_mask) == 0)
+        {
+            throw std::runtime_error("valid_mask must contain at least one valid pixel");
+        }
+    }
+
+    // Python 版本在 preprocess 内按比例缩小图像，且使用 >= 判断边界。
+    // 使用局部 Mat，避免意外修改调用方持有的输入图像。
+    cv::Mat frame = img;
+    if (frame.rows >= config_.process_max_h || frame.cols >= config_.process_max_w)
+    {
+        const double scale = std::min(static_cast<double>(config_.process_max_h) / frame.rows,
+                                      static_cast<double>(config_.process_max_w) / frame.cols);
+        const int new_w = std::max(1, static_cast<int>(frame.cols * scale));
+        const int new_h = std::max(1, static_cast<int>(frame.rows * scale));
+
+        cv::resize(frame, frame, cv::Size(new_w, new_h), 0.0, 0.0, cv::INTER_AREA);
+        if (explicit_mask)
+        {
+            cv::resize(valid_mask, valid_mask, cv::Size(new_w, new_h),
+                       0.0, 0.0, cv::INTER_NEAREST);
+        }
+    }
+
+    // 记录实际用于处理和绘制的帧，与 Python 版本在缩放后的行为一致。
+    frame_ = frame.clone();
+
+    if (!explicit_mask)
+    {
+        // 透视变换的 BORDER_CONSTANT 黑色区域按约定视为无效；真实场景中的
+        // 纯黑像素若需保留，可通过两参数重载传入显式掩膜。
+        cv::Mat black_mask;
+        cv::inRange(frame, cv::Scalar::all(0), cv::Scalar::all(0), black_mask);
+        cv::bitwise_not(black_mask, valid_mask);
+    }
+
+    cv::Mat gray;
+    cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+
+    const cv::Size kernel_size((gray.cols / 5) | 1, (gray.rows / 5) | 1);
+    cv::Mat gray_float;
+    gray.convertTo(gray_float, CV_32F);
+
+    // 使用掩膜归一化高斯卷积估计背景，避免无效黑区拉低有效区域边界的背景
+    // 值并产生白色伪边。边界估计向内收缩 1 像素，但最终结果仍使用原掩膜。
+    cv::Mat background_mask;
+    cv::erode(valid_mask, background_mask,
+              cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3)),
+              cv::Point(-1, -1), 1);
+
+    cv::Mat mask_float;
+    background_mask.convertTo(mask_float, CV_32F, 1.0 / 255.0);
+    cv::Mat weighted_background = gray_float.mul(mask_float);
+    cv::GaussianBlur(weighted_background, weighted_background, kernel_size, 0);
+
+    cv::Mat blurred_mask;
+    cv::GaussianBlur(mask_float, blurred_mask, kernel_size, 0);
+
+    // 没有有效背景样本的位置回退为原灰度，使差值为零。
+    cv::Mat background = gray_float.clone();
+    cv::Mat has_background;
+    cv::compare(blurred_mask, std::numeric_limits<float>::epsilon(),
+                has_background, cv::CMP_GT);
+    cv::Mat normalized_background;
+    cv::divide(weighted_background, blurred_mask, normalized_background);
+    normalized_background.copyTo(background, has_background);
+
+    // 原图减去背景，截断到 [0, 255]，得到滤除光照后的特征。
+    cv::Mat diff = gray_float - background;
+    cv::max(diff, 0.0, diff);
+    cv::min(diff, 255.0, diff);
+    diff.convertTo(diff, CV_8U);
+    diff.setTo(0, valid_mask == 0);
+
+    // 二值化（使用 Otsu 自适应阈值）。
     cv::Mat binary;
-    cv::threshold(foreground, binary, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+    cv::threshold(diff, binary, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+    binary.setTo(0, valid_mask == 0);
 
-    // 闭运算
+    // 闭运算，并在最后再次清除无效区域，避免形态学操作向黑色边界扩散。
     cv::Mat closed;
-    cv::morphologyEx(binary, closed, cv::MORPH_CLOSE, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3)), cv::Point(-1, -1), 3);
+    cv::morphologyEx(binary, closed, cv::MORPH_CLOSE,
+                     cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3)),
+                     cv::Point(-1, -1), 3);
+    closed.setTo(0, valid_mask == 0);
 
     return closed;
 }
@@ -376,16 +465,14 @@ void ImageProcess::resize_frame(cv::Mat &img)
         return;
     }
 
-    if (img.rows > this->config_.process_max_h || img.cols > this->config_.process_max_w)
+    if (img.rows >= this->config_.process_max_h || img.cols >= this->config_.process_max_w)
     {
         int h = img.rows;
         int w = img.cols;
         const double scale = std::min(static_cast<double>(this->config_.process_max_h) / h,
                                       static_cast<double>(this->config_.process_max_w) / w);
-        const int new_w = std::max(1, std::min(this->config_.process_max_w,
-                                               static_cast<int>(std::lround(w * scale))));
-        const int new_h = std::max(1, std::min(this->config_.process_max_h,
-                                               static_cast<int>(std::lround(h * scale))));
+        const int new_w = std::max(1, static_cast<int>(w * scale));
+        const int new_h = std::max(1, static_cast<int>(h * scale));
 
         if (new_w != w || new_h != h)
         {
