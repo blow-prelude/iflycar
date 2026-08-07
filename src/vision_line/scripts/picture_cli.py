@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import math
 import socket
@@ -6,6 +8,7 @@ import time
 from queue import Empty, Queue
 
 import cv2
+import numpy as np
 
 
 class CameraConfig:
@@ -41,7 +44,7 @@ class ImageSender:
         logging.info(f"UDP socket created for {self.host}:{self.port}")
 
     def send_picture(
-        self, img: cv2.typing.MatLike, img_id: int = 0, img_name: str = ""
+        self, img: np.ndarray, img_id: int = 0, img_name: str = ""
     ) -> None:
         """通过UDP发送单张图片
 
@@ -177,7 +180,7 @@ class ImageSender:
         logging.info(f"{num_threads} send thread(s) started for {num_images} images.")
 
     def enqueue_image(
-        self, img: cv2.typing.MatLike, img_id: int = 0, img_name: str = ""
+        self, img: np.ndarray, img_id: int = 0, img_name: str = ""
     ) -> None:
         """将图片放入对应ID的发送队列
 

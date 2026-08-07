@@ -1004,7 +1004,7 @@ class ImageProcess:
                     search_end_right = img_w - 1
 
                 if y % 10 == 0:
-                    logging.info(
+                    logging.debug(
                         f"y={y}, search range: left [{search_end_left}, {search_start_left}], "
                         f"right [{search_start_right}, {search_end_right}]"
                     )
@@ -1893,12 +1893,12 @@ def main():
     dt = 0.0
     j = 0.0
     # 状态机参数
-    straight_received = False
-    right_received = True
+    straight_received = True
+    right_received = False
     left_received = False
 
     # STRAIGHT_TRACKING 走哪一边：LEFT_ONLY / RIGHT_ONLY / BOTH
-    straight_track_side = SearchSide.LEFT_ONLY
+    straight_track_side = SearchSide.BOTH
     # 由 straight_track_side 一次性派生（循环外算一次）
     if straight_track_side == SearchSide.LEFT_ONLY:
         straight_side = SearchSide.LEFT_ONLY
