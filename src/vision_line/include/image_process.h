@@ -16,13 +16,13 @@ struct ImageProcessConfig
     // 边线搜索
     int x_continual = 10;
     int y_continual = 5;
-    int search_offset = 30; // 起始搜索偏移量
-    int init_stable_count = 8;
+    int search_offset = 20; // 起始搜索偏移量
+    int init_stable_count = 3;
     int miss_threshold = 3;
     float up_ratio = 0.50;
     float down_ratio = 0.90;
-    int search_range_wide = 50;          // 动态搜索窗口最大宽度
-    int search_range_narrow = 30;        // 动态搜索窗口最小宽度
+    int search_range_wide = 35;          // 动态搜索窗口最大宽度
+    int search_range_narrow = 20;        // 动态搜索窗口最小宽度
     float search_range_threshold = 0.60; // 搜索窗口宽度调整阈值
     int min_left_right_distance = 30;    // 左右边线最小间距
 
@@ -56,13 +56,13 @@ struct ImageProcessConfig
     float fill_down_ratio = 0.90;
 
     // 追踪点的索引
-    int straight_target_p_index = -10;
+    int straight_target_p_index = -30;
     int left_target_p_index = -15;
     // int right_target_p_index = -20;
     int tracking2_target_p_index = -15;
 
     // TURNING 状态下用单边线生成 mid_line 的横向偏移（像素）
-    int turning_mid_offset = 40;
+    int turning_mid_offset = 35;
 };
 
 // 判断丢线状态机
