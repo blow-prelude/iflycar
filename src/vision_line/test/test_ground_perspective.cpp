@@ -198,6 +198,37 @@ TEST(FixedGroundPerspective, RemovesPixelsAboveGroundStartBeforeWarp)
     EXPECT_EQ(0, cv::countNonZero(warped.reshape(1)));
 }
 
+TEST(FixedGroundPerspective, MapsCalibratedLandmarksToExpectedLocations)
+{
+    cv::Mat frame = cv::Mat::zeros(240, 320, CV_8UC3);
+    frame(cv::Rect(109, 141, 11, 11)).setTo(cv::Scalar(255, 0, 0));
+    frame(cv::Rect(201, 141, 11, 11)).setTo(cv::Scalar(0, 255, 0));
+    frame(cv::Rect(266, 179, 11, 11)).setTo(cv::Scalar(0, 0, 255));
+    frame(cv::Rect(30, 182, 11, 11)).setTo(cv::Scalar(0, 255, 255));
+
+    const cv::Mat warped = vision_line::warpFixedGroundPerspective(frame);
+
+    const cv::Vec3b blue = warped.at<cv::Vec3b>(102, 177);
+    EXPECT_GT(blue[0], 200);
+    EXPECT_LT(blue[1], 20);
+    EXPECT_LT(blue[2], 20);
+
+    const cv::Vec3b green = warped.at<cv::Vec3b>(102, 277);
+    EXPECT_LT(green[0], 20);
+    EXPECT_GT(green[1], 200);
+    EXPECT_LT(green[2], 20);
+
+    const cv::Vec3b red = warped.at<cv::Vec3b>(252, 277);
+    EXPECT_LT(red[0], 20);
+    EXPECT_LT(red[1], 20);
+    EXPECT_GT(red[2], 200);
+
+    const cv::Vec3b yellow = warped.at<cv::Vec3b>(252, 177);
+    EXPECT_LT(yellow[0], 20);
+    EXPECT_GT(yellow[1], 200);
+    EXPECT_GT(yellow[2], 200);
+}
+
 TEST(FixedGroundPerspective, RejectsEmptyFrame)
 {
     EXPECT_THROW(vision_line::warpFixedGroundPerspective(cv::Mat()),
