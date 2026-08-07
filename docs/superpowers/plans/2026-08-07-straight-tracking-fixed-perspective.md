@@ -95,7 +95,7 @@ First confirm the WSL target test file has no independent edits, then mirror the
 ```powershell
 wsl.exe -d Ubuntu-20.04 -- bash -lc "cd /home/wtr/program/iflycar && git status --short src/vision_line/test/test_ground_perspective.cpp"
 wsl.exe -d Ubuntu-20.04 -- bash -lc "cp /mnt/d/programs/ucar_ws/src/vision_line/test/test_ground_perspective.cpp /home/wtr/program/iflycar/src/vision_line/test/test_ground_perspective.cpp"
-wsl.exe -d Ubuntu-20.04 -- bash -lc "cd /home/wtr/program/iflycar && catkin_make run_tests_vision_line_gtest_test_ground_perspective"
+wsl.exe -d Ubuntu-20.04 -- bash -lc "source /opt/ros/noetic/setup.bash && cd /home/wtr/program/iflycar && catkin_make run_tests_vision_line_gtest_test_ground_perspective"
 ```
 
 Expected: compilation fails because `vision_line::warpFixedGroundPerspective` has not been declared. This is the required RED result, not an environment or syntax error.
@@ -159,7 +159,7 @@ cv::Mat warpFixedGroundPerspective(const cv::Mat &frame)
 ```powershell
 wsl.exe -d Ubuntu-20.04 -- bash -lc "cp /mnt/d/programs/ucar_ws/src/vision_line/include/ground_perspective.h /home/wtr/program/iflycar/src/vision_line/include/ground_perspective.h"
 wsl.exe -d Ubuntu-20.04 -- bash -lc "cp /mnt/d/programs/ucar_ws/src/vision_line/src/ground_perspective.cpp /home/wtr/program/iflycar/src/vision_line/src/ground_perspective.cpp"
-wsl.exe -d Ubuntu-20.04 -- bash -lc "cd /home/wtr/program/iflycar && catkin_make run_tests_vision_line_gtest_test_ground_perspective && catkin_test_results --verbose"
+wsl.exe -d Ubuntu-20.04 -- bash -lc "source /opt/ros/noetic/setup.bash && cd /home/wtr/program/iflycar && catkin_make run_tests_vision_line_gtest_test_ground_perspective && catkin_test_results --verbose"
 ```
 
 Expected: all `test_ground_perspective` cases pass with zero failures, including the five new fixed-transform cases.
@@ -233,8 +233,8 @@ wsl.exe -d Ubuntu-20.04 -- bash -lc "cp /mnt/d/programs/ucar_ws/src/vision_line/
 - [ ] **Step 4: Build `find_way` and run the full package tests**
 
 ```powershell
-wsl.exe -d Ubuntu-20.04 -- bash -lc "cd /home/wtr/program/iflycar && catkin_make --pkg vision_line --make-args find_way"
-wsl.exe -d Ubuntu-20.04 -- bash -lc "cd /home/wtr/program/iflycar && catkin_make run_tests_vision_line && catkin_test_results --verbose"
+wsl.exe -d Ubuntu-20.04 -- bash -lc "source /opt/ros/noetic/setup.bash && cd /home/wtr/program/iflycar && catkin_make --pkg vision_line --make-args find_way"
+wsl.exe -d Ubuntu-20.04 -- bash -lc "source /opt/ros/noetic/setup.bash && cd /home/wtr/program/iflycar && catkin_make run_tests_vision_line && catkin_test_results --verbose"
 ```
 
 Expected: `find_way` links successfully; all `vision_line` tests pass with zero failures.
