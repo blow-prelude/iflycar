@@ -249,6 +249,28 @@ target_include_directories(camera_test
   include
   ${OpenCV_INCLUDE_DIRS})
 
+add_library(ground_perspective src/ground_perspective.cpp)
+target_link_libraries(ground_perspective ${OpenCV_LIBS})
+target_include_directories(ground_perspective PUBLIC
+  include
+  ${catkin_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS})
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_ground_perspective
+    test/test_ground_perspective.cpp)
+  if(TARGET test_ground_perspective)
+    target_link_libraries(test_ground_perspective
+      gtest_main
+      ground_perspective
+      ${OpenCV_LIBS})
+    target_include_directories(test_ground_perspective PUBLIC
+      include
+      ${catkin_INCLUDE_DIRS}
+      ${OpenCV_INCLUDE_DIRS})
+  endif()
+endif()
+
 # ############
 # # Install ##
 # ############
