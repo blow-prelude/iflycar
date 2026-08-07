@@ -161,7 +161,7 @@ class CameraCapture:
             # 根据畸变参数，计算一个去畸变后的最优内参矩阵
             # roi： 去畸变后可剪掉黑边
             newcameramtx, roi = cv2.getOptimalNewCameraMatrix(
-                self.mtx, self.dist, (w, h), 0, (h, w)
+                self.mtx, self.dist, (w, h), 0, (w, h)
             )
 
             # 生成去畸变映射表，并应用映射表将像素重新映射

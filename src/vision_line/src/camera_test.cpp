@@ -5,7 +5,7 @@ int main()
     // 计算fps
     double prev_t = cv::getTickCount();
     double curr_t;
-    double dt;
+    double dt = 0.0;
     int frame_count = 0;
     double fps = 0.0;
     try
@@ -17,7 +17,7 @@ int main()
         while (1)
         {
             curr_t = cv::getTickCount();
-            dt = (curr_t - prev_t) / cv::getTickFrequency();
+            dt += (curr_t - prev_t) / cv::getTickFrequency();
             prev_t = curr_t;
             frame_count++;
             if (dt >= 1.0) // Update FPS every second

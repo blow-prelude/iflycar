@@ -1,5 +1,25 @@
 #include "camera_capture.h"
 
+namespace
+{
+    bool open_camera(cv::VideoCapture &capture, int camera_index, int width, int height,
+                     bool convert_rgb)
+    {
+        if (!capture.open(camera_index, cv::CAP_V4L2))
+        {
+            return false;
+        }
+
+        capture.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('Y', 'U', 'Y', 'V'));
+        capture.set(cv::CAP_PROP_FRAME_WIDTH, width);
+        capture.set(cv::CAP_PROP_FRAME_HEIGHT, height);
+        capture.set(cv::CAP_PROP_FPS, 30);
+        capture.set(cv::CAP_PROP_BUFFERSIZE, 3);
+        capture.set(cv::CAP_PROP_CONVERT_RGB, convert_rgb ? 1 : 0);
+        return true;
+    }
+} // namespace
+
 cv::Mat CameraCapture::perspective_matrix = (cv::Mat_<double>(3, 3) << -0.493484, -1.133680, 215.265780,
                                              -0.052136, -2.137570, 309.269947,
                                              -0.000221, -0.007728, 1.000000);
@@ -7,8 +27,7 @@ CameraCapture::CameraCapture()
 {
 
     cap = new cv::VideoCapture();
-    cap->open(camera_index, cv::CAP_V4L2, cap_params);
-    if (!cap->isOpened())
+    if (!open_camera(*cap, camera_index, frame_width, frame_height, true))
     {
         std::cerr << "Error: Could not open camera with index " << camera_index << std::endl;
         throw std::runtime_error("Could not open camera");
@@ -21,8 +40,7 @@ CameraCapture::CameraCapture()
 CameraCapture::CameraCapture(int index, int width, int height) : camera_index(index), frame_width(width), frame_height(height)
 {
     cap = new cv::VideoCapture();
-    cap->open(camera_index, cv::CAP_V4L2, cap_params);
-    if (!cap->isOpened())
+    if (!open_camera(*cap, camera_index, frame_width, frame_height, true))
     {
         std::cerr << "Error: Could not open camera with index " << camera_index << std::endl;
         throw std::runtime_error("Could not open camera");
@@ -35,8 +53,7 @@ CameraCapture::CameraCapture(int index, int width, int height) : camera_index(in
 CameraCapture::CameraCapture(int index, int width, int height, cv::Mat mtx, cv::Mat dist) : camera_index(index), frame_width(width), frame_height(height), mtx(mtx), dist(dist)
 {
     cap = new cv::VideoCapture();
-    cap->open(camera_index, cv::CAP_V4L2, cap_params);
-    if (!cap->isOpened())
+    if (!open_camera(*cap, camera_index, frame_width, frame_height, true))
     {
         std::cerr << "Error: Could not open camera with index " << camera_index << std::endl;
         throw std::runtime_error("Could not open camera");
@@ -46,16 +63,10 @@ CameraCapture::CameraCapture(int index, int width, int height, cv::Mat mtx, cv::
     std::cout << "Camera opened successfully with index " << camera_index << " and resolution " << frame_width << "x" << frame_height << std::endl;
 }
 
-CameraCapture::CameraCapture(int index, int width, int height, cv::Mat mtx, cv::Mat dist, bool use_rga) : camera_index(index), frame_width(width), frame_height(height), mtx(mtx), dist(dist)
+CameraCapture::CameraCapture(int index, int width, int height, cv::Mat mtx, cv::Mat dist, bool convert_rgb) : camera_index(index), frame_width(width), frame_height(height), mtx(mtx), dist(dist)
 {
-    if (use_rga)
-    {
-        cap_params[7] = 0; // 设置 cv::CAP_PROP_CONVERT_RGB 为 0 , 用硬件加速转化
-    }
-
     cap = new cv::VideoCapture();
-    cap->open(camera_index, cv::CAP_V4L2, cap_params);
-    if (!cap->isOpened())
+    if (!open_camera(*cap, camera_index, frame_width, frame_height, convert_rgb))
     {
         std::cerr << "Error: Could not open camera with index " << camera_index << std::endl;
         throw std::runtime_error("Could not open camera");
@@ -71,13 +82,14 @@ CameraCapture::~CameraCapture()
     std::cout << "CameraCapture object destroyed, camera released." << std::endl;
 }
 
-cv::Mat CameraCapture::captureFrame(cv::Mat &frame)
+cv::Mat CameraCapture::captureFrame()
 {
     if (!cap->isOpened())
     {
         throw std::runtime_error("Camera is not opened");
     }
 
+    cv::Mat frame;
     *cap >> frame;
     return frame;
 }
@@ -124,7 +136,7 @@ cv::Mat CameraCapture::perspectiveFrame(const cv::Mat &frame)
         }
 
         cv::Mat dst;
-        cv::warpPerspective(frame, dst, perspective_matrix, frame.size(), cv::INTER_LINEAR);
+        cv::warpPerspective(frame, dst, perspective_matrix, cv::Size(160, 144), cv::INTER_LINEAR);
 
         return dst;
     }

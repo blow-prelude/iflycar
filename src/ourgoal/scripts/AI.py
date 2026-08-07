@@ -20,9 +20,11 @@ from datetime import datetime
 from time import mktime
 from urllib.parse import urlparse, urlencode
 from wsgiref.handlers import format_date_time
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
 
 # ================= 1. 配置区 =================
-MIC_DEVICE = "hw:3,0" 
+MIC_DEVICE = "hw:XFMDPV0018"
 APPID = 'f4ea634b'
 APISecret = 'ZTA4YzI4NzNkNGE0NjVjODdiNWI5YjZm'
 APIKey = '1c7f09de8fd38d0aebbc11059fcba203'
@@ -34,6 +36,19 @@ ACT_global = "食品"
 SIM_global = "电子产品"
 task1_data_ready = False
 
+
+bridge = CvBridge()
+latest_frame = None
+frame_lock = threading.Lock()
+
+def image_callback(msg):
+    global latest_frame
+    try:
+        frame = bridge.imgmsg_to_cv2(msg, "bgr8")
+        with frame_lock:
+            latest_frame = frame.copy()
+    except Exception as e:
+        rospy.logwarn(f"图像转换失败: {e}")
 # ================= 讯飞/网络工具函数 =================
 class Ws_Param(object):
     def __init__(self, Spark_url):
@@ -163,12 +178,13 @@ def logic_worker():
 
     if allocate_res:
         # 上传关键参数给 switch_test2.cpp
-        rospy.set_param("real_item", allocate_res['A1'])
-        rospy.set_param("real_class", allocate_res['A2'])
-        rospy.set_param("real_room", allocate_res['A3'])
-        rospy.set_param("sim_item", allocate_res['B1'])
-        rospy.set_param("sim_class", allocate_res['B2'])
-        rospy.set_param("sim_room", allocate_res['B3'])
+        rospy.set_param("real_item", allocate_res.get('A1', 'UNKNOWN'))
+        rospy.set_param("real_class", ACT_global)
+        rospy.set_param("real_room", allocate_res.get('A3', 'UNKNOWN'))
+
+        rospy.set_param("sim_item", allocate_res.get('B1', 'UNKNOWN'))
+        rospy.set_param("sim_class", SIM_global)
+        rospy.set_param("sim_room", allocate_res.get('B3', 'UNKNOWN'))
         
         # 播报 1：识别完二维码后的语音
         play_offline_tts(f"取得{allocate_res['A1']}属于{allocate_res['A2']}应放置在{allocate_res['A3']}，仿真环境中取得{allocate_res['B1']}属于{allocate_res['B2']}应放置在{allocate_res['B3']}。")
@@ -182,43 +198,37 @@ def logic_worker():
 def main():
     global qr_urls_set, qr_scan_finished
     rospy.init_node('smart_car_ai_node', anonymous=True)
-    
-    # 启动后台逻辑线程
+
     t = threading.Thread(target=logic_worker)
     t.daemon = True
     t.start()
 
-    rospy.loginfo("📷 视觉线程已启动，摄像头窗口开启...")
-    cap = cv2.VideoCapture(0) # 回到你之前能成功的硬件读取模式
-
-    if not cap.isOpened():
-        rospy.logerr("❌ 无法打开摄像头！请检查硬件或底层占用。")
-        return
+    rospy.loginfo("📷 视觉线程已启动，订阅 /ucar_camera/image_raw...")
+    rospy.Subscriber("/ucar_camera/image_raw", Image, image_callback, queue_size=1)
 
     while not qr_scan_finished and not rospy.is_shutdown():
-        ret, frame = cap.read()
-        if not ret: continue
+        with frame_lock:
+            frame = None if latest_frame is None else latest_frame.copy()
 
-        # 始终弹窗显示画面
+        if frame is None:
+            rospy.logwarn_throttle(2.0, "等待 /ucar_camera/image_raw 图像...")
+            time.sleep(0.05)
+            continue
+
         cv2.imshow("Always-On QR Scanner", frame)
         cv2.waitKey(1)
 
-        # 边走边扫：解析二维码并存入全局集合
         for obj in pyzbar.decode(frame):
             url = obj.data.decode('utf-8')
             if url.startswith("http") and url not in qr_urls_set:
                 qr_urls_set.add(url)
                 rospy.loginfo(f"✅ 捕获新二维码 ({len(qr_urls_set)}/3): {url}")
-        
-        # 路上扫齐了提前通知
+
         if len(qr_urls_set) >= 3:
             rospy.set_param("qr_scan_done", 1)
-            # 这里不 break，继续显示画面直到逻辑线程处理完
 
-    cap.release()
     cv2.destroyAllWindows()
-    
-    # ========================== 补上下面这 3 行！ ==========================
+
     rospy.loginfo("🛑 摄像头扫描结束，主线程挂起，等待后台大模型处理与播报...")
     while not rospy.is_shutdown():
         time.sleep(1)

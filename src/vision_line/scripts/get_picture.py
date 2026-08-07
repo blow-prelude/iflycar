@@ -14,6 +14,8 @@ if __name__ == "__main__":
 
         while True:
             frame = cap.get_picture()
+            cv2.imshow("Original Frame", frame)
+            # frame = cv2.resize(frame, (320, 240))  # Resize for better visibility
             frame = cap.correct_img(frame)
             frame = cv2.flip(
                 frame, 1
@@ -28,8 +30,5 @@ if __name__ == "__main__":
                 save_path = os.path.join(save_dir, filename)
                 cv2.imwrite(save_path, frame)
                 logging.info(f"Image saved to {save_path}")
-
-            else:
-                logging.error("Failed to capture image.")
 
     cv2.destroyAllWindows()

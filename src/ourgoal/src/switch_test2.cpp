@@ -3,8 +3,8 @@
 #include <chrono>
 
 // 导航点宏定义
-#define goto_B sendPos(-1.56, -0.7, 3.14)
-#define goto_D sendPos(3.7, 4.0, 0.0)
+#define goto_B sendPos(-1.56, -0.5, 3.14)
+#define goto_D sendPos(0.2, -3.2, -1.57)
 
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseAction;
 
@@ -29,6 +29,9 @@ OURSWITCH::OURSWITCH()
     getPosition_client = nh_.serviceClient<ourgoal::getPosition>("/srv_getPosition");
     sub_ultrasound = nh_.subscribe("/ultra", 10, &OURSWITCH::UltrasoundCallback, this);
     sub_odom_ = nh_.subscribe("/odom", 10, &OURSWITCH::OdomCallback, this);
+
+    sub_signal_class_ = nh_.subscribe("/signal_class", 10, &OURSWITCH::SignalClassCallback, this);
+    sub_signal_detection_ = nh_.subscribe("/signal_detection", 10, &OURSWITCH::SignalDetectionCallback, this);
 
     // 默认数据初始化
     distance_qian_x = 1.13; 
@@ -86,6 +89,26 @@ void OURSWITCH::UltrasoundCallback(const pcl_work::ultrasoundConstPtr &msg)
     distance_zuo_y = msg->distance_zuo_y; 
     distance_hou_x = -msg->distance_hou_x; 
     distance_you_y = -msg->distance_you_y; 
+}
+
+void OURSWITCH::SignalClassCallback(const std_msgs::Int32::ConstPtr &msg)
+{
+    if (target_locked_) return;
+    current_signal_class_ = msg->data;
+    last_signal_class_time_ = ros::Time::now();
+}
+
+void OURSWITCH::SignalDetectionCallback(const std_msgs::Float32MultiArray::ConstPtr &msg)
+{
+    if (target_locked_) return;
+    if (msg->data.size() < 4) return;
+
+    signal_center_x_ = msg->data[0];
+    signal_center_y_ = msg->data[1];
+    signal_box_x_l_ = msg->data[2];
+    signal_box_x_r_ = msg->data[3];
+    last_signal_detection_time_ = ros::Time::now();
+    nh_.setParam("center_x", signal_center_x_);
 }
 
 void OURSWITCH::delayedFunction(int delayInSeconds) 
@@ -529,102 +552,265 @@ void OURSWITCH::XingHuoAI()
 // =========================================================================
 void OURSWITCH::GotoC(int target_num)
 {
-    if(target_num == 1) 
+    std::string target_warehouse = "UNKNOWN";
+    target_locked_ = false;
+
+    if (target_num == 1)
     {
         ROS_INFO("Entering GotoC1 state: Real Car Warehouse Matching");
-        std::string target_warehouse = "UNKNOWN";
-        nh_.getParam("real_room", target_warehouse);
-        nh_.setParam("auto_park_target", target_warehouse);
-    } 
-    else 
+        nh_.getParam("real_class", target_warehouse);
+    }
+    else
     {
         ROS_INFO("Entering GotoC2 state: Sim Car Warehouse Matching");
-        std::string target_warehouse = "UNKNOWN";
-        nh_.getParam("sim_room", target_warehouse);
-        nh_.setParam("auto_park_target", target_warehouse);
+        nh_.getParam("sim_class", target_warehouse);
     }
 
-    struct Pose { double x, y, z, w; };
-    std::vector<Pose> search_points = {
-        {2.0, 3.5, 0.707, 0.707},
-        {3.5, 3.5, 0.707, 0.707},
-        {5.0, 3.5, 0.707, 0.707}
+    nh_.setParam("auto_park_target", target_warehouse);
+    nh_.setParam("start_auto_park", 0);
+    nh_.setParam("auto_park_status", "IDLE");
+
+    int target_class = -1;
+    if (target_warehouse.find("食品") != std::string::npos)
+        target_class = 0;
+    else if (target_warehouse.find("日用品") != std::string::npos || target_warehouse.find("用品") != std::string::npos)
+        target_class = 1;
+    else if (target_warehouse.find("电子") != std::string::npos || target_warehouse.find("电") != std::string::npos || target_warehouse.find("生产") != std::string::npos)
+        target_class = 2;
+
+    if (target_class < 0)
+    {
+        ROS_ERROR("Unknown target warehouse: %s", target_warehouse.c_str());
+    }
+
+    struct Pose
+    {
+        double x;
+        double y;
+        double yaw;
     };
 
-    bool parking_success = false;
-    int point_count = 0;
+    std::vector<Pose> search_points = {
+        {-1.3, -2.4, 1.57},
+        {0.6, -2.3, 1.57},
+        {2.0, -2.3, 1.57}
+    };
 
-    while (!parking_success && point_count < search_points.size() && ros::ok())
+    bool target_found = false;
+    double target_dx = 0.0;
+    double target_dy = 0.0;
+    double target_line_a = 0.0;
+
+    // 遍历每个观测点
+    for (int i = 0; i < (int)search_points.size() && ros::ok(); ++i)
     {
-        ROS_INFO("Navigating to observation point %d...", point_count + 1);
-        
-        // 此处为调试暂时注释了实际寻点代码
-        // sendPos(search_points[point_count].x, search_points[point_count].y, 
-        //         search_points[point_count].z, search_points[point_count].w);
-                
-        bool finished_before_timeout = ac_.waitForResult(ros::Duration(20.0));
-        
-        if (finished_before_timeout && ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED)
+        ROS_INFO("Navigating to observation point %d", i + 1);
+
+        current_signal_class_ = -1;
+        last_signal_class_time_ = ros::Time(0);
+        last_signal_detection_time_ = ros::Time(0);
+
+        sendPos(search_points[i].x, search_points[i].y, search_points[i].yaw);
+
+        bool arrived = ac_.waitForResult(ros::Duration(20.0));       //  一个坐标点最多等20s
+        if (!arrived)
         {
-            ROS_INFO("Arrived at point %d. Auto-Park starting...", point_count + 1);
-            nh_.setParam("start_auto_park", 1);
-            nh_.setParam("auto_park_status", "WAITING"); 
-            
-            std::string park_status = "WAITING";
-            while (park_status == "WAITING" && ros::ok())
+            ROS_WARN("Point %d timeout, skip", i + 1);
+            ac_.cancelGoal();
+            continue;
+        }
+
+        if (ac_.getState() != actionlib::SimpleClientGoalState::SUCCEEDED)
+        {
+            ROS_WARN("Point %d unreachable, state=%s", i + 1, ac_.getState().toString().c_str());
+            continue;
+        }
+
+        ROS_INFO("Arrived point %d, rotating slowly to search signal", i + 1);
+
+        geometry_msgs::Twist spin_cmd;
+        spin_cmd.angular.z = 0.25;        //  旋转速度
+
+        ros::Time spin_start = ros::Time::now();
+        ros::Rate rate(20);
+        double spin_duration = 2.0 * M_PI / 0.25;
+
+        while (ros::ok() && (ros::Time::now() - spin_start).toSec() < spin_duration)
+        {
+            cmd_vel_pub__.publish(spin_cmd);
+            ros::spinOnce();
+
+            bool class_recent =
+                !last_signal_class_time_.isZero() &&
+                (ros::Time::now() - last_signal_class_time_).toSec() < 1.0;
+
+            bool detection_recent =
+                !last_signal_detection_time_.isZero() &&
+                (ros::Time::now() - last_signal_detection_time_).toSec() < 1.0;
+
+            if (class_recent && detection_recent && current_signal_class_ == target_class)
             {
-                nh_.getParam("auto_park_status", park_status);
-                ros::Duration(0.1).sleep();
-                ros::spinOnce();
+                ROS_WARN("Target class matched. class=%d center_x=%.1f",
+                        current_signal_class_, signal_center_x_);
+
+                geometry_msgs::Twist stop_cmd;
+                cmd_vel_pub__.publish(stop_cmd);
+
+                ros::Duration(0.3).sleep();
+
+                // 停车后重新取一帧最新识别结果，并锁定
+                bool frozen = false;
+                ros::Time freeze_start = ros::Time::now();
+
+                while (ros::ok() && (ros::Time::now() - freeze_start).toSec() < 1.0)
+                {
+                    ros::spinOnce();
+
+                    bool class_ok =
+                        !last_signal_class_time_.isZero() &&
+                        (ros::Time::now() - last_signal_class_time_).toSec() < 1.0;
+
+                    bool det_ok =
+                        !last_signal_detection_time_.isZero() &&
+                        (ros::Time::now() - last_signal_detection_time_).toSec() < 1.0;
+
+                    if (class_ok && det_ok && current_signal_class_ == target_class)
+                    {
+                        locked_signal_class_ = current_signal_class_;
+                        locked_center_x_ = signal_center_x_;
+                        locked_box_x_l_ = signal_box_x_l_;
+                        locked_box_x_r_ = signal_box_x_r_;
+                        target_locked_ = true;
+                        frozen = true;
+
+                        ROS_WARN("Target locked after stop. class=%d center=%.1f left=%.1f right=%.1f",
+                                locked_signal_class_, locked_center_x_,
+                                locked_box_x_l_, locked_box_x_r_);
+                        break;
+                    }
+
+                    ros::Duration(0.05).sleep();
+                }
+
+                if (!frozen)
+                {
+                    ROS_WARN("Target matched, but no stable post-stop detection found");
+                    continue;
+                }
+
+                ourgoal::getLaserPoint srv;
+                srv.request.center_x = std::max(0, std::min(639, (int)std::round(locked_center_x_)));
+                srv.request.left_x = std::max(0, std::min(639, (int)std::round(locked_box_x_l_)));
+                srv.request.right_x = std::max(0, std::min(639, (int)std::round(locked_box_x_r_)));
+                srv.request.mode = false;
+
+                if (srv.request.left_x < srv.request.right_x && vision_gettool_client_.call(srv))
+                {
+                    target_dx = (srv.response.dx_left + srv.response.dx_right) / 2.0;
+                    target_dy = (srv.response.dy_left + srv.response.dy_right) / 2.0;
+                    target_line_a = srv.response.line_a;
+
+                    ROS_INFO("Signal metric center: dx=%.3f dy=%.3f line_a=%.3f",
+                            target_dx, target_dy, target_line_a);
+
+                    nh_.setParam("signal_target_dx", target_dx);
+                    nh_.setParam("signal_target_dy", target_dy);
+                    nh_.setParam("signal_target_line_a", target_line_a);
+
+                    point_2d target_point;
+                    target_point.x = target_dx;
+                    target_point.y = target_dy;
+
+                    double k = target_line_a;
+                    double kk = (k == 255) ? M_PI / 2.0 : std::atan(k);
+
+                    if (kk < 0)
+                    {
+                        kk += M_PI;
+                    }
+
+                    kk -= M_PI / 2.0;
+
+                    double stop_distance = 0.3;
+                    target_point.x -= stop_distance * std::cos(kk);
+                    target_point.y -= stop_distance * std::sin(kk);
+
+                    double car_x = nh_.param("CarX", 0.0);
+                    double car_y = nh_.param("CarY", 0.0);
+                    double car_yaw = nh_.param("CarYaw", 0.0);
+
+                    point_2d map_target = rotate(target_point, car_yaw);
+                    map_target = translate(map_target, car_x, car_y);
+
+                    double target_yaw = kk + car_yaw;
+
+                    ROS_INFO("Parking goal in map: x=%.3f y=%.3f yaw=%.3f",
+                            map_target.x, map_target.y, target_yaw);
+
+                    sendPos(map_target.x, map_target.y, target_yaw);
+
+                    bool park_arrived = ac_.waitForResult(ros::Duration(15.0));
+
+                    if (park_arrived && ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED)
+                    {
+                        ROS_WARN("Arrived at target warehouse parking pose");
+                        target_found = true;
+                        nh_.setParam("auto_park_status", "DONE");
+                        break;
+                    }
+                    else
+                    {
+                        ROS_WARN("Failed to reach parking pose, continue searching next observation point");
+
+                        if (!park_arrived)
+                        {
+                            ac_.cancelGoal();
+                        }
+
+                        nh_.setParam("auto_park_status", "FAILED");
+                        target_locked_ = false;
+                        break;
+                    }
+                }
+                else
+                {
+                    ROS_WARN("Target class matched, but /srv_getLaserPoint failed");
+                    target_locked_ = false;
+                }
             }
 
-            if (park_status == "DONE") 
-            {
-                parking_success = true;
-            } 
-            else 
-            {
-                point_count++;
-            }
-            nh_.setParam("start_auto_park", 0);
+            rate.sleep();
         }
-        else
+
+        geometry_msgs::Twist stop_cmd;
+        cmd_vel_pub__.publish(stop_cmd);
+
+        if (target_found)
         {
-            if (!finished_before_timeout) 
-            {
-                ac_.cancelGoal(); 
-            }
-            point_count++;
+            break;
         }
+
+        ROS_WARN("Target not found at point %d, go next", i + 1);
     }
 
-    // ========== 语音播报 2：实体车间放置完成 ==========
-    if (parking_success && target_num == 1) 
+    if (target_found && target_num == 1)
     {
         std::string item, room;
         nh_.getParam("real_item", item);
         nh_.getParam("real_room", room);
+
         char tts_cmd[512];
-        
-        // 拼接发音指令：已将香蕉放入食品加工车间
         sprintf(tts_cmd, "espeak -v zh+f2 \"已将%s放入%s\" -s 130", item.c_str(), room.c_str());
-        ROS_INFO("Broadcasting Real Warehouse placement...");
-        system(tts_cmd); 
+        system(tts_cmd);    //语音播报
     }
 
-    if (!parking_success) 
+    if (!target_found)
     {
-        ROS_ERROR("Failed to park at targets! Forcing blind parking.");
+        ROS_ERROR("Failed to find target warehouse after all observation points");
+        nh_.setParam("auto_park_status", "FAILED");
     }
 
-    if(target_num == 1) 
-    {
-        current_state = GOTOC2_;
-    } 
-    else 
-    {
-        current_state = Gazebo_;
-    }
+    current_state = (target_num == 1) ? GOTOC2_ : Gazebo_;
 }
 
 // =========================================================================
@@ -632,32 +818,32 @@ void OURSWITCH::GotoC(int target_num)
 // =========================================================================
 void OURSWITCH::Gazebo()
 {
-    ROS_INFO("Entering Gazebo state: Simulation Task Collaboration");
+    // ROS_INFO("Entering Gazebo state: Simulation Task Collaboration");
 
-    nh_.setParam("start_gazebo_sim", 1);
-    nh_.setParam("gazebo_sim_done", 0);
+    // nh_.setParam("start_gazebo_sim", 1);
+    // nh_.setParam("gazebo_sim_done", 0);
     
-    int sim_done = 0;
-    while (sim_done == 0 && ros::ok())
-    {
-        nh_.getParam("gazebo_sim_done", sim_done);
-        ros::Duration(0.1).sleep();
-        ros::spinOnce();
-    }
+    // int sim_done = 0;
+    // while (sim_done == 0 && ros::ok())
+    // {
+    //     nh_.getParam("gazebo_sim_done", sim_done);
+    //     ros::Duration(0.1).sleep();
+    //     ros::spinOnce();
+    // }
     
-    ROS_INFO("Gazebo simulation task reported as COMPLETE!");
-    nh_.setParam("start_gazebo_sim", 0);
+    // ROS_INFO("Gazebo simulation task reported as COMPLETE!");
+    // nh_.setParam("start_gazebo_sim", 0);
 
-    // ========== 语音播报 3：仿真任务完成 ==========
-    std::string sim_item, sim_room;
-    nh_.getParam("sim_item", sim_item);
-    nh_.getParam("sim_room", sim_room);
-    char tts_cmd[512];
+    // // ========== 语音播报 3：仿真任务完成 ==========
+    // std::string sim_item, sim_room;
+    // nh_.getParam("sim_item", sim_item);
+    // nh_.getParam("sim_room", sim_room);
+    // char tts_cmd[512];
     
-    // 拼接发音指令：仿真任务已完成，已将毛巾放入电子产品生产车间
-    sprintf(tts_cmd, "espeak -v zh+f2 \"仿真任务已完成，已将%s放入%s\" -s 130", sim_item.c_str(), sim_room.c_str());
-    ROS_INFO("Broadcasting Gazebo task completion...");
-    system(tts_cmd);
+    // // 拼接发音指令：仿真任务已完成，已将毛巾放入电子产品生产车间
+    // sprintf(tts_cmd, "espeak -v zh+f2 \"仿真任务已完成，已将%s放入%s\" -s 130", sim_item.c_str(), sim_room.c_str());
+    // ROS_INFO("Broadcasting Gazebo task completion...");
+    // system(tts_cmd);
 
     current_state = GOTOD_; 
 }

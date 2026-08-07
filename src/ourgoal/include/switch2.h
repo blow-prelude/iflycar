@@ -24,6 +24,11 @@
 #include "ourgoal/getLaserPoint.h"
 #include "pcl_work/ultrasound.h"
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>  // 用于四元数转换v
+#include <vector>
+#include <string>
+#include <algorithm>
+#include <cmath>
+
 
 // 坐标点结构体
 typedef struct Point
@@ -113,6 +118,9 @@ class OURSWITCH
         void getZbarCallback(const std_msgs::String::ConstPtr &msg);
         void UltrasoundCallback(const pcl_work::ultrasoundConstPtr &msg);
         void OdomCallback(const nav_msgs::Odometry::ConstPtr &msg); // 用于提取高精度yaw
+
+        void SignalClassCallback(const std_msgs::Int32::ConstPtr &msg);
+        void SignalDetectionCallback(const std_msgs::Float32MultiArray::ConstPtr &msg);
         
     private:
         // 从参数服务器获取center_x
@@ -134,6 +142,9 @@ class OURSWITCH
         ros::ServiceClient teb_param_reloader;
         ros::ServiceClient getPosition_client;
         ros::ServiceClient play_flag_client;
+
+        ros::Subscriber sub_signal_class_;
+        ros::Subscriber sub_signal_detection_;
         
         // 消息与参数
         geometry_msgs::Twist cmd_vel;
@@ -141,6 +152,21 @@ class OURSWITCH
         ourgoal::getPosition position_srv;
         std_srvs::Empty _;
         ourgoal::srv_reload teb_reload;
+
+        int current_signal_class_ = -1;
+        ros::Time last_signal_class_time_;
+
+        double signal_center_x_ = -1.0;
+        double signal_center_y_ = -1.0;
+        double signal_box_x_l_ = -1.0;
+        double signal_box_x_r_ = -1.0;
+        ros::Time last_signal_detection_time_;
+
+        bool target_locked_ = false;
+        double locked_center_x_ = -1.0;
+        double locked_box_x_l_ = -1.0;
+        double locked_box_x_r_ = -1.0;
+        int locked_signal_class_ = -1;
 
         // 任务参数
         double roll, pitch, yaw;

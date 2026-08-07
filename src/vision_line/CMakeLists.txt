@@ -18,6 +18,13 @@ find_package(catkin REQUIRED COMPONENTS
 
 find_package(OpenCV REQUIRED)
 
+# RGA 用于硬件色域转换。该库和目标板架构相关，请在目标板或对应交叉编译环境中使用。
+set(RGA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/rga)
+set(RGA_INCLUDE_DIR ${RGA_ROOT}/include)
+# Use the static RGA archive: the bundled shared object requires
+# exp@GLIBC_2.29, while the target system provides glibc 2.28.
+set(RGA_LIBRARY ${RGA_ROOT}/libs/librga.a)
+
 if(OpenCV_FOUND)
   include_directories(${OpenCV_INCLUDE_DIRS})
   message(STATUS "OpenCV library status:")
@@ -191,6 +198,7 @@ target_link_libraries(camera_capture
 target_link_libraries(image_process
   ${catkin_LIBRARIES}
   ${OpenCV_LIBS}
+  ${RGA_LIBRARY}
 )
 
 target_link_libraries(camera_test
@@ -227,6 +235,7 @@ target_include_directories(image_process
   include
   ${catkin_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
+  ${RGA_INCLUDE_DIR}
 )
 target_include_directories(find_way_ros
   PUBLIC

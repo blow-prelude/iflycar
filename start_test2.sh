@@ -13,6 +13,26 @@ echo "正在启动 ourgoal ourgoal.launch..."
 xfce4-terminal --tab --title="ourgoal" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; roslaunch ourgoal ourgoal.launch; exec bash'"
 sleep 2
 
+# 启动 ucar_camera
+echo "正在启动 ucar_camera..."
+xfce4-terminal --tab --title="ucar_camera" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; rosrun ucar_camera ucar_camera.py; exec bash'"
+sleep 3
+
+# 启动相机雷达重投影，发布 /vision_points
+echo "正在启动 camera_lidar reprojection..."
+xfce4-terminal --tab --title="reprojection" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; roslaunch camera_2d_lidar_calibration reprojection.launch; exec bash'"
+sleep 3
+
+# 启动 getLaserPoint，提供 /srv_getLaserPoint
+echo "正在启动 getLaserPoint..."
+xfce4-terminal --tab --title="getLaserPoint" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; rosrun ourgoal getLaserPoint; exec bash'"
+sleep 2
+
+# 启动 find_signal OCR/RKNN 视觉识别
+echo "正在启动 find_signal rknn_ros.py..."
+xfce4-terminal --tab --title="find_signal" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; cd /home/ucar/ucar_ws/src/find_signal/scripts; source ~/venv3.9/bin/activate; python3 rknn_ros.py; exec bash'"
+sleep 3
+
 # 启动 switch_test2
 echo "正在启动 ourgoal switch_test2..."
 xfce4-terminal --tab --title="switch_test2" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; rosrun ourgoal switch_test2; exec bash'"
@@ -33,15 +53,10 @@ echo "正在启动 speech_command speech_command.launch..."
 xfce4-terminal --tab --title="speech_command" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; roslaunch speech_command speech_command.launch; exec bash'"
 sleep 3
 
-# 启动 getLaserPoint
-echo "正在启动 getLaserPoint..."
-xfce4-terminal --tab --title="getLaserPoint" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; rosrun ourgoal getLaserPoint; exec bash'"
-sleep 3
-
-# 启动 callback
-echo "正在启动 callback..."
-xfce4-terminal --tab --title="callback" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; rosrun ourgoal callback; exec bash'"
-sleep 3
+# # 启动 callback
+# echo "正在启动 callback..."
+# xfce4-terminal --tab --title="callback" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; rosrun ourgoal callback; exec bash'"
+# sleep 3
 
 # 启动 laser2plc
 echo "正在启动 laser2plc..."
