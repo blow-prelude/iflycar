@@ -5,6 +5,7 @@
 
 #include <exception>
 #include <iostream>
+#include <stdexcept>
 #include <vector>
 
 namespace
@@ -36,8 +37,7 @@ int main()
             const cv::Mat raw_frame = camera.captureFrame();
             if (raw_frame.empty())
             {
-                std::cerr << "Error: captured frame is empty." << std::endl;
-                break;
+                throw std::runtime_error("captured frame is empty");
             }
             const cv::Mat corrected_frame = camera.correctFrame(raw_frame);
             const cv::Mat frame = vision_line::flipAndResize(

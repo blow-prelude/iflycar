@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 #include <opencv2/core.hpp>
 
+#include <stdexcept>
 #include <vector>
 
 namespace
@@ -28,6 +29,14 @@ TEST(FixedGroundMask, ClampsStartRowToImage)
                      vision_line::makeFixedGroundMask({4, 3}, 9)));
 }
 
+TEST(InputValidation, RejectsNonPositiveFrameSizes)
+{
+    EXPECT_THROW(vision_line::makeFixedGroundMask({0, 3}, 0),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::makeFixedGroundMask({3, 0}, 0),
+                 std::invalid_argument);
+}
+
 TEST(MetricDestination, ConvertsMetresToPixels)
 {
     const auto points = vision_line::makeMetricDestination(0.5, 0.75, 200.0);
@@ -36,6 +45,40 @@ TEST(MetricDestination, ConvertsMetresToPixels)
     EXPECT_EQ(cv::Point2f(100.0F, 0.0F), points[1]);
     EXPECT_EQ(cv::Point2f(100.0F, 150.0F), points[2]);
     EXPECT_EQ(cv::Point2f(0.0F, 150.0F), points[3]);
+}
+
+TEST(InputValidation, RejectsNonPositiveMetricDimensions)
+{
+    EXPECT_THROW(vision_line::makeMetricDestination(0.0, 0.75, 200.0),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::makeMetricDestination(0.5, -0.75, 200.0),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::makeMetricDestination(0.5, 0.75, 0.0),
+                 std::invalid_argument);
+}
+
+TEST(InputValidation, RejectsInvalidHomographyInputs)
+{
+    const std::vector<cv::Point2f> points{
+        {0.0F, 0.0F}, {3.0F, 0.0F}, {3.0F, 3.0F}, {0.0F, 3.0F}};
+    const cv::Mat valid_mask = cv::Mat::ones(4, 4, CV_8UC1);
+
+    EXPECT_THROW(vision_line::makeExpandedHomography(
+                     {points.begin(), points.begin() + 3}, points,
+                     valid_mask),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::makeExpandedHomography(
+                     points, {points.begin(), points.begin() + 3},
+                     valid_mask),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::makeExpandedHomography(points, points, cv::Mat()),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::makeExpandedHomography(
+                     points, points, cv::Mat::ones(4, 4, CV_8UC3)),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::makeExpandedHomography(
+                     points, points, cv::Mat::zeros(4, 4, CV_8UC1)),
+                 std::invalid_argument);
 }
 
 TEST(ExpandedHomography, PreservesCalibrationGeometryAndContainsGroundRoi)
@@ -83,6 +126,29 @@ TEST(WarpGround, KeepsTheCompleteFixedGroundRoi)
     EXPECT_EQ(cv::Vec3b(10, 20, 30), warped.at<cv::Vec3b>(0, 0));
 }
 
+TEST(InputValidation, RejectsInvalidWarpFrameAndMaskInputs)
+{
+    const std::vector<cv::Point2f> source{
+        {0.0F, 0.0F}, {3.0F, 0.0F}, {3.0F, 3.0F}, {0.0F, 3.0F}};
+    const cv::Mat valid_frame(4, 4, CV_8UC3);
+    const cv::Mat valid_mask = cv::Mat::ones(4, 4, CV_8UC1);
+
+    EXPECT_THROW(vision_line::warpGround(cv::Mat(), valid_mask, source,
+                                          3.0, 3.0, 1.0),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::warpGround(cv::Mat::ones(4, 4, CV_8UC1),
+                                          valid_mask, source, 3.0, 3.0, 1.0),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::warpGround(valid_frame,
+                                          cv::Mat::ones(3, 4, CV_8UC1),
+                                          source, 3.0, 3.0, 1.0),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::warpGround(valid_frame,
+                                          cv::Mat::ones(4, 4, CV_8UC3),
+                                          source, 3.0, 3.0, 1.0),
+                 std::invalid_argument);
+}
+
 TEST(FramePreparation, FlipsCorrectedFrameBeforeResize)
 {
     cv::Mat corrected(1, 2, CV_8UC1);
@@ -91,6 +157,17 @@ TEST(FramePreparation, FlipsCorrectedFrameBeforeResize)
     const cv::Mat prepared = vision_line::flipAndResize(corrected, {2, 1});
     EXPECT_EQ(2, prepared.at<unsigned char>(0, 0));
     EXPECT_EQ(1, prepared.at<unsigned char>(0, 1));
+}
+
+TEST(InputValidation, RejectsInvalidFramePreparationInputs)
+{
+    const cv::Mat frame(1, 1, CV_8UC1);
+    EXPECT_THROW(vision_line::flipAndResize(cv::Mat(), {1, 1}),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::flipAndResize(frame, {0, 1}),
+                 std::invalid_argument);
+    EXPECT_THROW(vision_line::flipAndResize(frame, {1, -1}),
+                 std::invalid_argument);
 }
 
 TEST(KeyHandling, AcceptsQUppercaseQAndEscape)
