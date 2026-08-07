@@ -103,6 +103,20 @@ class ImageProcessConfig:
         ]
     )
 
+    # ---- 地面鸟瞰透视变换（与 dynamic_ground_perspective.py 对齐） ----
+    ground_start_y: int = 139  # 只保留 y >= ground_start_y 的地面区域
+    real_width_m: float = 0.5  # 四点围成区域的实际宽度（米）
+    real_length_m: float = 0.75  # 四点围成区域的实际长度（米）
+    pixels_per_m: float = 200.0  # 鸟瞰图分辨率（像素/米）
+    source_points: list = field(
+        default_factory=lambda: [
+            [114.0, 146.0],
+            [206.0, 146.0],
+            [271.0, 184.0],
+            [35.0, 187.0],
+        ]
+    )
+
     # ---- 拟合曲线上的目标点索引（负数表示从末尾倒数，与 image_process_ros 对齐） ----
     straight_target_p_index = -10
     tracking2_target_p_index = -48
@@ -215,7 +229,9 @@ class ImageProcess:
                         )
                     valid_mask = (valid_mask != 0).astype(np.uint8)
                     if not np.any(valid_mask):
-                        raise ValueError("valid_mask must contain at least one valid pixel")
+                        raise ValueError(
+                            "valid_mask must contain at least one valid pixel"
+                        )
 
                 # 如果图片太大，按比例缩小
                 if (
@@ -1153,9 +1169,9 @@ class ImageProcess:
                         cv2.circle(canvas, (search_start_left, y), 1, (0, 255, 255), -1)
                         cv2.circle(canvas, (search_end_left, y), 1, (0, 255, 255), -1)
 
-                    candidates = np.where(row_diff[search_end_left:search_start_left] == 1)[
-                        0
-                    ]
+                    candidates = np.where(
+                        row_diff[search_end_left:search_start_left] == 1
+                    )[0]
 
                     if len(candidates) > 0:
                         x = candidates[-1] + search_end_left
@@ -1220,7 +1236,9 @@ class ImageProcess:
                         search_end_right = img_w - 1
 
                     if is_draw:
-                        cv2.circle(canvas, (search_start_right, y), 1, (255, 255, 0), -1)
+                        cv2.circle(
+                            canvas, (search_start_right, y), 1, (255, 255, 0), -1
+                        )
                         cv2.circle(canvas, (search_end_right, y), 1, (255, 255, 0), -1)
 
                     candidates = np.where(
@@ -1305,9 +1323,7 @@ class ImageProcess:
                     self.mid_line = _empty.copy()
             elif self.mid_line_mode_ == MidLineMode.RIGHT_OFFSET:
                 if len(self.supple_right_line) > 0:
-                    mid_xs = (
-                        self.supple_right_line[:, 0] - self.cfg.turning_mid_offset
-                    )
+                    mid_xs = self.supple_right_line[:, 0] - self.cfg.turning_mid_offset
                     mid_ys = self.supple_right_line[:, 1]
                     self.mid_line = np.stack([mid_xs, mid_ys], axis=1)
                 else:
@@ -1728,6 +1744,9 @@ def main_video():
 
             # --- 非 IDLE 状态才执行图像处理 ---
             else:
+                # 缩放图像并保存到 imgprocess
+                frame = imgprocess.resize_frame(frame)
+
                 # 预处理
                 binary_img = imgprocess.preprocess(frame)
 
@@ -1837,6 +1856,7 @@ def main_perspective():
             # cv2.imshow("perspective", perspective_frame)
             img_sender.enqueue_image(perspective_frame, img_id=0, img_name="perspect")
 
+            perspective_frame = imgprocess.resize_frame(perspective_frame)
             binary_img = imgprocess.preprocess(perspective_frame)
             # cv2.imshow("binary", binary_img)
             img_sender.enqueue_image(binary_img, img_id=0, img_name="binary")
@@ -1916,8 +1936,8 @@ def main():
 
         while True:
             frame = cap.get_picture()
-            # frame = cap.correct_img(frame)
-            # frame = cv2.flip(frame, 1)  # 水平翻转
+            frame = cap.correct_img(frame)
+            frame = cv2.flip(frame, 1)  # 水平翻转
 
             # 实时 FPS 计算
             now_t = time.perf_counter()
@@ -1944,8 +1964,12 @@ def main():
 
             # --- 非 IDLE 状态才执行图像处理 ---
             else:
-                # 保存当前帧到imgprocess
-                imgprocess.frame = frame
+                # 缩放图像并保存到 imgprocess
+                frame = imgprocess.resize_frame(frame)
+
+                # STRAIGHT_TRACKING 先做地面透视变换（流程与 dynamic_ground_perspective.py 一致）
+                if state == ProcessState.STRAIGHT_TRACKING:
+                    frame = imgprocess.ground_perspective(frame)
 
                 # 预处理
                 binary_img = imgprocess.preprocess(frame)
