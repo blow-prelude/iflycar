@@ -8,7 +8,7 @@
 #include <mutex>
 
 #include "image_process.h"
-#include "camera_capture.h"
+#include "ground_perspective.h"
 
 enum State
 {
@@ -195,10 +195,14 @@ public:
                     // 由 preprocess 统一完成。
                     cv::Mat perspective_input = frame;
                     processor_.resize_frame(perspective_input);
-                    pers_frame = CameraCapture::perspectiveFrame(perspective_input);
-                    if (pers_frame.empty())
+                    try
                     {
-                        std::cerr << "Error: Perspective transform failed, using original frame." << std::endl;
+                        // 固定透视矩阵要求输入为 320x240；resize_frame 已保证该尺寸。
+                        pers_frame = vision_line::warpFixedGroundPerspective(perspective_input);
+                    }
+                    catch (const std::exception &e)
+                    {
+                        ROS_WARN("warpFixedGroundPerspective failed (%s); using resized frame.", e.what());
                         pers_frame = perspective_input; // 使用缩放后的帧作为备用
                     }
                 }
@@ -237,8 +241,8 @@ public:
                 if (state_ == RIGHT_TRACKING || state_ == LEFT_TRACKING)
                 {
                     cv::Mat canvas = processor_.return_frame();
-                    processor_.get_side_line_task_1(binary_img, canvas, false);
-                    processor_.fit_polynomial();
+                    processor_.get_side_line_task_1(binary_img, canvas, true);
+                    processor_.fit_polynomial2();
 
                     auto msg = buildVisionLineMsg(processor_.get_fit_mid_line(),
                                                   proc_h, proc_w,
@@ -274,6 +278,7 @@ public:
                     vision_line_pub_.publish(msg);
 
                     processor_.draw_line(canvas, fps, state_name(state_));
+                    cv::imshow("perspective", pers_frame);
                     cv::imshow("binary", binary_img);
                     cv::imshow("processed_img", canvas);
                 }

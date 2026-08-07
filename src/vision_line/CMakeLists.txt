@@ -189,7 +189,6 @@ target_link_libraries(find_way
 target_link_libraries(find_way_ros
   ${catkin_LIBRARIES}
   image_process
-  camera_capture
 )
 target_link_libraries(camera_capture
   ${catkin_LIBRARIES}
@@ -256,6 +255,7 @@ target_include_directories(ground_perspective PUBLIC
   ${catkin_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(find_way ground_perspective)
+target_link_libraries(find_way_ros ground_perspective)
 target_compile_options(ground_perspective PRIVATE -std=c++11)
 
 add_executable(dynamic_ground_perspective_cpp
