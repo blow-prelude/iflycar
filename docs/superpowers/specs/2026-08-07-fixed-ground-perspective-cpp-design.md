@@ -58,8 +58,8 @@
 
 - 相机无法打开时沿用 `CameraCapture` 的异常。
 - 空帧打印错误并结束循环，避免把空矩阵传给 OpenCV。
-- 非法图像尺寸、地面起始行、实际尺寸或像素比例抛出
-  `std::invalid_argument`。
+- 非法图像尺寸、实际尺寸或像素比例抛出 `std::invalid_argument`；固定地面
+  起始行与 Python 版一致，裁剪到 `[0, 图像高度]`。
 - 主函数捕获 `std::exception`，输出原因并返回非零状态。
 - 无论正常退出还是异常退出，都关闭相机窗口；相机资源由
   `CameraCapture` 的析构函数释放。
