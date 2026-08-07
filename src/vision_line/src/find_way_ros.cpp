@@ -199,6 +199,7 @@ public:
                     // 由 preprocess 统一完成。
                     cv::Mat perspective_input = frame;
                     processor_.resize_frame(perspective_input);
+                    cv::imshow("resized_input", perspective_input);
                     try
                     {
                         // 固定透视矩阵要求输入为 320x240；resize_frame 已保证该尺寸。
@@ -296,7 +297,7 @@ public:
                     vision_line_pub_.publish(msg);
 
                     processor_.draw_line(canvas, fps, state_name(state_));
-                    cv::imshow("perspective", pers_frame);
+                    // cv::imshow("perspective", pers_frame);
                     cv::imshow("binary", binary_img);
                     cv::imshow("processed_img", canvas);
                 }
