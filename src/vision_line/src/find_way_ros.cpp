@@ -5,6 +5,7 @@
 #include <std_msgs/Float32MultiArray.h>
 #include <std_msgs/String.h>
 #include <opencv2/opencv.hpp>
+#include <algorithm>
 #include <mutex>
 
 #include "image_process.h"
@@ -55,6 +56,8 @@ public:
         turning_end_x_error_abs_max_ = nh_private_.param<double>("turning_end_x_error_abs_max", 15.0);
         target_y_ = nh_private_.param<double>("vision_target_y", 400.0);
         turning_target_y_ = nh_private_.param<double>("turning_target_y", 360.0);
+        corner_confirm_frames_ = std::max(1, nh_private_.param<int>("corner_confirm_frames", 3));
+        turning_end_confirm_frames_ = std::max(1, nh_private_.param<int>("turning_end_confirm_frames", 3));
         loop_rate_ = nh_private_.param<int>("loop_rate", 120);
         std::string initial_direction = nh_private_.param<std::string>("initial_direction", "stop");
 
@@ -147,6 +150,7 @@ public:
                     t0_set = false;
                     miss_line_ = NO_MISS;
                     processor_.set_mid_line_mode(MID_AVG);
+                    resetCornerTurningState();
                     reset_requested_ = false;
                     ROS_INFO("State machine reset to IDLE (direction changed)");
                 }
@@ -257,17 +261,31 @@ public:
                 else
                 {
                     // STRAIGHT_TRACKING
-                    SearchSide side = BOTH;
-                    MidLineMode mode = MID_AVG;
-                    if (state_ == STRAIGHT_TRACKING)
-                    {
-                        side = straight_side_;
-                        mode = straight_mode_;
-                    }
-                    processor_.set_mid_line_mode(mode);
-
                     cv::Mat canvas = processor_.return_frame();
-                    processor_.get_side_line_task_2(binary_img, canvas, true, false, side);
+
+                    if (turn_completed_)
+                    {
+                        // 转弯结束后保持双边搜索，并把顶部较短边补到与另一边等高。
+                        processor_.set_mid_line_mode(MID_AVG);
+                        processor_.get_side_line_task_2(binary_img, canvas, true, false, BOTH);
+                        processor_.extend_shorter_line_to_match_min_y(proc_w);
+                    }
+                    else
+                    {
+                        processor_.set_mid_line_mode(straight_mode_);
+                        processor_.get_side_line_task_2(binary_img, canvas, true, true, straight_side_);
+                        updateCornerTurningState(cornerDetected(straight_side_));
+
+                        // 判定结束的这一帧已经按单边搜索过，立即重跑双边检测，
+                        // 避免中线切换延迟到下一帧。
+                        if (turn_completed_)
+                        {
+                            processor_.set_mid_line_mode(MID_AVG);
+                            processor_.get_side_line_task_2(binary_img, canvas, true, false, BOTH);
+                            processor_.extend_shorter_line_to_match_min_y(proc_w);
+                        }
+                    }
+
                     processor_.calculate_mid_line(binary_img);
                     processor_.fit_polynomial();
 
@@ -327,13 +345,89 @@ private:
     double turning_end_x_error_abs_max_ = 15.0;
     double target_y_ = 400.0;
     double turning_target_y_ = 360.0;
+    int corner_confirm_frames_ = 3;
+    int turning_end_confirm_frames_ = 3;
     int loop_rate_ = 120;
+
+    bool turning_active_ = false;
+    bool turn_completed_ = false;
+    int corner_detect_count_ = 0;
+    int corner_missing_count_ = 0;
 
     // STRAIGHT_TRACKING 走哪一边：LEFT_ONLY / RIGHT_ONLY / BOTH
     SearchSide straight_track_side_ = LEFT_ONLY;
     // 由 straight_track_side_ 派生（构造时算一次）
     SearchSide straight_side_ = BOTH;
     MidLineMode straight_mode_ = MID_AVG;
+
+    bool cornerDetected(SearchSide side)
+    {
+        const bool left_found = processor_.get_left_corners() != cv::Point(0, 0);
+        const bool right_found = processor_.get_right_corners() != cv::Point(0, 0);
+
+        if (side == LEFT_ONLY)
+            return left_found;
+        if (side == RIGHT_ONLY)
+            return right_found;
+        return left_found || right_found;
+    }
+
+    void updateCornerTurningState(bool corner_detected)
+    {
+        if (turn_completed_)
+            return;
+
+        if (!turning_active_)
+        {
+            corner_missing_count_ = 0;
+            if (corner_detected)
+            {
+                if (corner_detect_count_ < corner_confirm_frames_)
+                    ++corner_detect_count_;
+            }
+            else
+            {
+                corner_detect_count_ = 0;
+            }
+            if (corner_detect_count_ >= corner_confirm_frames_)
+            {
+                turning_active_ = true;
+                corner_detect_count_ = 0;
+                ros::param::set(turning_flag_param_, 1);
+                ROS_INFO("Corner confirmed for %d consecutive frames; turning started (%s=1)",
+                         corner_confirm_frames_, turning_flag_param_.c_str());
+            }
+            return;
+        }
+
+        corner_detect_count_ = 0;
+        if (corner_detected)
+        {
+            corner_missing_count_ = 0;
+        }
+        else if (corner_missing_count_ < turning_end_confirm_frames_)
+        {
+            ++corner_missing_count_;
+        }
+        if (corner_missing_count_ >= turning_end_confirm_frames_)
+        {
+            turning_active_ = false;
+            turn_completed_ = true;
+            corner_missing_count_ = 0;
+            ros::param::set(turning_flag_param_, 0);
+            ROS_INFO("Corner absent for %d consecutive frames; turning finished (%s=0)",
+                     turning_end_confirm_frames_, turning_flag_param_.c_str());
+        }
+    }
+
+    void resetCornerTurningState()
+    {
+        turning_active_ = false;
+        turn_completed_ = false;
+        corner_detect_count_ = 0;
+        corner_missing_count_ = 0;
+        ros::param::set(turning_flag_param_, 0);
+    }
 
     void imageCallback(const sensor_msgs::ImageConstPtr &msg)
     {

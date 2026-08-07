@@ -1975,6 +1975,76 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
     }
 }
 
+/**
+ * 将顶部较短的原始边线沿其顶部趋势向上外推，使左右边线具有相同的最小 y。
+ * get_side_line_task_2 按 y 从大到小保存点；这里仍保持该顺序，供后续插值使用。
+ */
+void ImageProcess::extend_shorter_line_to_match_min_y(int img_width)
+{
+    if (img_width <= 0 || this->left_line_.empty() || this->right_line_.empty())
+    {
+        return;
+    }
+
+    const auto min_y = [](const std::vector<cv::Point> &line)
+    {
+        return std::min_element(line.begin(), line.end(),
+                                [](const cv::Point &lhs, const cv::Point &rhs)
+                                { return lhs.y < rhs.y; })
+            ->y;
+    };
+
+    const int left_min_y = min_y(this->left_line_);
+    const int right_min_y = min_y(this->right_line_);
+    if (left_min_y == right_min_y)
+    {
+        return;
+    }
+
+    std::vector<cv::Point> &shorter_line =
+        left_min_y > right_min_y ? this->left_line_ : this->right_line_;
+    const int target_min_y = std::min(left_min_y, right_min_y);
+
+    // 边线检测正常情况下已经按 y 降序排列。稳定排序让本方法在有少量乱序点时
+    // 也能可靠地从 back() 继续追加顶部外推点。
+    std::stable_sort(shorter_line.begin(), shorter_line.end(),
+                     [](const cv::Point &lhs, const cv::Point &rhs)
+                     { return lhs.y > rhs.y; });
+
+    const cv::Point top = shorter_line.back();
+    if (top.y <= target_min_y)
+    {
+        return;
+    }
+
+    // 用顶部若干点拟合 x 随 y 的变化率，降低单个像素抖动对长距离外推的影响。
+    const std::size_t fit_count = std::min(
+        shorter_line.size(),
+        static_cast<std::size_t>(std::max(2, this->config_.init_stable_count)));
+    double sx = 0.0;
+    double sy = 0.0;
+    double syy = 0.0;
+    double sxy = 0.0;
+    for (std::size_t i = 0; i < fit_count; ++i)
+    {
+        const cv::Point &point = shorter_line[shorter_line.size() - 1 - i];
+        sx += point.x;
+        sy += point.y;
+        syy += static_cast<double>(point.y) * point.y;
+        sxy += static_cast<double>(point.x) * point.y;
+    }
+    const double dx_per_y = fit_line_from_sums(fit_count, sx, sy, syy, sxy).k;
+
+    shorter_line.reserve(shorter_line.size() +
+                         static_cast<std::size_t>(top.y - target_min_y));
+    for (int y = top.y - 1; y >= target_min_y; --y)
+    {
+        const double projected_x = top.x + dx_per_y * static_cast<double>(y - top.y);
+        const int x = clamp_int(rounded_int_saturated(projected_x), 0, img_width - 1);
+        shorter_line.emplace_back(x, y);
+    }
+}
+
 /*
  * 根据当前左右原始边线插值+填充，并计算中线
  * img: 当前二值化图像（仅用于获取宽高）

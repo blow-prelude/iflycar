@@ -9,6 +9,8 @@
     <arg name="turning_end_x_error_abs_max"  default="15.0" />
     <arg name="vision_target_y"              default="400.0" />
     <arg name="turning_target_y"             default="360.0" />
+    <arg name="corner_confirm_frames"         default="3" />
+    <arg name="turning_end_confirm_frames"     default="3" />
     <arg name="loop_rate"                    default="60" />
 
     <!-- 初始方向: straight / left / right -->
@@ -28,6 +30,8 @@
         <param name="turning_end_x_error_abs_max"  type="double" value="$(arg turning_end_x_error_abs_max)" />
         <param name="vision_target_y"              type="double" value="$(arg vision_target_y)" />
         <param name="turning_target_y"             type="double" value="$(arg turning_target_y)" />
+        <param name="corner_confirm_frames"         type="int"    value="$(arg corner_confirm_frames)" />
+        <param name="turning_end_confirm_frames"     type="int"    value="$(arg turning_end_confirm_frames)" />
         <param name="loop_rate"                    type="int"    value="$(arg loop_rate)" />
 
         <!-- 初始方向 -->
