@@ -7,7 +7,6 @@ from enum import Enum
 import cv2
 import numpy as np
 from camera_capture import CameraCapture
-from dynamic_ground_perspective import fixed_ground_mask, warp_ground
 from picture_cli import ImageSender
 
 logging.basicConfig(
@@ -211,62 +210,7 @@ class ImageProcess:
         """获取 mid_line 计算模式"""
         return self.mid_line_mode_
 
-    def resize_frame(self, frame):
-        """如果图像过大，按比例缩小到 preprocess_max_h × preprocess_max_w 以内。
-
-        Args:
-            frame: 输入图像（BGR）
-
-        Returns:
-            缩放后的图像，并同步更新 self.frame；输入为 None 时返回 None
-        """
-        if frame is None:
-            return None
-        if (
-            frame.shape[0] >= self.cfg.preprocess_max_h
-            or frame.shape[1] >= self.cfg.preprocess_max_w
-        ):
-            h, w = frame.shape[:2]
-            scale = min(
-                self.cfg.preprocess_max_h / h, self.cfg.preprocess_max_w / w
-            )
-            new_h = int(h * scale)
-            new_w = int(w * scale)
-            frame = cv2.resize(
-                frame, (new_w, new_h), interpolation=cv2.INTER_AREA
-            )
-        self.frame = frame
-        return frame
-
-    def ground_perspective(self, frame):
-        """对地面区域做鸟瞰透视变换，流程与 dynamic_ground_perspective.py 保持一致。
-
-        先用固定地面掩膜剔除非地面像素，再依据四点对应关系把地面 ROI 透视到鸟瞰图，
-        并同步更新 self.frame，使后续 preprocess / return_frame 都基于鸟瞰图。
-
-        Args:
-            frame: 输入图像（BGR，建议已缩放到配置尺寸）
-
-        Returns:
-            鸟瞰透视变换后的图像
-        """
-        ground_mask = fixed_ground_mask(
-            height=frame.shape[0],
-            width=frame.shape[1],
-            start_y=self.cfg.ground_start_y,
-        )
-        bird_view = warp_ground(
-            frame,
-            ground_mask,
-            self.cfg.source_points,
-            width_m=self.cfg.real_width_m,
-            length_m=self.cfg.real_length_m,
-            pixels_per_m=self.cfg.pixels_per_m,
-        )
-        self.frame = bird_view
-        return bird_view
-
-    def preprocess(self, frame):
+    def preprocess(self, frame, valid_mask=None):
         try:
             if self.img_path is not None:
                 # 从图片文件读取
@@ -276,22 +220,88 @@ class ImageProcess:
                 frame = self.frame
 
             if frame is not None:
+                explicit_mask = valid_mask is not None
+                if explicit_mask:
+                    valid_mask = np.asarray(valid_mask)
+                    if valid_mask.ndim != 2 or valid_mask.shape != frame.shape[:2]:
+                        raise ValueError(
+                            "valid_mask shape must match the input frame height and width"
+                        )
+                    valid_mask = (valid_mask != 0).astype(np.uint8)
+                    if not np.any(valid_mask):
+                        raise ValueError(
+                            "valid_mask must contain at least one valid pixel"
+                        )
+
+                # 如果图片太大，按比例缩小
+                if (
+                    frame.shape[0] >= self.cfg.preprocess_max_h
+                    or frame.shape[1] >= self.cfg.preprocess_max_w
+                ):
+                    h, w = frame.shape[:2]
+                    scale = min(
+                        self.cfg.preprocess_max_h / h, self.cfg.preprocess_max_w / w
+                    )
+                    new_h = int(h * scale)
+                    new_w = int(w * scale)
+                    frame = cv2.resize(
+                        frame, (new_w, new_h), interpolation=cv2.INTER_AREA
+                    )
+                    if explicit_mask:
+                        valid_mask = cv2.resize(
+                            valid_mask,
+                            (new_w, new_h),
+                            interpolation=cv2.INTER_NEAREST,
+                        )
+                    self.frame = frame.copy()
+
+                if not explicit_mask:
+                    # 透视变换的无效区域按约定为纯黑；显式掩膜可避免
+                    # 将真实场景中的纯黑像素误判为无效区。
+                    valid_mask = np.any(frame != 0, axis=2).astype(np.uint8)
+
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-                # 大尺寸高斯模糊获取背景光照分布
-                # 核大小应根据图像尺寸调整，通常为图像宽度的1/5到1/3
+                # 使用掩膜归一化高斯卷积估计背景，避免无效黑区拉低
+                # 有效区域边界附近的背景值并产生白色伪边。
                 kernel_size = (gray.shape[1] // 5 | 1, gray.shape[0] // 5 | 1)
-                background = cv2.GaussianBlur(gray, kernel_size, 0)
+                gray_float = gray.astype(np.float32)
+                # 透视变换使用线性插值时，掩膜边缘内侧可能包含一圈由
+                # 黑色无效区混合得到的暗像素。背景估计向内收缩 1 像素，
+                # 但最终输出仍使用原始有效掩膜，不额外损失检测区域。
+                background_mask = cv2.erode(
+                    valid_mask,
+                    cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
+                    iterations=1,
+                )
+                mask_float = background_mask.astype(np.float32)
+                weighted_background = cv2.GaussianBlur(
+                    gray_float * mask_float,
+                    kernel_size,
+                    0,
+                )
+                blurred_mask = cv2.GaussianBlur(mask_float, kernel_size, 0)
+                # 没有有效背景样本的位置回退为原灰度，使差值为零。
+                background = gray_float.copy()
+                np.divide(
+                    weighted_background,
+                    blurred_mask,
+                    out=background,
+                    where=blurred_mask > np.finfo(np.float32).eps,
+                )
 
                 # 原图减去背景，得到滤除光照后的特征
-                diff = cv2.subtract(gray, background)
+                diff = np.clip(gray_float - background, 0, 255).astype(np.uint8)
+                diff[valid_mask == 0] = 0
 
                 # 二值化（使用Otsu自适应阈值）
                 binary = cv2.threshold(
                     diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
                 )[1]
+                binary[valid_mask == 0] = 0
                 kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
                 close = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=3)
+                close[valid_mask == 0] = 0
                 return close
             else:
                 raise ValueError("Failed to load image for preprocessing")
@@ -1159,9 +1169,9 @@ class ImageProcess:
                         cv2.circle(canvas, (search_start_left, y), 1, (0, 255, 255), -1)
                         cv2.circle(canvas, (search_end_left, y), 1, (0, 255, 255), -1)
 
-                    candidates = np.where(row_diff[search_end_left:search_start_left] == 1)[
-                        0
-                    ]
+                    candidates = np.where(
+                        row_diff[search_end_left:search_start_left] == 1
+                    )[0]
 
                     if len(candidates) > 0:
                         x = candidates[-1] + search_end_left
@@ -1226,7 +1236,9 @@ class ImageProcess:
                         search_end_right = img_w - 1
 
                     if is_draw:
-                        cv2.circle(canvas, (search_start_right, y), 1, (255, 255, 0), -1)
+                        cv2.circle(
+                            canvas, (search_start_right, y), 1, (255, 255, 0), -1
+                        )
                         cv2.circle(canvas, (search_end_right, y), 1, (255, 255, 0), -1)
 
                     candidates = np.where(
@@ -1311,9 +1323,7 @@ class ImageProcess:
                     self.mid_line = _empty.copy()
             elif self.mid_line_mode_ == MidLineMode.RIGHT_OFFSET:
                 if len(self.supple_right_line) > 0:
-                    mid_xs = (
-                        self.supple_right_line[:, 0] - self.cfg.turning_mid_offset
-                    )
+                    mid_xs = self.supple_right_line[:, 0] - self.cfg.turning_mid_offset
                     mid_ys = self.supple_right_line[:, 1]
                     self.mid_line = np.stack([mid_xs, mid_ys], axis=1)
                 else:
