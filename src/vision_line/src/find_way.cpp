@@ -277,22 +277,7 @@ int main()
                     {
                         // 转弯进行中：初始侧巡线，不再检测拐点（find_corner=false）。
                         img_process.set_mid_line_mode(straight_mode);
-<<<<<<< HEAD
-                        img_process.get_side_line_task_2(binary_img, canvas, true, true, straight_side);
-                        const bool corner_found = cornerDetected(img_process, straight_side);
-                        updateCornerTurningState(corner_turning, corner_found,
-                                                 corner_confirm_frames, turning_end_confirm_frames);
-                        // 调试：打印状态机每帧演化，定位"进入转弯后为何快速判定结束"
-                        std::cout << "[turn-debug] corner_found=" << corner_found
-                                  << " detect_cnt=" << corner_turning.corner_detect_count
-                                  << " missing_cnt=" << corner_turning.corner_missing_count
-                                  << " active=" << corner_turning.turning_active
-                                  << " completed=" << corner_turning.turn_completed
-                                  << " left_corner=(" << img_process.get_left_corners().x
-                                  << "," << img_process.get_left_corners().y << ")" << std::endl;
-=======
                         img_process.get_side_line_task_2(binary_img, canvas, true, false, straight_side);
->>>>>>> d51486d9a75fcb0157050f54874881bba6e64319
 
                         // 用水平白线判定转弯是否结束；刚结束则同帧切到相反侧巡线，
                         // 避免中线切换延迟到下一帧。

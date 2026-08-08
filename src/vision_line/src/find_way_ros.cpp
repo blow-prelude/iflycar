@@ -271,18 +271,7 @@ public:
                     {
                         // 转弯进行中：初始侧巡线，不再检测拐点（find_corner=false）。
                         processor_.set_mid_line_mode(straight_mode_);
-<<<<<<< HEAD
-                        processor_.get_side_line_task_2(binary_img, canvas, true, true, straight_side_);
-                        const bool corner_found = cornerDetected(straight_side_);
-                        updateCornerTurningState(corner_found);
-                        // 调试：打印状态机每帧演化，定位"进入转弯后为何快速判定结束"
-                        ROS_INFO("[turn-debug] corner_found=%d detect_cnt=%d missing_cnt=%d active=%d completed=%d left_corner=(%d,%d)",
-                                 corner_found, corner_detect_count_, corner_missing_count_,
-                                 turning_active_, turn_completed_,
-                                 processor_.get_left_corners().x, processor_.get_left_corners().y);
-=======
                         processor_.get_side_line_task_2(binary_img, canvas, true, false, straight_side_);
->>>>>>> d51486d9a75fcb0157050f54874881bba6e64319
 
                         // 用水平白线判定转弯是否结束；刚结束则同帧切到相反侧巡线，
                         // 避免中线切换延迟到下一帧。
