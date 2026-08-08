@@ -57,7 +57,7 @@ public:
         target_y_ = nh_private_.param<double>("vision_target_y", 400.0);
         turning_target_y_ = nh_private_.param<double>("turning_target_y", 360.0);
         turning_end_confirm_frames_ = std::max(1, nh_private_.param<int>("turning_end_confirm_frames", 3));
-        stop_line_end_y_thresh_ = nh_private_.param<double>("stop_line_end_y_thresh", 0.80);
+        stop_line_end_y_thresh_ = nh_private_.param<double>("stop_line_end_y_thresh", 0.55);
         loop_rate_ = nh_private_.param<int>("loop_rate", 120);
         std::string initial_direction = nh_private_.param<std::string>("initial_direction", "stop");
 
