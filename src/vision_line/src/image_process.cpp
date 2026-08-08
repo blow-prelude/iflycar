@@ -798,7 +798,7 @@ std::vector<int> ImageProcess::get_stop_line(cv::Mat &binary, cv::Mat &canvas, b
     }
 
     // 找到最像横线的轮廓
-    std::vector<int> stop_line; // {x_center, y}
+    std::vector<int> stop_line; // {x_center, y_bottom}：左下/右下两点连线的中点
     int line_w = 0, line_h = 0, line_x = 0, line_y = 0;
     double max_score = 0;
     bool found = false;
@@ -825,7 +825,8 @@ std::vector<int> ImageProcess::get_stop_line(cv::Mat &binary, cv::Mat &canvas, b
     {
         return {};
     }
-    stop_line = {line_x + line_w / 2 + roi_x0, line_y + line_h / 2 + roi_y0};
+    // 取停止线左下、右下两点连线的中点（即 bbox 底边中点）
+    stop_line = {line_x + line_w / 2 + roi_x0, line_y + line_h + roi_y0};
 
     if (is_draw && !stop_line.empty() && is_drawable_canvas(canvas))
     {
