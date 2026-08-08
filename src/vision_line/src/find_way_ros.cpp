@@ -63,7 +63,7 @@ public:
         stop_far_min_frames_ = nh_private_.param<int>("stop_far_min_frames", 3);
         stop_near_min_frames_ = nh_private_.param<int>("stop_near_min_frames", 3);
         stop_miss_min_frames_ = nh_private_.param<int>("stop_miss_min_frames", 3);
-        stop_hold_s_ = nh_private_.param<double>("stop_hold_s", 3.0);
+        stop_hold_s_ = nh_private_.param<double>("stop_hold_s", 8.0);
 
         std::string initial_direction = nh_private_.param<std::string>("initial_direction", "stop");
 
