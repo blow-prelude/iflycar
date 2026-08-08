@@ -56,13 +56,13 @@ struct ImageProcessConfig
     float fill_down_ratio = 0.90;
 
     // 追踪点的索引
-    int straight_target_p_index = -10;
+    int straight_target_p_index = -25;
     int left_target_p_index = -15;
     // int right_target_p_index = -20;
     int tracking2_target_p_index = -15;
 
     // TURNING 状态下用单边线生成 mid_line 的横向偏移（像素）
-    int turning_mid_offset = 40;
+    int turning_mid_offset = 33;
 };
 
 // 判断丢线状态机

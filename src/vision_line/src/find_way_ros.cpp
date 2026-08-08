@@ -56,6 +56,15 @@ public:
         target_y_ = nh_private_.param<double>("vision_target_y", 400.0);
         turning_target_y_ = nh_private_.param<double>("turning_target_y", 360.0);
         loop_rate_ = nh_private_.param<int>("loop_rate", 120);
+
+        // 停止线检测 / STOP 参数
+        stop_line_target_ = nh_private_.param<int>("stop_line_target", 3);
+        stop_y_cross_ = nh_private_.param<double>("stop_y_cross", 0.75);
+        stop_far_min_frames_ = nh_private_.param<int>("stop_far_min_frames", 3);
+        stop_near_min_frames_ = nh_private_.param<int>("stop_near_min_frames", 3);
+        stop_miss_min_frames_ = nh_private_.param<int>("stop_miss_min_frames", 3);
+        stop_hold_s_ = nh_private_.param<double>("stop_hold_s", 3.0);
+
         std::string initial_direction = nh_private_.param<std::string>("initial_direction", "stop");
 
         // 设置初始方向
@@ -148,7 +157,19 @@ public:
                     miss_line_ = NO_MISS;
                     processor_.set_mid_line_mode(MID_AVG);
                     reset_requested_ = false;
+                    resetStopLineState();
                     ROS_INFO("State machine reset to IDLE (direction changed)");
+                }
+            }
+
+            // STOP 定时退出：到时恢复发布并清零计数
+            if (in_stop_)
+            {
+                double held = (ros::Time::now() - stop_enter_time_).toSec();
+                if (held >= stop_hold_s_)
+                {
+                    ROS_INFO("STOP exited after %.2fs, resuming publish", held);
+                    resetStopLineState();
                 }
             }
 
@@ -244,13 +265,17 @@ public:
                     processor_.get_side_line_task_1(binary_img, canvas, true);
                     processor_.fit_polynomial2();
 
+                    // 停止线检测：更新计数，达阈值进入 STOP
+                    updateStopLineDetection(binary_img, canvas, proc_h);
+
                     auto msg = buildVisionLineMsg(processor_.get_fit_mid_line(),
                                                   proc_h, proc_w,
                                                   orig_h, orig_w,
                                                   config_.left_target_p_index);
-                    vision_line_pub_.publish(msg);
+                    if (!in_stop_)
+                        vision_line_pub_.publish(msg);
 
-                    processor_.draw_line(canvas, fps, state_name(state_));
+                    processor_.draw_line(canvas, fps, in_stop_ ? "STOP" : state_name(state_));
                     cv::imshow("binary", binary_img);
                     cv::imshow("processed_img", canvas);
                 }
@@ -271,13 +296,17 @@ public:
                     processor_.calculate_mid_line(binary_img);
                     processor_.fit_polynomial();
 
+                    // 停止线检测：更新计数，达阈值进入 STOP
+                    updateStopLineDetection(binary_img, canvas, proc_h);
+
                     auto msg = buildVisionLineMsg(processor_.get_fit_mid_line(),
                                                   proc_h, proc_w,
                                                   orig_h, orig_w,
                                                   config_.straight_target_p_index);
-                    vision_line_pub_.publish(msg);
+                    if (!in_stop_)
+                        vision_line_pub_.publish(msg);
 
-                    processor_.draw_line(canvas, fps, state_name(state_));
+                    processor_.draw_line(canvas, fps, in_stop_ ? "STOP" : state_name(state_));
                     cv::imshow("perspective", pers_frame);
                     cv::imshow("binary", binary_img);
                     cv::imshow("processed_img", canvas);
@@ -328,6 +357,28 @@ private:
     double target_y_ = 400.0;
     double turning_target_y_ = 360.0;
     int loop_rate_ = 120;
+
+    // ---- 停止线检测 / STOP 状态 ----
+    bool in_stop_ = false;             // STOP 抑制标志：为 true 时巡线照跑但不发布
+    ros::Time stop_enter_time_;        // 进入 STOP 的时刻
+    int stop_line_count_ = 0;          // 已确认经过的停止线条数
+    // 帧间去抖子状态机（跟踪单条停止线"远端→近端"的跨越）
+    enum StopPhase
+    {
+        STOP_IDLE,
+        STOP_SEEN_FAR
+    };
+    StopPhase stop_phase_ = STOP_IDLE;
+    int far_run_ = 0;                  // 连续远端帧数
+    int near_run_ = 0;                 // 连续近端帧数
+    int miss_run_ = 0;                 // 连续丢检测帧数
+    // 停止线检测参数（由 ROS 参数注入）
+    int stop_line_target_ = 3;         // 进入 STOP 所需停止线条数
+    double stop_y_cross_ = 0.75;       // 远/近端归一化 y 阈值（相对 proc_h）
+    int stop_far_min_frames_ = 3;      // 远端连续确认帧数
+    int stop_near_min_frames_ = 3;     // 近端连续确认帧数
+    int stop_miss_min_frames_ = 3;     // 持续丢线多少帧才放弃当前 phase
+    double stop_hold_s_ = 3.0;         // STOP 持续秒数（定时退出）
 
     // STRAIGHT_TRACKING 走哪一边：LEFT_ONLY / RIGHT_ONLY / BOTH
     SearchSide straight_track_side_ = LEFT_ONLY;
@@ -424,6 +475,85 @@ private:
 
         msg.data = {static_cast<float>(x_error), static_cast<float>(y_raw)};
         return msg;
+    }
+
+    // 停止线检测：帧间去抖子状态机，跟踪单条停止线"远端→近端"的跨越。
+    // 每完整跨越一次 stop_line_count_ +1；达 stop_line_target_ 进入 STOP（抑制发布）。
+    // 返回 true 表示本次调用新进入了 STOP。
+    bool updateStopLineDetection(cv::Mat &binary, cv::Mat &canvas, int proc_h)
+    {
+        if (proc_h <= 0)
+            return false;
+
+        std::vector<int> stop;
+        try
+        {
+            stop = processor_.get_stop_line(binary, canvas, true);
+        }
+        catch (const std::exception &e)
+        {
+            ROS_WARN_THROTTLE(2.0, "get_stop_line failed: %s", e.what());
+            stop.clear();
+        }
+
+        bool detected = (stop.size() >= 2);
+        int y = detected ? stop[1] : -1;
+        int y_cross_px = static_cast<int>(stop_y_cross_ * proc_h);
+
+        if (detected && y >= 0 && y < proc_h)
+        {
+            miss_run_ = 0;
+            if (y < y_cross_px) // 远端：停止线在远处
+            {
+                far_run_++;
+                near_run_ = 0;
+                if (far_run_ >= stop_far_min_frames_)
+                    stop_phase_ = STOP_SEEN_FAR;
+            }
+            else // 近端：停止线已逼近
+            {
+                near_run_++;
+                if (stop_phase_ == STOP_SEEN_FAR && near_run_ >= stop_near_min_frames_)
+                {
+                    stop_line_count_++;
+                    ROS_INFO("Stop line crossed: count=%d (target=%d)",
+                             stop_line_count_, stop_line_target_);
+                    stop_phase_ = STOP_IDLE;
+                    far_run_ = 0;
+                    near_run_ = 0;
+                }
+            }
+        }
+        else // 丢检测：清连续计数，持续丢线则放弃当前 phase
+        {
+            far_run_ = 0;
+            near_run_ = 0;
+            miss_run_++;
+            if (miss_run_ >= stop_miss_min_frames_)
+                stop_phase_ = STOP_IDLE;
+        }
+
+        // 达阈值进入 STOP
+        if (!in_stop_ && stop_line_count_ >= stop_line_target_)
+        {
+            in_stop_ = true;
+            stop_enter_time_ = ros::Time::now();
+            ROS_INFO("STOP entered: crossed %d stop lines, suppressing publish for %.2fs",
+                     stop_line_count_, stop_hold_s_);
+            return true;
+        }
+        return false;
+    }
+
+    // 清零停止线检测全部状态（换方向复位 / STOP 定时退出时调用）
+    void resetStopLineState()
+    {
+        in_stop_ = false;
+        stop_line_count_ = 0;
+        stop_phase_ = STOP_IDLE;
+        far_run_ = 0;
+        near_run_ = 0;
+        miss_run_ = 0;
     }
 
     // static std::string stateToStr(State s)
