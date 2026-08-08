@@ -271,7 +271,7 @@ int main()
                     {
                         // 转弯结束后常驻相反单边，并采用与该侧匹配的偏移中线模式。
                         img_process.set_mid_line_mode(post_turn_mode);
-                        img_process.get_side_line_task_2(binary_img, canvas, true, false, post_turn_side);
+                        img_process.get_side_line_task_2(binary_img, canvas, true, false, post_turn_side, straight_side);
                     }
                     else
                     {
@@ -286,7 +286,7 @@ int main()
                                                  stop_line_turning))
                         {
                             img_process.set_mid_line_mode(post_turn_mode);
-                            img_process.get_side_line_task_2(binary_img, canvas, true, false, post_turn_side);
+                            img_process.get_side_line_task_2(binary_img, canvas, true, false, post_turn_side, straight_side);
                         }
                     }
 

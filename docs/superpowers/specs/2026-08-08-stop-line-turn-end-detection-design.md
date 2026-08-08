@@ -44,10 +44,10 @@
 
 | 文件 | 改动 |
 |---|---|
-| `src/vision_line/src/find_way.cpp` | 删除拐点判定相关函数与状态；新增水平白线阈值参数与结束确认状态；改写 `STRAIGHT_TRACKING` 分支 |
-| `src/vision_line/src/find_way_ros.cpp` | 同步删除拐点判定；新增 `stop_line_end_y_thresh_` 参数与结束确认状态；改写 `STRAIGHT_TRACKING` 分支；调整 `turning_flag_param_` 置位时机 |
-
-不需要修改 `image_process.h`、`image_process.cpp` 或其它文件。
+| `src/vision_line/src/find_way.cpp` | 删除拐点判定相关函数与状态；新增水平白线阈值参数与结束确认状态；改写 `STRAIGHT_TRACKING` 分支；转弯结束判定封装为 `checkStopLineTurnEnd` |
+| `src/vision_line/src/find_way_ros.cpp` | 同步删除拐点判定；新增 `stop_line_end_y_thresh_` 参数与结束确认状态；改写 `STRAIGHT_TRACKING` 分支；调整 `turning_flag_param_` 置位时机；判定封装为 `checkStopLineTurnEnd` 成员方法 |
+| `src/vision_line/include/image_process.h` | `get_side_line_task_2` 新增 `anchor_side` 参数 |
+| `src/vision_line/src/image_process.cpp` | `get_side_line_task_2` 不稳定搜索窗口支持按 `anchor_side` 锚定起点 |
 
 ## 详细设计
 
@@ -178,6 +178,25 @@ else
 
 `RIGHT_TRACKING` / `LEFT_TRACKING` 不接触该标志，保持原行为。这样对外仍维持“标志为 1 = 转弯进行中，标志为 0 = 转弯结束”的语义，只是 1 的起点从“拐点确认”提前到“进入直行巡线”。
 
+### 6. 转弯后切换侧的搜索窗口锚定（`image_process.cpp`）
+
+转弯结束从巡左线切到巡右线时，原 `RIGHT_ONLY` 不稳定搜索窗口为 `[mid_x + search_offset, max_edge_x]`（中线偏右→右边缘），起点与终点都换成了“右侧值”。但刚切侧时目标线仍在画面中部，右侧窗口会漏检、迟迟无法稳定。
+
+新增 `get_side_line_task_2(..., SearchSide anchor_side = BOTH)` 参数：当 `anchor_side` 与 `side` 相反时，活动侧的不稳定搜索**起点沿用锚定侧的起点、终点向活动侧偏移**，形成以中线为中心的窄窗口：
+
+| 切换方向 | side | anchor_side | 起点 | 终点 | 窗口 |
+|---|---|---|---|---|---|
+| 左 → 右 | `RIGHT_ONLY` | `LEFT_ONLY` | `mid_x - search_offset` (≈140) | `mid_x + search_offset` (≈180) | `[140, 180]` |
+| 右 → 左 | `LEFT_ONLY` | `RIGHT_ONLY` | `mid_x + search_offset` (≈180) | `mid_x - search_offset` (≈140) | `[140, 180]` |
+| 其它 | 任意 | `BOTH`/同侧 | 原值 | 原值 | 不变 |
+
+右线扫描 `起点→终点`（递增）取范围内最左跳变点；左线扫描 `起点→终点`（递减）取最右跳变点，与原方向约定一致。`normalize_search_range` 已能正确处理两种窗口（140≤180 不触发交换）。该锚定只影响**不稳定（初始）搜索**；一旦连续命中稳定点进入稳定跟踪，仍按 `prev_row_*_x ± cur_range` 自适应。调用方在两个 post-turn 调用处传入 `straight_side(_)` 作为锚定侧，转弯中的 straight_side 调用保持默认 `BOTH`。
+
+### 7. 判定封装与可视化（两入口）
+
+- 转弯结束判定（检测停止线→算 y_norm→连续帧计数→置位）封装为单一方法：`find_way.cpp` 为自由函数 `checkStopLineTurnEnd(...)` + `StopLineTurningState` 结构体；`find_way_ros.cpp` 为成员方法 `checkStopLineTurnEnd(binary_img, canvas)`。返回 `bool` 表示“本帧刚判定结束”，调用方据此同帧切到相反侧。
+- 检测到停止线时在 canvas 上额外绘制：绿色阈值参考线 `y = stop_line_end_y_thresh × 图高`、中点黄色环，便于标定阈值。`get_stop_line(is_draw=true)` 自带的蓝框+红点保留。
+
 ## 数据流
 
 ```text
@@ -235,6 +254,8 @@ else
 - 删除拐点判定：`cornerDetected`、`updateCornerTurningState`（ROS 版含 `resetCornerTurningState`）、`corner_confirm_frames(_)`；`find_way.cpp` 另删 `CornerTurningState` 与 `corner_turning`。
 - 新增参数 `stop_line_end_y_thresh(_)`、状态 `turn_completed(_)` / `stop_line_end_count(_)`。
 - 改写 `STRAIGHT_TRACKING` 分支：两处 `find_corner` 改 `false`，接入 `get_stop_line` 与结束确认，达标同帧切相反侧。
+- 结束判定封装为 `checkStopLineTurnEnd`（自由函数/成员方法），并绘制阈值线与中点。
+- `get_side_line_task_2` 新增 `anchor_side` 参数；两个 post-turn 调用传入 `straight_side(_)` 作锚定侧，实现切侧后的居中搜索窗口（见 §6）。
 
 **仅 `find_way_ros.cpp`**
 

@@ -265,7 +265,7 @@ public:
                         // 转弯结束后常驻相反单边，并采用与该侧匹配的偏移中线模式。
                         processor_.set_mid_line_mode(post_turn_mode_);
                         processor_.get_side_line_task_2(binary_img, canvas, true, false,
-                                                        post_turn_side_);
+                                                        post_turn_side_, straight_side_);
                     }
                     else
                     {
@@ -279,7 +279,7 @@ public:
                         {
                             processor_.set_mid_line_mode(post_turn_mode_);
                             processor_.get_side_line_task_2(binary_img, canvas, true, false,
-                                                            post_turn_side_);
+                                                            post_turn_side_, straight_side_);
                         }
                     }
 

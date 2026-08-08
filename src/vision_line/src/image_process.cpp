@@ -1737,7 +1737,7 @@ void ImageProcess::get_side_line_task_1(cv::Mat &img, cv::Mat &canvas, bool is_d
 // }
 
 /** 按指定搜索侧逐行检测边线，并可选执行拐点识别。 */
-void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_draw, bool find_corner, SearchSide side)
+void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_draw, bool find_corner, SearchSide side, SearchSide anchor_side)
 {
     if (!is_valid_binary_scan_image(img))
     {
@@ -1814,9 +1814,18 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
                 }
                 else
                 {
-                    // 左侧不稳定时，从中线偏左位置向左搜索到图像边缘
-                    search_left_start = mid_x - this->config_.search_offset;
-                    search_left_end = 0;
+                    if (anchor_side == RIGHT_ONLY)
+                    {
+                        // 从右线切换而来：起点与右线一致，终点向左偏移到中线偏左
+                        search_left_start = mid_x + this->config_.search_offset;
+                        search_left_end = mid_x - this->config_.search_offset;
+                    }
+                    else
+                    {
+                        // 左侧不稳定时，从中线偏左位置向左搜索到图像边缘
+                        search_left_start = mid_x - this->config_.search_offset;
+                        search_left_end = 0;
+                    }
                 }
 
                 normalize_search_range(search_left_start, search_left_end, max_edge_x, true);
@@ -1889,9 +1898,18 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
                 }
                 else
                 {
-                    // 右侧不稳定时，从中线偏右位置向右搜索到图像边缘
-                    search_right_start = mid_x + this->config_.search_offset;
-                    search_right_end = max_edge_x;
+                    if (anchor_side == LEFT_ONLY)
+                    {
+                        // 从左线切换而来：起点与左线一致(mid_x-offset)，终点向右偏移到(mid_x+offset)
+                        search_right_start = mid_x - this->config_.search_offset;
+                        search_right_end = mid_x + this->config_.search_offset;
+                    }
+                    else
+                    {
+                        // 右侧不稳定时，从中线偏右位置向右搜索到图像边缘
+                        search_right_start = mid_x + this->config_.search_offset;
+                        search_right_end = max_edge_x;
+                    }
                 }
 
                 normalize_search_range(search_right_start, search_right_end, max_edge_x, false);
