@@ -360,9 +360,9 @@ private:
     int loop_rate_ = 120;
 
     // ---- 停止线检测 / STOP 状态 ----
-    bool in_stop_ = false;             // STOP 抑制标志：为 true 时巡线照跑但不发布
-    ros::Time stop_enter_time_;        // 进入 STOP 的时刻
-    int stop_line_count_ = 0;          // 已确认经过的停止线条数
+    bool in_stop_ = false;      // STOP 抑制标志：为 true 时巡线照跑但不发布
+    ros::Time stop_enter_time_; // 进入 STOP 的时刻
+    int stop_line_count_ = 0;   // 已确认经过的停止线条数
     // 帧间去抖子状态机（跟踪单条停止线"远端→近端"的跨越）
     enum StopPhase
     {
@@ -370,16 +370,16 @@ private:
         STOP_SEEN_FAR
     };
     StopPhase stop_phase_ = STOP_IDLE;
-    int far_run_ = 0;                  // 连续远端帧数
-    int near_run_ = 0;                 // 连续近端帧数
-    int miss_run_ = 0;                 // 连续丢检测帧数
+    int far_run_ = 0;  // 连续远端帧数
+    int near_run_ = 0; // 连续近端帧数
+    int miss_run_ = 0; // 连续丢检测帧数
     // 停止线检测参数（由 ROS 参数注入）
-    int stop_line_target_ = 3;         // 进入 STOP 所需停止线条数
-    double stop_y_cross_ = 0.75;       // 远/近端归一化 y 阈值（相对 proc_h）
-    int stop_far_min_frames_ = 3;      // 远端连续确认帧数
-    int stop_near_min_frames_ = 3;     // 近端连续确认帧数
-    int stop_miss_min_frames_ = 3;     // 持续丢线多少帧才放弃当前 phase
-    double stop_hold_s_ = 3.0;         // STOP 持续秒数（定时退出）
+    int stop_line_target_ = 3;     // 进入 STOP 所需停止线条数
+    double stop_y_cross_ = 0.75;   // 远/近端归一化 y 阈值（相对 proc_h）
+    int stop_far_min_frames_ = 3;  // 远端连续确认帧数
+    int stop_near_min_frames_ = 3; // 近端连续确认帧数
+    int stop_miss_min_frames_ = 3; // 持续丢线多少帧才放弃当前 phase
+    double stop_hold_s_ = 8.0;     // STOP 持续秒数（定时退出）
 
     // ---- 中线丢帧回退：当前帧中线无效（空或太短）时，沿用上一帧有效数据 ----
     std_msgs::Float32MultiArray last_valid_msg_;

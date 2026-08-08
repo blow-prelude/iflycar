@@ -163,6 +163,8 @@ namespace
         };
         if (!in_unit_interval(config.up_ratio) || !in_unit_interval(config.down_ratio) ||
             config.up_ratio > config.down_ratio ||
+            !in_unit_interval(config.task1_down_ratio) || !in_unit_interval(config.task1_up_ratio) ||
+            config.task1_up_ratio > config.task1_down_ratio ||
             !in_unit_interval(config.search_range_threshold) ||
             !in_unit_interval(config.corner_y_ratio) ||
             !in_unit_interval(config.stop_roi_y0) || !in_unit_interval(config.stop_roi_y1) ||
@@ -1349,8 +1351,9 @@ void ImageProcess::get_side_line_task_1(cv::Mat &img, cv::Mat &canvas, bool is_d
     int img_h = img.rows;
     int img_w = img.cols;
     const int max_edge_x = img_w - 2; // row_diff 的最后一个有效下标
-    const int scan_y_start = clamp_int(scaled_coordinate(img_h, this->config_.down_ratio), 0, img_h - 1);
-    const int scan_y_end = clamp_int(scaled_coordinate(img_h, this->config_.up_ratio), 0, img_h - 1);
+    // task_1 使用独立的扫描区间（task1_down_ratio/task1_up_ratio），与 task_2 解耦
+    const int scan_y_start = clamp_int(scaled_coordinate(img_h, this->config_.task1_down_ratio), 0, img_h - 1);
+    const int scan_y_end = clamp_int(scaled_coordinate(img_h, this->config_.task1_up_ratio), 0, img_h - 1);
     const bool draw = is_draw && is_drawable_canvas(canvas);
 
     // 逐行地推的搜索起点

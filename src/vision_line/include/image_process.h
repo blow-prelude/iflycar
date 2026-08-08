@@ -21,6 +21,9 @@ struct ImageProcessConfig
     int miss_threshold = 3;
     float up_ratio = 0.50;
     float down_ratio = 0.90;
+    // get_side_line_task_1 专用纵向扫描区间（与 task_2 的 up_ratio/down_ratio 相互独立）
+    float task1_down_ratio = 0.88f; // 起始扫描行比例（靠下，对应 scan_y_start）
+    float task1_up_ratio = 0.65f;   // 结束扫描行比例（靠上，对应 scan_y_end）
     int search_range_wide = 50;          // 动态搜索窗口最大宽度
     int search_range_narrow = 30;        // 动态搜索窗口最小宽度
     float search_range_threshold = 0.60; // 搜索窗口宽度调整阈值
