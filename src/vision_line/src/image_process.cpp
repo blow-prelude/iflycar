@@ -1783,6 +1783,9 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
         clear_lines();
 
         int lx = 0, rx = 0, y = 0;
+        // 调试：本帧左右边线三连点夹角的最大值，用于分析拐点检测稳定性
+        float left_corner_angle_max = -1.0f;
+        float right_corner_angle_max = -1.0f;
         for (y = scan_y_start; y >= scan_y_end; y--)
         {
             // 逐行计算相邻像素差异，避免计算整张图
@@ -1861,6 +1864,7 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
                         if (left_cur_p.x != 0 && left_cur_p.y != 0 && left_pre_p.x != 0 && left_pre_p.y != 0)
                         {
                             float angle = get_angle_p(left_pre_p, left_cur_p, left_nxt_p);
+                            left_corner_angle_max = std::max(left_corner_angle_max, angle);
                             if (angle < this->config_.corner_angle_high && angle > this->config_.corner_angle_low)
                             {
                                 find_left_corner = true;
@@ -1942,6 +1946,7 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
                         if (right_cur_p.x != 0 && right_cur_p.y != 0 && right_pre_p.x != 0 && right_pre_p.y != 0)
                         {
                             float angle = get_angle_p(right_pre_p, right_cur_p, right_nxt_p);
+                            right_corner_angle_max = std::max(right_corner_angle_max, angle);
                             if (angle < this->config_.corner_angle_high && angle > this->config_.corner_angle_low)
                             {
                                 find_right_corner = true;
@@ -1986,6 +1991,17 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
                     right_stable_buf.clear();
                 }
             }
+        }
+
+        // 调试：打印本帧拐点检测的最大夹角，定位"进入转弯后拐点为何快速丢失"
+        if (find_corner)
+        {
+            std::cout << "[corner-debug] left_angle_max=" << left_corner_angle_max
+                      << " left_corner=(" << this->left_corners_.x << "," << this->left_corners_.y << ")"
+                      << " right_angle_max=" << right_corner_angle_max
+                      << " right_corner=(" << this->right_corners_.x << "," << this->right_corners_.y << ")"
+                      << " angle_range=[" << this->config_.corner_angle_low << "," << this->config_.corner_angle_high << "]"
+                      << std::endl;
         }
     }
 
