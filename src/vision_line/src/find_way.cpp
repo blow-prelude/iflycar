@@ -89,73 +89,6 @@ SearchSide oppositeSide(SearchSide side)
     return BOTH;
 }
 
-bool cornerDetected(ImageProcess &img_process, SearchSide side)
-{
-    const bool left_found = img_process.get_left_corners() != cv::Point(0, 0);
-    const bool right_found = img_process.get_right_corners() != cv::Point(0, 0);
-    if (side == LEFT_ONLY)
-        return left_found;
-    if (side == RIGHT_ONLY)
-        return right_found;
-    return left_found || right_found;
-}
-
-// 转弯判定状态机：拐点连续出现确认转弯开始，拐点连续消失确认转弯结束
-struct CornerTurningState
-{
-    bool turning_active = false;
-    bool turn_completed = false;
-    int corner_detect_count = 0;
-    int corner_missing_count = 0;
-};
-
-void updateCornerTurningState(CornerTurningState &s, bool corner_detected,
-                              int corner_confirm_frames, int turning_end_confirm_frames)
-{
-    if (s.turn_completed)
-        return;
-
-    if (!s.turning_active)
-    {
-        s.corner_missing_count = 0;
-        if (corner_detected)
-        {
-            if (s.corner_detect_count < corner_confirm_frames)
-                ++s.corner_detect_count;
-        }
-        else
-        {
-            s.corner_detect_count = 0;
-        }
-        if (s.corner_detect_count >= corner_confirm_frames)
-        {
-            s.turning_active = true;
-            s.corner_detect_count = 0;
-            std::cout << "Corner confirmed for " << corner_confirm_frames
-                      << " consecutive frames; turning started" << std::endl;
-        }
-        return;
-    }
-
-    s.corner_detect_count = 0;
-    if (corner_detected)
-    {
-        s.corner_missing_count = 0;
-    }
-    else if (s.corner_missing_count < turning_end_confirm_frames)
-    {
-        ++s.corner_missing_count;
-    }
-    if (s.corner_missing_count >= turning_end_confirm_frames)
-    {
-        s.turning_active = false;
-        s.turn_completed = true;
-        s.corner_missing_count = 0;
-        std::cout << "Corner absent for " << turning_end_confirm_frames
-                  << " consecutive frames; turning finished" << std::endl;
-    }
-}
-
 int main()
 {
 
@@ -171,10 +104,12 @@ int main()
     SearchSide post_turn_side = oppositeSide(straight_side);
     MidLineMode post_turn_mode = midLineModeForSide(post_turn_side);
 
-    // 拐点确认与转弯结束确认的连续帧数（与 find_way_ros 默认值一致）
-    int corner_confirm_frames = 3;
+    // 水平白线判定转弯结束：中点归一化 y 超过阈值，连续 turning_end_confirm_frames 帧即结束
+    float stop_line_end_y_thresh = 0.80f;
     int turning_end_confirm_frames = 3;
-    CornerTurningState corner_turning;
+    // 初始即视为转弯进行中，只判定结束；turn_completed 置位后常驻相反侧巡线
+    bool turn_completed = false;
+    int stop_line_end_count = 0;
 
     auto pre_t = std::chrono::steady_clock::now();
     auto cur_t = pre_t;
@@ -276,23 +211,45 @@ int main()
                     // STRAIGHT_TRACKING
                     cv::Mat canvas = img_process.return_frame();
 
-                    if (corner_turning.turn_completed)
+                    if (turn_completed)
                     {
-                        // 转弯结束后切到相反单边，并采用与该侧匹配的偏移中线模式。
+                        // 转弯结束后常驻相反单边，并采用与该侧匹配的偏移中线模式。
                         img_process.set_mid_line_mode(post_turn_mode);
                         img_process.get_side_line_task_2(binary_img, canvas, true, false, post_turn_side);
                     }
                     else
                     {
+                        // 转弯进行中：初始侧巡线，不再检测拐点（find_corner=false）。
                         img_process.set_mid_line_mode(straight_mode);
-                        img_process.get_side_line_task_2(binary_img, canvas, true, true, straight_side);
-                        updateCornerTurningState(corner_turning, cornerDetected(img_process, straight_side),
-                                                 corner_confirm_frames, turning_end_confirm_frames);
+                        img_process.get_side_line_task_2(binary_img, canvas, true, false, straight_side);
 
-                        // 判定结束的这一帧已经按单边搜索过，立即重跑相反侧检测，
-                        // 避免中线切换延迟到下一帧。
-                        if (corner_turning.turn_completed)
+                        // 用水平白线判定转弯是否结束：中点 y 超过阈值即计数，连续达标则结束。
+                        std::vector<int> stop_line = img_process.get_stop_line(binary_img, canvas, true);
+                        bool stop_line_low = false;
+                        if (!stop_line.empty() && binary_img.rows > 0)
                         {
+                            const float y_norm = stop_line[1] / static_cast<float>(binary_img.rows);
+                            stop_line_low = y_norm > stop_line_end_y_thresh;
+                        }
+                        if (stop_line_low)
+                        {
+                            if (stop_line_end_count < turning_end_confirm_frames)
+                                ++stop_line_end_count;
+                        }
+                        else
+                        {
+                            stop_line_end_count = 0;
+                        }
+                        if (stop_line_end_count >= turning_end_confirm_frames)
+                        {
+                            turn_completed = true;
+                            stop_line_end_count = 0;
+                            std::cout << "Stop line midpoint y_norm > " << stop_line_end_y_thresh
+                                      << " for " << turning_end_confirm_frames
+                                      << " consecutive frames; turning finished" << std::endl;
+
+                            // 判定结束的这一帧已经按初始侧搜索过，立即重跑相反侧检测，
+                            // 避免中线切换延迟到下一帧。
                             img_process.set_mid_line_mode(post_turn_mode);
                             img_process.get_side_line_task_2(binary_img, canvas, true, false, post_turn_side);
                         }
