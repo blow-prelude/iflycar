@@ -158,6 +158,7 @@ public:
                     processor_.set_mid_line_mode(MID_AVG);
                     reset_requested_ = false;
                     resetStopLineState();
+                    has_last_valid_msg_ = false; // 换方向后清空上一帧缓存，避免方向间残留
                     ROS_INFO("State machine reset to IDLE (direction changed)");
                 }
             }
@@ -380,6 +381,10 @@ private:
     int stop_miss_min_frames_ = 3;     // 持续丢线多少帧才放弃当前 phase
     double stop_hold_s_ = 3.0;         // STOP 持续秒数（定时退出）
 
+    // ---- 中线丢帧回退：当前帧中线无效（空或太短）时，沿用上一帧有效数据 ----
+    std_msgs::Float32MultiArray last_valid_msg_;
+    bool has_last_valid_msg_ = false;
+
     // STRAIGHT_TRACKING 走哪一边：LEFT_ONLY / RIGHT_ONLY / BOTH
     SearchSide straight_track_side_ = LEFT_ONLY;
     // 由 straight_track_side_ 派生（构造时算一次）
@@ -442,38 +447,56 @@ private:
         // ROS_INFO("buildVisionLineMsg params: proc_h=%d, proc_w=%d, orig_h=%d, orig_w=%d, target_index=%d",
         //          proc_h, proc_w, orig_h, orig_w, target_index);
 
+        bool valid = true;
         if (line_points.empty() ||
             proc_h <= 0 || proc_w <= 0 ||
             orig_h <= 0 || orig_w <= 0 ||
             static_cast<int>(line_points.size()) < std::abs(target_index) + 1)
         {
-            msg.data = {0.0, -1.0};
+            valid = false; // 中线为空或太短，取不到目标点
+        }
+
+        if (valid)
+        {
+            double scale_x = static_cast<double>(orig_w) / proc_w;
+            double scale_y = static_cast<double>(orig_h) / proc_h;
+
+            // 处理负索引（从末尾数）
+            int idx = target_index;
+            if (idx < 0)
+            {
+                idx = static_cast<int>(line_points.size()) + idx;
+            }
+
+            if (idx < 0 || idx >= static_cast<int>(line_points.size()))
+            {
+                valid = false;
+            }
+            else
+            {
+                cv::Point pt = line_points[idx];
+                double x_raw = pt.x * scale_x;
+                double y_raw = pt.y * scale_y;
+                double x_error = x_raw - (orig_w / 2.0);
+                // ROS_INFO(" ptx: %.2f, pty: %.2f, x_raw: %.2f, x_error: %.2f, y_raw: %.2f, idx: %d", static_cast<double>(pt.x), static_cast<double>(pt.y), x_raw, x_error, y_raw, target_index);
+
+                msg.data = {static_cast<float>(x_error), static_cast<float>(y_raw)};
+            }
+        }
+
+        if (valid)
+        {
+            // 本帧中线有效：缓存为"上一帧有效数据"并返回
+            last_valid_msg_ = msg;
+            has_last_valid_msg_ = true;
             return msg;
         }
 
-        double scale_x = static_cast<double>(orig_w) / proc_w;
-        double scale_y = static_cast<double>(orig_h) / proc_h;
+        // 本帧中线无效（为空或太短）：回退到上一帧有效数据，避免给下游发送 {0,-1} 哨兵
+        if (has_last_valid_msg_)
+            return last_valid_msg_;
 
-        // 处理负索引（从末尾数）
-        int idx = target_index;
-        if (idx < 0)
-        {
-            idx = static_cast<int>(line_points.size()) + idx;
-        }
-
-        if (idx < 0 || idx >= static_cast<int>(line_points.size()))
-        {
-            msg.data = {0.0, -1.0};
-            return msg;
-        }
-
-        cv::Point pt = line_points[idx];
-        double x_raw = pt.x * scale_x;
-        double y_raw = pt.y * scale_y;
-        double x_error = x_raw - (orig_w / 2.0);
-        // ROS_INFO(" ptx: %.2f, pty: %.2f, x_raw: %.2f, x_error: %.2f, y_raw: %.2f, idx: %d", static_cast<double>(pt.x), static_cast<double>(pt.y), x_raw, x_error, y_raw, target_index);
-
-        msg.data = {static_cast<float>(x_error), static_cast<float>(y_raw)};
+        msg.data = {0.0, -1.0};
         return msg;
     }
 
