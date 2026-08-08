@@ -95,6 +95,7 @@ public:
         // 由 straight_track_side_ 一次性派生出搜索侧与中线模式（运行前算一次，避免每帧 switch）
         switch (straight_track_side_)
         {
+            //
         case LEFT_ONLY:
             straight_side_ = LEFT_ONLY;
             straight_mode_ = LEFT_OFFSET;
