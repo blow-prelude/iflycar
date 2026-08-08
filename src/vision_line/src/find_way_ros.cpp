@@ -58,8 +58,8 @@ public:
         loop_rate_ = nh_private_.param<int>("loop_rate", 120);
 
         // 停止线检测 / STOP 参数
-        stop_line_target_ = nh_private_.param<int>("stop_line_target", 3);
-        stop_y_cross_ = nh_private_.param<double>("stop_y_cross", 0.75);
+        stop_line_target_ = nh_private_.param<int>("stop_line_target", 2);
+        stop_y_cross_ = nh_private_.param<double>("stop_y_cross", 0.80);
         stop_far_min_frames_ = nh_private_.param<int>("stop_far_min_frames", 3);
         stop_near_min_frames_ = nh_private_.param<int>("stop_near_min_frames", 3);
         stop_miss_min_frames_ = nh_private_.param<int>("stop_miss_min_frames", 3);
@@ -374,8 +374,8 @@ private:
     int near_run_ = 0; // 连续近端帧数
     int miss_run_ = 0; // 连续丢检测帧数
     // 停止线检测参数（由 ROS 参数注入）
-    int stop_line_target_ = 3;     // 进入 STOP 所需停止线条数
-    double stop_y_cross_ = 0.75;   // 远/近端归一化 y 阈值（相对 proc_h）
+    int stop_line_target_ = 2;     // 进入 STOP 所需停止线条数
+    double stop_y_cross_ = 0.80;   // 远/近端归一化 y 阈值（相对 proc_h）
     int stop_far_min_frames_ = 3;  // 远端连续确认帧数
     int stop_near_min_frames_ = 3; // 近端连续确认帧数
     int stop_miss_min_frames_ = 3; // 持续丢线多少帧才放弃当前 phase
