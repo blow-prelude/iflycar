@@ -162,7 +162,7 @@ int main()
     MidLineMode post_turn_mode = midLineModeForSide(post_turn_side);
 
     // 水平白线判定转弯结束：中点归一化 y 超过阈值，连续 turning_end_confirm_frames 帧即结束
-    float stop_line_end_y_thresh = 0.40f;
+    float stop_line_end_y_thresh = 0.55f;
     int turning_end_confirm_frames = 3;
     // 初始即视为转弯进行中，只判定结束；turn_completed 置位后常驻相反侧巡线
     StopLineTurningState stop_line_turning;

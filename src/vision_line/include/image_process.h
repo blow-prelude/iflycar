@@ -32,8 +32,8 @@ struct ImageProcessConfig
     float corner_y_ratio = 0.70;
 
     // 停止线检测
-    float stop_roi_y0 = 0.30;
-    float stop_roi_y1 = 0.55;
+    float stop_roi_y0 = 0.40;
+    float stop_roi_y1 = 0.60;
     float stop_roi_x0 = 0.30;
     float stop_roi_x1 = 0.70;
     int stop_kernel_w = 15;

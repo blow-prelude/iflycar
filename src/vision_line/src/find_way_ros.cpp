@@ -344,7 +344,7 @@ private:
     double target_y_ = 400.0;
     double turning_target_y_ = 360.0;
     int turning_end_confirm_frames_ = 3;
-    double stop_line_end_y_thresh_ = 0.80;
+    double stop_line_end_y_thresh_ = 0.55;
     int loop_rate_ = 120;
 
     // 初始即视为转弯进行中，只判定结束；turn_completed_ 置位后常驻相反侧巡线
