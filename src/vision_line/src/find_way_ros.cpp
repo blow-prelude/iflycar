@@ -56,8 +56,8 @@ public:
         turning_end_x_error_abs_max_ = nh_private_.param<double>("turning_end_x_error_abs_max", 15.0);
         target_y_ = nh_private_.param<double>("vision_target_y", 400.0);
         turning_target_y_ = nh_private_.param<double>("turning_target_y", 360.0);
-        corner_confirm_frames_ = std::max(1, nh_private_.param<int>("corner_confirm_frames", 3));
         turning_end_confirm_frames_ = std::max(1, nh_private_.param<int>("turning_end_confirm_frames", 3));
+        stop_line_end_y_thresh_ = nh_private_.param<double>("stop_line_end_y_thresh", 0.55);
         loop_rate_ = nh_private_.param<int>("loop_rate", 120);
         std::string initial_direction = nh_private_.param<std::string>("initial_direction", "stop");
 
@@ -140,7 +140,7 @@ public:
                     t0_set = false;
                     miss_line_ = NO_MISS;
                     processor_.set_mid_line_mode(MID_AVG);
-                    resetCornerTurningState();
+                    resetTurningState();
                     // 清空消息缓存，避免把上一任务的控制误差带入新任务
                     has_last_valid_vision_line_msg_ = false;
                     last_valid_vision_line_msg_.data.clear();
@@ -167,7 +167,10 @@ public:
                     t0 = ros::Time::now();
                     t0_set = true;
                     ros::param::set("/start_vision1", 1);
-                    ROS_INFO("State: IDLE -> STRAIGHT_TRACKING");
+                    // 初始即视为转弯进行中：进入直行巡线即置位转弯标志，
+                    // 由水平白线判定结束后再清零。
+                    ros::param::set(turning_flag_param_, 1);
+                    ROS_INFO("State: IDLE -> STRAIGHT_TRACKING (%s=1)", turning_flag_param_.c_str());
                 }
                 else if (dir == "right")
                 {
@@ -259,14 +262,16 @@ public:
 
                     if (turn_completed_)
                     {
-                        // 转弯结束后切到相反单边，并采用与该侧匹配的偏移中线模式。
+                        // 转弯结束后常驻相反单边，并采用与该侧匹配的偏移中线模式。
                         processor_.set_mid_line_mode(post_turn_mode_);
                         processor_.get_side_line_task_2(binary_img, canvas, true, false,
                                                         post_turn_side_);
                     }
                     else
                     {
+                        // 转弯进行中：初始侧巡线，不再检测拐点（find_corner=false）。
                         processor_.set_mid_line_mode(straight_mode_);
+<<<<<<< HEAD
                         processor_.get_side_line_task_2(binary_img, canvas, true, true, straight_side_);
                         const bool corner_found = cornerDetected(straight_side_);
                         updateCornerTurningState(corner_found);
@@ -275,10 +280,13 @@ public:
                                  corner_found, corner_detect_count_, corner_missing_count_,
                                  turning_active_, turn_completed_,
                                  processor_.get_left_corners().x, processor_.get_left_corners().y);
+=======
+                        processor_.get_side_line_task_2(binary_img, canvas, true, false, straight_side_);
+>>>>>>> d51486d9a75fcb0157050f54874881bba6e64319
 
-                        // 判定结束的这一帧已经按单边搜索过，立即重跑双边检测，
+                        // 用水平白线判定转弯是否结束；刚结束则同帧切到相反侧巡线，
                         // 避免中线切换延迟到下一帧。
-                        if (turn_completed_)
+                        if (checkStopLineTurnEnd(binary_img, canvas))
                         {
                             processor_.set_mid_line_mode(post_turn_mode_);
                             processor_.get_side_line_task_2(binary_img, canvas, true, false,
@@ -346,14 +354,13 @@ private:
     double turning_end_x_error_abs_max_ = 15.0;
     double target_y_ = 400.0;
     double turning_target_y_ = 360.0;
-    int corner_confirm_frames_ = 3;
     int turning_end_confirm_frames_ = 3;
+    double stop_line_end_y_thresh_ = 0.55;
     int loop_rate_ = 120;
 
-    bool turning_active_ = false;
+    // 初始即视为转弯进行中，只判定结束；turn_completed_ 置位后常驻相反侧巡线
     bool turn_completed_ = false;
-    int corner_detect_count_ = 0;
-    int corner_missing_count_ = 0;
+    int stop_line_end_count_ = 0;
 
     // STRAIGHT_TRACKING 走哪一边：LEFT_ONLY / RIGHT_ONLY / BOTH
     SearchSide straight_track_side_ = LEFT_ONLY;
@@ -388,72 +395,60 @@ private:
         return BOTH;
     }
 
-    bool cornerDetected(SearchSide side)
-    {
-        const bool left_found = processor_.get_left_corners() != cv::Point(0, 0);
-        const bool right_found = processor_.get_right_corners() != cv::Point(0, 0);
-
-        if (side == LEFT_ONLY)
-            return left_found;
-        if (side == RIGHT_ONLY)
-            return right_found;
-        return left_found || right_found;
-    }
-
-    void updateCornerTurningState(bool corner_detected)
+    // 用水平白线判定转弯是否结束：中点 y 超过阈值连续 turning_end_confirm_frames_ 帧即结束，
+    // 结束时清零对外转弯标志。初始即视为转弯进行中，无“开始”事件。
+    // 每帧在 canvas 上绘制停止线中点与阈值参考线，便于标定 stop_line_end_y_thresh_。
+    // 返回 true 表示本次调用刚判定转弯结束（调用方需同帧切到相反侧巡线）。
+    bool checkStopLineTurnEnd(cv::Mat &binary_img, cv::Mat &canvas)
     {
         if (turn_completed_)
-            return;
+            return false;
 
-        if (!turning_active_)
+        std::vector<int> stop_line = processor_.get_stop_line(binary_img, canvas, true);
+
+        bool stop_line_low = false;
+        if (!stop_line.empty() && binary_img.rows > 0)
         {
-            corner_missing_count_ = 0;
-            if (corner_detected)
+            const float y_norm = stop_line[1] / static_cast<float>(binary_img.rows);
+            stop_line_low = y_norm > stop_line_end_y_thresh_;
+
+            // 可视化：阈值参考线（绿）+ 中点高亮（黄环），便于观察中点何时越过阈值
+            if (canvas.rows > 0)
             {
-                if (corner_detect_count_ < corner_confirm_frames_)
-                    ++corner_detect_count_;
+                const int thresh_y = static_cast<int>(stop_line_end_y_thresh_ * canvas.rows);
+                cv::line(canvas, cv::Point(0, thresh_y), cv::Point(canvas.cols, thresh_y),
+                         cv::Scalar(0, 255, 0), 1);
+                const cv::Point center(stop_line[0], stop_line[1]);
+                cv::circle(canvas, center, 8, cv::Scalar(0, 255, 255), 2);
             }
-            else
-            {
-                corner_detect_count_ = 0;
-            }
-            if (corner_detect_count_ >= corner_confirm_frames_)
-            {
-                turning_active_ = true;
-                corner_detect_count_ = 0;
-                ros::param::set(turning_flag_param_, 1);
-                ROS_INFO("Corner confirmed for %d consecutive frames; turning started (%s=1)",
-                         corner_confirm_frames_, turning_flag_param_.c_str());
-            }
-            return;
         }
 
-        corner_detect_count_ = 0;
-        if (corner_detected)
+        if (stop_line_low)
         {
-            corner_missing_count_ = 0;
+            if (stop_line_end_count_ < turning_end_confirm_frames_)
+                ++stop_line_end_count_;
         }
-        else if (corner_missing_count_ < turning_end_confirm_frames_)
+        else
         {
-            ++corner_missing_count_;
+            stop_line_end_count_ = 0;
         }
-        if (corner_missing_count_ >= turning_end_confirm_frames_)
+
+        if (stop_line_end_count_ >= turning_end_confirm_frames_)
         {
-            turning_active_ = false;
             turn_completed_ = true;
-            corner_missing_count_ = 0;
+            stop_line_end_count_ = 0;
             ros::param::set(turning_flag_param_, 0);
-            ROS_INFO("Corner absent for %d consecutive frames; turning finished (%s=0)",
-                     turning_end_confirm_frames_, turning_flag_param_.c_str());
+            ROS_INFO("Stop line midpoint y_norm > %.2f for %d consecutive frames; turning finished (%s=0)",
+                     stop_line_end_y_thresh_, turning_end_confirm_frames_, turning_flag_param_.c_str());
+            return true;
         }
+        return false;
     }
 
-    void resetCornerTurningState()
+    void resetTurningState()
     {
-        turning_active_ = false;
         turn_completed_ = false;
-        corner_detect_count_ = 0;
-        corner_missing_count_ = 0;
+        stop_line_end_count_ = 0;
         ros::param::set(turning_flag_param_, 0);
     }
 
