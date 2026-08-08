@@ -269,7 +269,7 @@ public:
                     }
                     else
                     {
-                        // 转弯进行中：初始侧巡线，不再检测拐点（find_corner=false）。
+                        // 转弯进行中：初始侧巡线
                         processor_.set_mid_line_mode(straight_mode_);
                         processor_.get_side_line_task_2(binary_img, canvas, true, false, straight_side_);
 

@@ -1778,6 +1778,36 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
     cv::Point left_nxt_p, left_cur_p, left_pre_p;
     cv::Point right_nxt_p, right_cur_p, right_pre_p;
 
+    // 切换侧（anchor_side 与 side 相反）时，仅“切侧后首帧”沿用上一帧边线位置作搜索起点：
+    // 首帧活动侧的 prev_*_line_ 还是空的（上一帧在巡另一侧），故用锚定侧上一帧位置作种子，
+    // 首行起点=种子、终点向活动侧偏移；该帧其余行及后续帧都按 prev_row_*_x ± cur_range 跟踪。
+    bool right_first_row = false;
+    bool left_first_row = false;
+    if (anchor_side == LEFT_ONLY && side == RIGHT_ONLY &&
+        this->prev_right_line_.empty() && !this->prev_left_line_.empty())
+    {
+        right_first_row = true;
+        int by = -1;
+        for (const auto &p : this->prev_left_line_)
+            if (p.y > by)
+            {
+                by = p.y;
+                prev_row_right_x = p.x;
+            }
+    }
+    if (anchor_side == RIGHT_ONLY && side == LEFT_ONLY &&
+        this->prev_left_line_.empty() && !this->prev_right_line_.empty())
+    {
+        left_first_row = true;
+        int by = -1;
+        for (const auto &p : this->prev_right_line_)
+            if (p.y > by)
+            {
+                by = p.y;
+                prev_row_left_x = p.x;
+            }
+    }
+
     try
     {
         clear_lines();
@@ -1817,9 +1847,19 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
                 {
                     if (anchor_side == RIGHT_ONLY)
                     {
-                        // 从右线切换而来：起点与右线一致，终点向左偏移到中线偏左
-                        search_left_start = mid_x + this->config_.search_offset;
-                        search_left_end = mid_x - this->config_.search_offset;
+                        if (left_first_row)
+                        {
+                            // 从右线切换而来，首行：起点沿用上一帧种子，终点向左偏移
+                            search_left_start = prev_row_left_x;
+                            search_left_end = std::max(prev_row_left_x - cur_range, 0);
+                            left_first_row = false;
+                        }
+                        else
+                        {
+                            // 之后：prev_row_left_x ± cur_range 动态跟踪
+                            search_left_start = std::min(prev_row_left_x + cur_range, max_edge_x);
+                            search_left_end = std::max(prev_row_left_x - cur_range, 0);
+                        }
                     }
                     else
                     {
@@ -1902,9 +1942,19 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
                 {
                     if (anchor_side == LEFT_ONLY)
                     {
-                        // 从左线切换而来：起点与左线一致(mid_x-offset)，终点向右偏移到(mid_x+offset)
-                        search_right_start = mid_x - this->config_.search_offset;
-                        search_right_end = mid_x + this->config_.search_offset;
+                        if (right_first_row)
+                        {
+                            // 从左线切换而来，首行：起点沿用上一帧种子，终点向右偏移
+                            search_right_start = prev_row_right_x + cur_range;
+                            search_right_end = std::min(search_right_start + config_.search_offset, max_edge_x);
+                            right_first_row = false;
+                        }
+                        else
+                        {
+                            // 之后：prev_row_right_x ± cur_range 动态跟踪
+                            search_right_start = std::max(prev_row_right_x - cur_range, 0);
+                            search_right_end = std::min(prev_row_right_x + cur_range, max_edge_x);
+                        }
                     }
                     else
                     {

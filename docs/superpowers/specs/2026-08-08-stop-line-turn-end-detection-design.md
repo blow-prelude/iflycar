@@ -178,19 +178,21 @@ else
 
 `RIGHT_TRACKING` / `LEFT_TRACKING` 不接触该标志，保持原行为。这样对外仍维持“标志为 1 = 转弯进行中，标志为 0 = 转弯结束”的语义，只是 1 的起点从“拐点确认”提前到“进入直行巡线”。
 
-### 6. 转弯后切换侧的搜索窗口锚定（`image_process.cpp`）
+### 6. 转弯后切侧首帧的搜索起点沿用（`image_process.cpp`）
 
-转弯结束从巡左线切到巡右线时，原 `RIGHT_ONLY` 不稳定搜索窗口为 `[mid_x + search_offset, max_edge_x]`（中线偏右→右边缘），起点与终点都换成了“右侧值”。但刚切侧时目标线仍在画面中部，右侧窗口会漏检、迟迟无法稳定。
+转弯结束从巡左线切到巡右线时，原 `RIGHT_ONLY` 不稳定搜索窗口固定为 `[mid_x + search_offset, max_edge_x]`，每帧从“中线偏右”重新找线。但刚切侧时目标线仍在画面中部偏左（原左线位置），固定右窗口会漏检。需求是：**仅切侧后首帧**沿用上一帧（巡左线时）的边线位置作为搜索起点，终点向右偏移；之后恢复常规跟踪。
 
-新增 `get_side_line_task_2(..., SearchSide anchor_side = BOTH)` 参数：当 `anchor_side` 与 `side` 相反时，活动侧的不稳定搜索**起点沿用锚定侧的起点、终点向活动侧偏移**，形成以中线为中心的窄窗口：
+新增 `get_side_line_task_2(..., SearchSide anchor_side = BOTH)` 参数。当 `anchor_side` 与 `side` 相反、且本帧活动侧的上一帧边线为空（说明刚切侧、上一帧还在巡另一侧）时，仅此首帧做种子：
 
-| 切换方向 | side | anchor_side | 起点 | 终点 | 窗口 |
+| 切换方向 | side | anchor_side | 首帧种子来源 | 首行窗口 | 之后 |
 |---|---|---|---|---|---|
-| 左 → 右 | `RIGHT_ONLY` | `LEFT_ONLY` | `mid_x - search_offset` (≈140) | `mid_x + search_offset` (≈180) | `[140, 180]` |
-| 右 → 左 | `LEFT_ONLY` | `RIGHT_ONLY` | `mid_x + search_offset` (≈180) | `mid_x - search_offset` (≈140) | `[140, 180]` |
-| 其它 | 任意 | `BOTH`/同侧 | 原值 | 原值 | 不变 |
+| 左 → 右 | `RIGHT_ONLY` | `LEFT_ONLY` | `prev_left_line_` 最下点 x | `[seed, seed + cur_range]`（向右偏移） | `prev_row_right_x ± cur_range` |
+| 右 → 左 | `LEFT_ONLY` | `RIGHT_ONLY` | `prev_right_line_` 最下点 x | `[seed - cur_range, seed]`（向左偏移） | `prev_row_left_x ± cur_range` |
+| 其它 / 非首帧 | 任意 | `BOTH`/同侧 | — | 不变（`mid_x ± offset` 等） | 不变 |
 
-右线扫描 `起点→终点`（递增）取范围内最左跳变点；左线扫描 `起点→终点`（递减）取最右跳变点，与原方向约定一致。`normalize_search_range` 已能正确处理两种窗口（140≤180 不触发交换）。该锚定只影响**不稳定（初始）搜索**；一旦连续命中稳定点进入稳定跟踪，仍按 `prev_row_*_x ± cur_range` 自适应。调用方在两个 post-turn 调用处传入 `straight_side(_)` 作为锚定侧，转弯中的 straight_side 调用保持默认 `BOTH`。
+判定“首帧”的依据是活动侧 `prev_*_line_` 为空：切侧前一帧在巡另一侧，活动侧未采集，故其上一帧边线为空；从切侧后第二帧起该侧已有上一帧数据，不再沿用对方位置、回到常规搜索。首帧内：底行用上表的“首行窗口”一次，命中后 `prev_row_*_x` 更新为当前行，其上行及后续帧均按 `prev_row_*_x ± cur_range`（后续帧 `prev_row_*_x` 复位为 `mid_x`，即围绕中线的 `± cur_range` 窗口）。命中稳定点进入稳定分支后同样按 `prev_row_*_x ± cur_range`。调用方在两个 post-turn 调用处传入 `straight_side(_)` 作锚定侧，转弯中巡 straight_side 的调用保持默认 `BOTH`。
+
+> 注：当前实际配置 `straight_track_side = LEFT_ONLY`，只会发生“左→右”；“右→左”为对称镜像，左右两侧分支结构一致。
 
 ### 7. 判定封装与可视化（两入口）
 
