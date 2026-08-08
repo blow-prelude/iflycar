@@ -15,7 +15,7 @@ private:
     const double MIN_LINEAR_VEL = 0.05;    // 最小线速度 (m/s)
     const int PIXEL_ERROR_THRESHOLD = 10;  // x 误差收敛阈值
     const int STABLE_COUNT_THRESHOLD = 5;  // 误差稳定计数阈值
-    const int Y_LOWER_BOUND = 280;         // y 值有效范围下限
+    const int Y_LOWER_BOUND = 225;         // y 值有效范围下限
     const int Y_UPPER_BOUND = 460;         // y 值有效范围上限
     const double X_REFERENCE = 0.0;        // x 方向参考值
     const double Y_ERROR_TOLERANCE = 0.05; // y方向位置误差容忍值 (m)
@@ -332,31 +332,31 @@ public:
         bool start_line2_trigger = (start_vision_line2_ && !prev_start_vision_line2_);
         prev_start_vision_line2_ = start_vision_line2_;
 
-        if (start_line2_trigger && !turning_mode_)
-        {
-            turning_mode_ = true;
-            turn_start_time_ = ros::Time::now();
-            ROS_INFO("TURNING active: enter fixed rotate mode (%.2fs)", FIXED_TURN_DURATION);
-        }
+        // if (start_line2_trigger && !turning_mode_)
+        // {
+        //     turning_mode_ = true;
+        //     turn_start_time_ = ros::Time::now();
+        //     ROS_INFO("TURNING active: enter fixed rotate mode (%.2fs)", FIXED_TURN_DURATION);
+        // }
 
-        if (turning_mode_)
-        {
-            if ((ros::Time::now() - turn_start_time_) >= ros::Duration(FIXED_TURN_DURATION))
-            {
-                turning_mode_ = false;
-                stable_count_ = 0;
-                current_error_ = 0.0;
-                nh_.setParam("/start_vision_line2", 0);
-                ROS_INFO("TURNING finished: fixed rotate done, set start_vision_line2=0");
-            }
-            else
-            {
-                turning_angular_vel_ = nh_.param("/turning_angular_vel", 0.5);
-                cmd.angular.z = turning_angular_vel_;
-                cmd_vel_pub_.publish(cmd);
-                return;
-            }
-        }
+        // if (turning_mode_)
+        // {
+        //     if ((ros::Time::now() - turn_start_time_) >= ros::Duration(FIXED_TURN_DURATION))
+        //     {
+        //         turning_mode_ = false;
+        //         stable_count_ = 0;
+        //         current_error_ = 0.0;
+        //         nh_.setParam("/start_vision_line2", 0);
+        //         ROS_INFO("TURNING finished: fixed rotate done, set start_vision_line2=0");
+        //     }
+        //     else
+        //     {
+        //         turning_angular_vel_ = nh_.param("/turning_angular_vel", 0.5);
+        //         cmd.angular.z = turning_angular_vel_;
+        //         cmd_vel_pub_.publish(cmd);
+        //         return;
+        //     }
+        // }
 
         if (is_stopped_)
         {
