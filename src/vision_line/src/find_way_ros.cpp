@@ -86,22 +86,12 @@ public:
         // 初始化转弯标志
         ros::param::set(turning_flag_param_, 0);
 
-        // 由 straight_track_side_ 一次性派生出搜索侧与中线模式（运行前算一次，避免每帧 switch）
-        switch (straight_track_side_)
-        {
-        case LEFT_ONLY:
-            straight_side_ = LEFT_ONLY;
-            straight_mode_ = LEFT_OFFSET;
-            break;
-        case RIGHT_ONLY:
-            straight_side_ = RIGHT_ONLY;
-            straight_mode_ = RIGHT_OFFSET;
-            break;
-        default:
-            straight_side_ = BOTH;
-            straight_mode_ = MID_AVG;
-            break;
-        }
+        // 由 straight_track_side_ 一次性派生转弯前、转弯后的搜索侧与中线模式
+        // （运行前算一次，避免每帧 switch）
+        straight_side_ = straight_track_side_;
+        straight_mode_ = midLineModeForSide(straight_side_);
+        post_turn_side_ = oppositeSide(straight_side_);
+        post_turn_mode_ = midLineModeForSide(post_turn_side_);
     }
 
     void run()
@@ -151,6 +141,9 @@ public:
                     miss_line_ = NO_MISS;
                     processor_.set_mid_line_mode(MID_AVG);
                     resetCornerTurningState();
+                    // 清空消息缓存，避免把上一任务的控制误差带入新任务
+                    has_last_valid_vision_line_msg_ = false;
+                    last_valid_vision_line_msg_.data.clear();
                     reset_requested_ = false;
                     ROS_INFO("State machine reset to IDLE (direction changed)");
                 }
@@ -266,10 +259,10 @@ public:
 
                     if (turn_completed_)
                     {
-                        // 转弯结束后保持双边搜索，并把顶部较短边补到与另一边等高。
-                        processor_.set_mid_line_mode(MID_AVG);
-                        processor_.get_side_line_task_2(binary_img, canvas, true, false, BOTH);
-                        processor_.extend_shorter_line_to_match_min_y(proc_w);
+                        // 转弯结束后切到相反单边，并采用与该侧匹配的偏移中线模式。
+                        processor_.set_mid_line_mode(post_turn_mode_);
+                        processor_.get_side_line_task_2(binary_img, canvas, true, false,
+                                                        post_turn_side_);
                     }
                     else
                     {
@@ -281,9 +274,9 @@ public:
                         // 避免中线切换延迟到下一帧。
                         if (turn_completed_)
                         {
-                            processor_.set_mid_line_mode(MID_AVG);
-                            processor_.get_side_line_task_2(binary_img, canvas, true, false, BOTH);
-                            processor_.extend_shorter_line_to_match_min_y(proc_w);
+                            processor_.set_mid_line_mode(post_turn_mode_);
+                            processor_.get_side_line_task_2(binary_img, canvas, true, false,
+                                                            post_turn_side_);
                         }
                     }
 
@@ -361,6 +354,33 @@ private:
     // 由 straight_track_side_ 派生（构造时算一次）
     SearchSide straight_side_ = BOTH;
     MidLineMode straight_mode_ = MID_AVG;
+    // 转弯结束后改用的相反巡线侧与中线模式（由 straight_side_ 派生）
+    SearchSide post_turn_side_ = BOTH;
+    MidLineMode post_turn_mode_ = MID_AVG;
+
+    // 缓存最后一条有效的 /vision_line 消息，丢点时复用，保证控制连续
+    std_msgs::Float32MultiArray last_valid_vision_line_msg_;
+    bool has_last_valid_vision_line_msg_ = false;
+
+    // SearchSide -> MidLineMode 映射，避免在构造函数和帧循环中重复 switch
+    static MidLineMode midLineModeForSide(SearchSide side)
+    {
+        if (side == LEFT_ONLY)
+            return LEFT_OFFSET;
+        if (side == RIGHT_ONLY)
+            return RIGHT_OFFSET;
+        return MID_AVG;
+    }
+
+    // 左右单边反转；BOTH 无相反侧，保持双边平均
+    static SearchSide oppositeSide(SearchSide side)
+    {
+        if (side == LEFT_ONLY)
+            return RIGHT_ONLY;
+        if (side == RIGHT_ONLY)
+            return LEFT_ONLY;
+        return BOTH;
+    }
 
     bool cornerDetected(SearchSide side)
     {
@@ -475,6 +495,18 @@ private:
         ROS_INFO("Direction set to: %s", dir.c_str());
     }
 
+    // 当前帧无法取得目标点时的统一回退：有缓存则复用上一条有效消息，
+    // 否则发送 [0.0, -1.0] 表示无数据。
+    std_msgs::Float32MultiArray lastValidOrInvalidMsg() const
+    {
+        if (has_last_valid_vision_line_msg_)
+            return last_valid_vision_line_msg_;
+
+        std_msgs::Float32MultiArray msg;
+        msg.data = {0.0f, -1.0f};
+        return msg;
+    }
+
     std_msgs::Float32MultiArray buildVisionLineMsg(
         const std::vector<cv::Point> &line_points,
         int proc_h, int proc_w,
@@ -492,8 +524,7 @@ private:
             orig_h <= 0 || orig_w <= 0 ||
             static_cast<int>(line_points.size()) < std::abs(target_index) + 1)
         {
-            msg.data = {0.0, -1.0};
-            return msg;
+            return lastValidOrInvalidMsg();
         }
 
         double scale_x = static_cast<double>(orig_w) / proc_w;
@@ -508,8 +539,7 @@ private:
 
         if (idx < 0 || idx >= static_cast<int>(line_points.size()))
         {
-            msg.data = {0.0, -1.0};
-            return msg;
+            return lastValidOrInvalidMsg();
         }
 
         cv::Point pt = line_points[idx];
@@ -519,6 +549,9 @@ private:
         // ROS_INFO(" ptx: %.2f, pty: %.2f, x_raw: %.2f, x_error: %.2f, y_raw: %.2f, idx: %d", static_cast<double>(pt.x), static_cast<double>(pt.y), x_raw, x_error, y_raw, target_index);
 
         msg.data = {static_cast<float>(x_error), static_cast<float>(y_raw)};
+        // 成功取得目标点：写入缓存后再返回，丢点时复用本条消息
+        last_valid_vision_line_msg_ = msg;
+        has_last_valid_vision_line_msg_ = true;
         return msg;
     }
 

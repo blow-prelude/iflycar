@@ -71,6 +71,91 @@ int track_target_p(const std::vector<cv::Point> &line_points, int target_index, 
     return x_error;
 }
 
+MidLineMode midLineModeForSide(SearchSide side)
+{
+    if (side == LEFT_ONLY)
+        return LEFT_OFFSET;
+    if (side == RIGHT_ONLY)
+        return RIGHT_OFFSET;
+    return MID_AVG;
+}
+
+SearchSide oppositeSide(SearchSide side)
+{
+    if (side == LEFT_ONLY)
+        return RIGHT_ONLY;
+    if (side == RIGHT_ONLY)
+        return LEFT_ONLY;
+    return BOTH;
+}
+
+bool cornerDetected(ImageProcess &img_process, SearchSide side)
+{
+    const bool left_found = img_process.get_left_corners() != cv::Point(0, 0);
+    const bool right_found = img_process.get_right_corners() != cv::Point(0, 0);
+    if (side == LEFT_ONLY)
+        return left_found;
+    if (side == RIGHT_ONLY)
+        return right_found;
+    return left_found || right_found;
+}
+
+// 转弯判定状态机：拐点连续出现确认转弯开始，拐点连续消失确认转弯结束
+struct CornerTurningState
+{
+    bool turning_active = false;
+    bool turn_completed = false;
+    int corner_detect_count = 0;
+    int corner_missing_count = 0;
+};
+
+void updateCornerTurningState(CornerTurningState &s, bool corner_detected,
+                              int corner_confirm_frames, int turning_end_confirm_frames)
+{
+    if (s.turn_completed)
+        return;
+
+    if (!s.turning_active)
+    {
+        s.corner_missing_count = 0;
+        if (corner_detected)
+        {
+            if (s.corner_detect_count < corner_confirm_frames)
+                ++s.corner_detect_count;
+        }
+        else
+        {
+            s.corner_detect_count = 0;
+        }
+        if (s.corner_detect_count >= corner_confirm_frames)
+        {
+            s.turning_active = true;
+            s.corner_detect_count = 0;
+            std::cout << "Corner confirmed for " << corner_confirm_frames
+                      << " consecutive frames; turning started" << std::endl;
+        }
+        return;
+    }
+
+    s.corner_detect_count = 0;
+    if (corner_detected)
+    {
+        s.corner_missing_count = 0;
+    }
+    else if (s.corner_missing_count < turning_end_confirm_frames)
+    {
+        ++s.corner_missing_count;
+    }
+    if (s.corner_missing_count >= turning_end_confirm_frames)
+    {
+        s.turning_active = false;
+        s.turn_completed = true;
+        s.corner_missing_count = 0;
+        std::cout << "Corner absent for " << turning_end_confirm_frames
+                  << " consecutive frames; turning finished" << std::endl;
+    }
+}
+
 int main()
 {
 
@@ -79,24 +164,17 @@ int main()
     std::chrono::seconds corner_delay_s_ = std::chrono::seconds(3); // 直行状态延时进入CROSS状态的时间
     SearchSide straight_track_side = LEFT_ONLY;                     // STRAIGHT_TRACKING 走哪一边：LEFT_ONLY / RIGHT_ONLY / BOTH
 
-    // 由 straight_track_side 一次性派生出的搜索侧与中线模式（循环外计算，避免每帧 switch）
-    SearchSide straight_side = BOTH;
-    MidLineMode straight_mode = MID_AVG;
-    switch (straight_track_side)
-    {
-    case LEFT_ONLY:
-        straight_side = LEFT_ONLY;
-        straight_mode = LEFT_OFFSET;
-        break;
-    case RIGHT_ONLY:
-        straight_side = RIGHT_ONLY;
-        straight_mode = RIGHT_OFFSET;
-        break;
-    default:
-        straight_side = BOTH;
-        straight_mode = MID_AVG;
-        break;
-    }
+    // 由 straight_track_side 一次性派生转弯前、转弯后的搜索侧与中线模式
+    // （循环外计算，避免每帧 switch）
+    SearchSide straight_side = straight_track_side;
+    MidLineMode straight_mode = midLineModeForSide(straight_side);
+    SearchSide post_turn_side = oppositeSide(straight_side);
+    MidLineMode post_turn_mode = midLineModeForSide(post_turn_side);
+
+    // 拐点确认与转弯结束确认的连续帧数（与 find_way_ros 默认值一致）
+    int corner_confirm_frames = 3;
+    int turning_end_confirm_frames = 3;
+    CornerTurningState corner_turning;
 
     auto pre_t = std::chrono::steady_clock::now();
     auto cur_t = pre_t;
@@ -195,18 +273,33 @@ int main()
 
                 else
                 {
-                    SearchSide side = BOTH;
-                    MidLineMode mode = MID_AVG;
-                    if (state == ProcessState::STRAIGHT_TRACKING)
-                    {
-                        side = straight_side;
-                        mode = straight_mode;
-                    }
-                    img_process.set_mid_line_mode(mode);
-
+                    // STRAIGHT_TRACKING
                     cv::Mat canvas = img_process.return_frame();
-                    img_process.get_side_line_task_2(binary_img, canvas, true, false, side);
-                    img_process.calculate_mid_line(binary_img);
+
+                    if (corner_turning.turn_completed)
+                    {
+                        // 转弯结束后切到相反单边，并采用与该侧匹配的偏移中线模式。
+                        img_process.set_mid_line_mode(post_turn_mode);
+                        img_process.get_side_line_task_2(binary_img, canvas, true, false, post_turn_side);
+                    }
+                    else
+                    {
+                        img_process.set_mid_line_mode(straight_mode);
+                        img_process.get_side_line_task_2(binary_img, canvas, true, true, straight_side);
+                        updateCornerTurningState(corner_turning, cornerDetected(img_process, straight_side),
+                                                 corner_confirm_frames, turning_end_confirm_frames);
+
+                        // 判定结束的这一帧已经按单边搜索过，立即重跑相反侧检测，
+                        // 避免中线切换延迟到下一帧。
+                        if (corner_turning.turn_completed)
+                        {
+                            img_process.set_mid_line_mode(post_turn_mode);
+                            img_process.get_side_line_task_2(binary_img, canvas, true, false, post_turn_side);
+                        }
+                    }
+
+                    // 本节点只在顶部按斜率向上补线，不向下补齐边线。
+                    img_process.calculate_mid_line(binary_img, false);
                     img_process.fit_polynomial();
 
                     img_process.draw_line(canvas, fps, state_name(state));
