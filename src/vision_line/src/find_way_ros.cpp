@@ -273,19 +273,9 @@ public:
                         processor_.set_mid_line_mode(straight_mode_);
                         processor_.get_side_line_task_2(binary_img, canvas, true, false, straight_side_);
 
-                        // 用水平白线判定转弯是否结束：中点 y 超过阈值即计数，连续达标则结束。
-                        std::vector<int> stop_line = processor_.get_stop_line(binary_img, canvas, true);
-                        bool stop_line_low = false;
-                        if (!stop_line.empty() && binary_img.rows > 0)
-                        {
-                            const float y_norm = stop_line[1] / static_cast<float>(binary_img.rows);
-                            stop_line_low = y_norm > stop_line_end_y_thresh_;
-                        }
-                        updateStopLineTurningState(stop_line_low);
-
-                        // 判定结束的这一帧已经按初始侧搜索过，立即重跑相反侧检测，
+                        // 用水平白线判定转弯是否结束；刚结束则同帧切到相反侧巡线，
                         // 避免中线切换延迟到下一帧。
-                        if (turn_completed_)
+                        if (checkStopLineTurnEnd(binary_img, canvas))
                         {
                             processor_.set_mid_line_mode(post_turn_mode_);
                             processor_.get_side_line_task_2(binary_img, canvas, true, false,
@@ -394,12 +384,33 @@ private:
         return BOTH;
     }
 
-    // 水平白线判定转弯结束：中点 y 超过阈值连续 turning_end_confirm_frames_ 帧即结束，
+    // 用水平白线判定转弯是否结束：中点 y 超过阈值连续 turning_end_confirm_frames_ 帧即结束，
     // 结束时清零对外转弯标志。初始即视为转弯进行中，无“开始”事件。
-    void updateStopLineTurningState(bool stop_line_low)
+    // 每帧在 canvas 上绘制停止线中点与阈值参考线，便于标定 stop_line_end_y_thresh_。
+    // 返回 true 表示本次调用刚判定转弯结束（调用方需同帧切到相反侧巡线）。
+    bool checkStopLineTurnEnd(cv::Mat &binary_img, cv::Mat &canvas)
     {
         if (turn_completed_)
-            return;
+            return false;
+
+        std::vector<int> stop_line = processor_.get_stop_line(binary_img, canvas, true);
+
+        bool stop_line_low = false;
+        if (!stop_line.empty() && binary_img.rows > 0)
+        {
+            const float y_norm = stop_line[1] / static_cast<float>(binary_img.rows);
+            stop_line_low = y_norm > stop_line_end_y_thresh_;
+
+            // 可视化：阈值参考线（绿）+ 中点高亮（黄环），便于观察中点何时越过阈值
+            if (canvas.rows > 0)
+            {
+                const int thresh_y = static_cast<int>(stop_line_end_y_thresh_ * canvas.rows);
+                cv::line(canvas, cv::Point(0, thresh_y), cv::Point(canvas.cols, thresh_y),
+                         cv::Scalar(0, 255, 0), 1);
+                const cv::Point center(stop_line[0], stop_line[1]);
+                cv::circle(canvas, center, 8, cv::Scalar(0, 255, 255), 2);
+            }
+        }
 
         if (stop_line_low)
         {
@@ -418,7 +429,9 @@ private:
             ros::param::set(turning_flag_param_, 0);
             ROS_INFO("Stop line midpoint y_norm > %.2f for %d consecutive frames; turning finished (%s=0)",
                      stop_line_end_y_thresh_, turning_end_confirm_frames_, turning_flag_param_.c_str());
+            return true;
         }
+        return false;
     }
 
     void resetTurningState()

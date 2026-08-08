@@ -89,6 +89,63 @@ SearchSide oppositeSide(SearchSide side)
     return BOTH;
 }
 
+// 水平白线判定转弯结束的状态：初始即视为转弯进行中，只判定结束。
+struct StopLineTurningState
+{
+    bool turn_completed = false; // 置位后常驻相反侧巡线，不再判定
+    int stop_line_end_count = 0; // 中点 y 超过阈值的连续帧数
+};
+
+// 用水平白线判定转弯是否结束：中点归一化 y 超过 y_thresh，连续 confirm_frames 帧即结束。
+// 每帧在 canvas 上绘制停止线中点与阈值参考线，便于标定 y_thresh。
+// 返回 true 表示本次调用刚判定转弯结束（调用方需同帧切到相反侧巡线）。
+bool checkStopLineTurnEnd(ImageProcess &img_process, cv::Mat &binary, cv::Mat &canvas,
+                          float y_thresh, int confirm_frames, StopLineTurningState &state)
+{
+    if (state.turn_completed)
+        return false;
+
+    std::vector<int> stop_line = img_process.get_stop_line(binary, canvas, true);
+
+    bool stop_line_low = false;
+    if (!stop_line.empty() && binary.rows > 0)
+    {
+        const float y_norm = stop_line[1] / static_cast<float>(binary.rows);
+        stop_line_low = y_norm > y_thresh;
+
+        // 可视化：阈值参考线（绿）+ 中点高亮（黄环），便于观察中点何时越过阈值
+        if (canvas.rows > 0)
+        {
+            const int thresh_y = static_cast<int>(y_thresh * canvas.rows);
+            cv::line(canvas, cv::Point(0, thresh_y), cv::Point(canvas.cols, thresh_y),
+                     cv::Scalar(0, 255, 0), 1);
+            const cv::Point center(stop_line[0], stop_line[1]);
+            cv::circle(canvas, center, 8, cv::Scalar(0, 255, 255), 2);
+        }
+    }
+
+    if (stop_line_low)
+    {
+        if (state.stop_line_end_count < confirm_frames)
+            ++state.stop_line_end_count;
+    }
+    else
+    {
+        state.stop_line_end_count = 0;
+    }
+
+    if (state.stop_line_end_count >= confirm_frames)
+    {
+        state.turn_completed = true;
+        state.stop_line_end_count = 0;
+        std::cout << "Stop line midpoint y_norm > " << y_thresh
+                  << " for " << confirm_frames
+                  << " consecutive frames; turning finished" << std::endl;
+        return true;
+    }
+    return false;
+}
+
 int main()
 {
 
@@ -105,11 +162,10 @@ int main()
     MidLineMode post_turn_mode = midLineModeForSide(post_turn_side);
 
     // 水平白线判定转弯结束：中点归一化 y 超过阈值，连续 turning_end_confirm_frames 帧即结束
-    float stop_line_end_y_thresh = 0.80f;
+    float stop_line_end_y_thresh = 0.40f;
     int turning_end_confirm_frames = 3;
     // 初始即视为转弯进行中，只判定结束；turn_completed 置位后常驻相反侧巡线
-    bool turn_completed = false;
-    int stop_line_end_count = 0;
+    StopLineTurningState stop_line_turning;
 
     auto pre_t = std::chrono::steady_clock::now();
     auto cur_t = pre_t;
@@ -211,7 +267,7 @@ int main()
                     // STRAIGHT_TRACKING
                     cv::Mat canvas = img_process.return_frame();
 
-                    if (turn_completed)
+                    if (stop_line_turning.turn_completed)
                     {
                         // 转弯结束后常驻相反单边，并采用与该侧匹配的偏移中线模式。
                         img_process.set_mid_line_mode(post_turn_mode);
@@ -223,33 +279,12 @@ int main()
                         img_process.set_mid_line_mode(straight_mode);
                         img_process.get_side_line_task_2(binary_img, canvas, true, false, straight_side);
 
-                        // 用水平白线判定转弯是否结束：中点 y 超过阈值即计数，连续达标则结束。
-                        std::vector<int> stop_line = img_process.get_stop_line(binary_img, canvas, true);
-                        bool stop_line_low = false;
-                        if (!stop_line.empty() && binary_img.rows > 0)
+                        // 用水平白线判定转弯是否结束；刚结束则同帧切到相反侧巡线，
+                        // 避免中线切换延迟到下一帧。
+                        if (checkStopLineTurnEnd(img_process, binary_img, canvas,
+                                                 stop_line_end_y_thresh, turning_end_confirm_frames,
+                                                 stop_line_turning))
                         {
-                            const float y_norm = stop_line[1] / static_cast<float>(binary_img.rows);
-                            stop_line_low = y_norm > stop_line_end_y_thresh;
-                        }
-                        if (stop_line_low)
-                        {
-                            if (stop_line_end_count < turning_end_confirm_frames)
-                                ++stop_line_end_count;
-                        }
-                        else
-                        {
-                            stop_line_end_count = 0;
-                        }
-                        if (stop_line_end_count >= turning_end_confirm_frames)
-                        {
-                            turn_completed = true;
-                            stop_line_end_count = 0;
-                            std::cout << "Stop line midpoint y_norm > " << stop_line_end_y_thresh
-                                      << " for " << turning_end_confirm_frames
-                                      << " consecutive frames; turning finished" << std::endl;
-
-                            // 判定结束的这一帧已经按初始侧搜索过，立即重跑相反侧检测，
-                            // 避免中线切换延迟到下一帧。
                             img_process.set_mid_line_mode(post_turn_mode);
                             img_process.get_side_line_task_2(binary_img, canvas, true, false, post_turn_side);
                         }
