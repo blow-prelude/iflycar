@@ -377,7 +377,7 @@ cv::Mat ImageProcess::preprocess_impl(cv::Mat &img, const cv::Mat *valid_mask_in
     // Python 版本在 preprocess 内按比例缩小图像，且使用 >= 判断边界。
     // 使用局部 Mat，避免意外修改调用方持有的输入图像。
     cv::Mat frame = img;
-    if (frame.rows >= config_.process_max_h || frame.cols >= config_.process_max_w)
+    if (frame.rows > config_.process_max_h || frame.cols > config_.process_max_w)
     {
         const double scale = std::min(static_cast<double>(config_.process_max_h) / frame.rows,
                                       static_cast<double>(config_.process_max_w) / frame.cols);
@@ -465,7 +465,7 @@ void ImageProcess::resize_frame(cv::Mat &img)
         return;
     }
 
-    if (img.rows >= this->config_.process_max_h || img.cols >= this->config_.process_max_w)
+    if (img.rows > this->config_.process_max_h || img.cols > this->config_.process_max_w)
     {
         int h = img.rows;
         int w = img.cols;
@@ -1999,7 +1999,9 @@ void ImageProcess::extend_shorter_line_to_match_min_y(int img_width)
 
     const int left_min_y = min_y(this->left_line_);
     const int right_min_y = min_y(this->right_line_);
-    if (left_min_y == right_min_y)
+    // std::cout << "Left min y: " << left_min_y << ", Right min y: " << right_min_y << std::endl;
+
+        if (left_min_y == right_min_y)
     {
         return;
     }
@@ -2007,12 +2009,6 @@ void ImageProcess::extend_shorter_line_to_match_min_y(int img_width)
     std::vector<cv::Point> &shorter_line =
         left_min_y > right_min_y ? this->left_line_ : this->right_line_;
     const int target_min_y = std::min(left_min_y, right_min_y);
-
-    // 边线检测正常情况下已经按 y 降序排列。稳定排序让本方法在有少量乱序点时
-    // 也能可靠地从 back() 继续追加顶部外推点。
-    std::stable_sort(shorter_line.begin(), shorter_line.end(),
-                     [](const cv::Point &lhs, const cv::Point &rhs)
-                     { return lhs.y > rhs.y; });
 
     const cv::Point top = shorter_line.back();
     if (top.y <= target_min_y)

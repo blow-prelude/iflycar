@@ -184,6 +184,9 @@ def warp_ground(
 
     destination = metric_destination(width_m, length_m, pixels_per_m)
     homography = homography_from_four_points(source_points, destination)
+    if not getattr(warp_ground, "_printed", False):
+        print("homography:\n", homography)
+        warp_ground._printed = True
     homography, output_size = expanded_homography(
         homography,
         ground_roi_points(ground_mask),
