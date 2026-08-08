@@ -268,7 +268,13 @@ public:
                     {
                         processor_.set_mid_line_mode(straight_mode_);
                         processor_.get_side_line_task_2(binary_img, canvas, true, true, straight_side_);
-                        updateCornerTurningState(cornerDetected(straight_side_));
+                        const bool corner_found = cornerDetected(straight_side_);
+                        updateCornerTurningState(corner_found);
+                        // 调试：打印状态机每帧演化，定位"进入转弯后为何快速判定结束"
+                        ROS_INFO("[turn-debug] corner_found=%d detect_cnt=%d missing_cnt=%d active=%d completed=%d left_corner=(%d,%d)",
+                                 corner_found, corner_detect_count_, corner_missing_count_,
+                                 turning_active_, turn_completed_,
+                                 processor_.get_left_corners().x, processor_.get_left_corners().y);
 
                         // 判定结束的这一帧已经按单边搜索过，立即重跑双边检测，
                         // 避免中线切换延迟到下一帧。

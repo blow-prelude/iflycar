@@ -286,8 +286,17 @@ int main()
                     {
                         img_process.set_mid_line_mode(straight_mode);
                         img_process.get_side_line_task_2(binary_img, canvas, true, true, straight_side);
-                        updateCornerTurningState(corner_turning, cornerDetected(img_process, straight_side),
+                        const bool corner_found = cornerDetected(img_process, straight_side);
+                        updateCornerTurningState(corner_turning, corner_found,
                                                  corner_confirm_frames, turning_end_confirm_frames);
+                        // 调试：打印状态机每帧演化，定位"进入转弯后为何快速判定结束"
+                        std::cout << "[turn-debug] corner_found=" << corner_found
+                                  << " detect_cnt=" << corner_turning.corner_detect_count
+                                  << " missing_cnt=" << corner_turning.corner_missing_count
+                                  << " active=" << corner_turning.turning_active
+                                  << " completed=" << corner_turning.turn_completed
+                                  << " left_corner=(" << img_process.get_left_corners().x
+                                  << "," << img_process.get_left_corners().y << ")" << std::endl;
 
                         // 判定结束的这一帧已经按单边搜索过，立即重跑相反侧检测，
                         // 避免中线切换延迟到下一帧。
