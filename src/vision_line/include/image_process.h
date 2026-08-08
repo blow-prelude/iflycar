@@ -153,7 +153,7 @@ public:
     bool judge_turing_end(int img_w, int img_h, MissLineState &miss_line);
     void get_side_line_task_1(cv::Mat &img, cv::Mat &canvas, bool is_draw);
     void get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_draw, bool find_corner, SearchSide side = BOTH);
-    void calculate_mid_line(cv::Mat &img);
+    void calculate_mid_line(cv::Mat &img, float left_weight = 0.5f);
 
     void draw_line(cv::Mat &canvas, float fps, std::string state);
 

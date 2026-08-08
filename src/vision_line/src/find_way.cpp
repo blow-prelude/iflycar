@@ -184,7 +184,10 @@ int main()
                 {
                     cv::Mat canvas = img_process.return_frame();
 
+                    const float left_weight = (state == ProcessState::LEFT_TURNING) ? 0.55f : 0.45f;
+                    img_process.set_mid_line_mode(MID_AVG);
                     img_process.get_side_line_task_1(binary_img, canvas, true);
+                    img_process.calculate_mid_line(binary_img, left_weight);
                     img_process.fit_polynomial2();
 
                     img_process.draw_line(canvas, fps, state_name(state));

@@ -264,7 +264,10 @@ public:
                 if (state_ == RIGHT_TRACKING || state_ == LEFT_TRACKING)
                 {
                     cv::Mat canvas = processor_.return_frame();
+                    const float left_weight = (state_ == LEFT_TRACKING) ? 0.55f : 0.45f;
+                    processor_.set_mid_line_mode(MID_AVG);
                     processor_.get_side_line_task_1(binary_img, canvas, true);
+                    processor_.calculate_mid_line(binary_img, left_weight);
                     processor_.fit_polynomial2();
 
                     // 停止线检测：更新计数，达阈值进入 STOP

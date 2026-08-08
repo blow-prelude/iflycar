@@ -1339,7 +1339,7 @@ void ImageProcess::fit_polynomial2()
     }
 }
 
-/** 逐行搜索左右边线，并完成补线、中线计算和可选调试绘制。 */
+/** 逐行搜索左右边线并执行可选调试绘制；补线与中线计算交由 calculate_mid_line 完成，与 task_2 解耦。 */
 void ImageProcess::get_side_line_task_1(cv::Mat &img, cv::Mat &canvas, bool is_draw)
 {
     if (!is_valid_binary_scan_image(img))
@@ -1540,20 +1540,6 @@ void ImageProcess::get_side_line_task_1(cv::Mat &img, cv::Mat &canvas, bool is_d
                     prev_row_right_x = mid_x + this->config_.search_offset;
                 }
             }
-        }
-
-        // 插值+填充边线（同时处理边线情况）
-        fill_boundary(this->left_line_, this->right_line_, {img_h, img_w}, this->supple_left_line_, this->supple_right_line_);
-
-        //  使用优化后的边线计算中线
-        const std::size_t n = std::min(this->supple_left_line_.size(), this->supple_right_line_.size());
-        this->mid_line_.resize(n);
-        for (std::size_t i = 0; i < n; i++)
-        {
-            const int x_sum = static_cast<int>(this->supple_left_line_[i].x) + this->supple_right_line_[i].x;
-            const int y_sum = static_cast<int>(this->supple_left_line_[i].y) + this->supple_right_line_[i].y;
-            this->mid_line_[i].x = static_cast<int>(x_sum / 2);
-            this->mid_line_[i].y = static_cast<int>(y_sum / 2);
         }
     }
     catch (const std::exception &e)
@@ -1987,8 +1973,8 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
  * 2. 按相同索引对左右填充线的点求中点，写入 mid_line_
  * 3. 更新 prev_* 成员，供下一帧 fill_boundary 的 allow_prev_fallack 使用
  */
-/** 根据当前左右边线补线，并按照当前模式计算中线。 */
-void ImageProcess::calculate_mid_line(cv::Mat &img)
+/** 根据当前左右边线补线，并按照当前模式计算中线；MID_AVG 模式下按 left_weight 对左右边线加权（左转 0.55、右转 0.45，默认 0.5 即均值）。 */
+void ImageProcess::calculate_mid_line(cv::Mat &img, float left_weight)
 {
     if (img.empty() || img.dims != 2 || img.rows <= 0 || img.cols <= 0)
     {
@@ -2030,12 +2016,14 @@ void ImageProcess::calculate_mid_line(cv::Mat &img)
     }
     else // MID_AVG
     {
-        // 使用优化后的边线计算中线
+        // 使用优化后的边线计算中线：x 按左线权重 left_weight 加权融合，y 仍取均值
         const std::size_t n = std::min(this->supple_left_line_.size(), this->supple_right_line_.size());
         this->mid_line_.resize(n);
         for (std::size_t i = 0; i < n; i++)
         {
-            this->mid_line_[i].x = (this->supple_left_line_[i].x + this->supple_right_line_[i].x) / 2.0;
+            this->mid_line_[i].x = static_cast<int>(
+                this->supple_left_line_[i].x * left_weight +
+                this->supple_right_line_[i].x * (1.0f - left_weight));
             this->mid_line_[i].y = (this->supple_left_line_[i].y + this->supple_right_line_[i].y) / 2.0;
         }
     }
