@@ -60,8 +60,10 @@ private:
     ros::NodeHandle nh_; // ROS节点句柄
     ros::Publisher cmd_vel_pub_;
     ros::Subscriber vision_sub_;
-    PIDController angular_pid_; // 角速度PID控制器
+    PIDController angular_pid_; // 角速度PID控制器（按方向切换参数）
     PIDController linear_pid_;  // 线速度PID控制器
+    // straight 用 angular_pid_ 的现参数；left/right 用另一套。
+    std::string angular_pid_dir_; // 当前 angular_pid_ 装载的方向
     VisionData vision_data_;
     int start_vision_;
     int start_vision_line2_;
@@ -80,10 +82,24 @@ private:
     // 初始化PID参数
     void initPID()
     {
-        // 角速度PID参数
+        // 角速度PID参数（straight 初始装载）
         angular_pid_ = {0.007, 0.0, 0.007, 0, 0, 0, MAX_ANGULAR_VEL};
+        angular_pid_dir_ = "straight";
         // 线速度PID参数
         linear_pid_ = {0.5, 0.01, 0.05, 0, 0, 0, MAX_LINEAR_VEL};
+    }
+
+    // 按方向切换角速度PID参数；方向变化时清空积分与微分记忆。
+    // straight 用现参数；left/right 用另一套（待调）。
+    void applyAngularPIDForDir(const std::string &dir)
+    {
+        if (dir == angular_pid_dir_)
+            return;
+        if (dir == "straight")
+            angular_pid_ = {0.007, 0.0, 0.007, 0, 0, 0, MAX_ANGULAR_VEL};
+        else // left / right
+            angular_pid_ = {0.007, 0.0, 0.007, 0, 0, 0, MAX_ANGULAR_VEL};
+        angular_pid_dir_ = dir;
     }
 
     // PID计算函数（通用）
@@ -386,6 +402,9 @@ public:
         current_y_ = nh_.param("CarY", 0.0);
         double y_err = target_y_ - current_y_;
 
+        // 按当前方向选用角速度PID参数（切换时清空积分/微分记忆）
+        applyAngularPIDForDir(last_direction_);
+
         // 处理视觉数据（y在有效范围时计算速度）
         if (y >= Y_LOWER_BOUND && y <= Y_UPPER_BOUND)
         {
@@ -445,3 +464,4 @@ int main(int argc, char **argv)
     controller.run();
     return 0;
 }
+

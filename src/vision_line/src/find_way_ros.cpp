@@ -59,7 +59,7 @@ public:
 
         // 停止线检测 / STOP 参数
         stop_line_target_ = nh_private_.param<int>("stop_line_target", 2);
-        stop_y_cross_ = nh_private_.param<double>("stop_y_cross", 0.80);
+        stop_y_cross_ = nh_private_.param<double>("stop_y_cross", 0.85);
         stop_far_min_frames_ = nh_private_.param<int>("stop_far_min_frames", 3);
         stop_near_min_frames_ = nh_private_.param<int>("stop_near_min_frames", 3);
         stop_miss_min_frames_ = nh_private_.param<int>("stop_miss_min_frames", 3);
@@ -264,7 +264,7 @@ public:
                 if (state_ == RIGHT_TRACKING || state_ == LEFT_TRACKING)
                 {
                     cv::Mat canvas = processor_.return_frame();
-                    const float left_weight = (state_ == LEFT_TRACKING) ? 0.55f : 0.45f;
+                    const float left_weight = (state_ == LEFT_TRACKING) ? 0.65f : 0.40f;
                     processor_.set_mid_line_mode(MID_AVG);
                     processor_.get_side_line_task_1(binary_img, canvas, true);
                     processor_.calculate_mid_line(binary_img, left_weight);
