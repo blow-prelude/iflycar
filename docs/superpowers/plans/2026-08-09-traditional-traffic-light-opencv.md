@@ -4,30 +4,32 @@
 
 **Goal:** Build a standalone Python/OpenCV example that recognizes the four supplied traffic-light images as `right`, `straight`, `left`, and `stop` without YOLO, RKNN, or training data.
 
-**Architecture:** A single importable script validates a BGR image, builds normalized-ROI HSV masks, locates a low-saturation bright component surrounded by red or green pixels, and classifies green glyphs using PCA plus an eight-band column projection. The same module exposes immutable result/config data types, annotation rendering, and a multi-image CLI; a focused `unittest` file covers the public behavior and the four real images.
+**Architecture:** A single importable script validates a BGR frame, converts the normalized ROI to per-frame pixel bounds, builds HSV masks, locates a low-saturation bright component surrounded by red or green pixels, and classifies green glyphs using PCA plus an eight-band column projection. The detector remains independent of file I/O for later camera-stream reuse; a no-argument demo entry point processes code-defined sample paths and writes annotations containing only the candidate box and final label.
 
-**Tech Stack:** Python 3.9.23, OpenCV 4.10.0, NumPy 2.0.2, Python standard-library `dataclasses`, `argparse`, `pathlib`, and `unittest`.
+**Tech Stack:** Python 3.9.23, OpenCV 4.10.0, NumPy 2.0.2, Python standard-library `dataclasses`, `pathlib`, `typing`, `unittest`, and `unittest.mock`.
 
 ## Global Constraints
 
-- Use `D:\Anaconda\envs\opencv39\python.exe` for every test and CLI command.
+- Use `D:\Anaconda\envs\opencv39\python.exe` for every test and demo command.
 - Do not add Python packages or modify the existing YOLO/RKNN implementation.
 - Keep the implementation independent of ROS, camera capture, C++ code, and model files.
 - Treat input as a non-empty, three-channel BGR `uint8` image; reject other shapes or dtypes with `ValueError`.
 - Return `unknown` when no candidate or no reliable direction exists; never guess a traffic instruction.
-- Use the normalized ROI `x=[0.25, 0.78)` and `y=[0.28, 0.78)`.
+- Store the ROI only as normalized coordinates `x=[0.25, 0.78)` and `y=[0.28, 0.78)`; convert them from each frame's actual width and height inside detection.
 - Use OpenCV HSV thresholds: green `H=35..100, S>=80, V>=100`; red `H=0..12` or `165..179, S>=80, V>=100`; bright core `S<=110, V>=220`.
 - At 640×480, filter bright components to width `15..90`, height `12..90`, and area at least `80`; scale lengths by `scale=min(width/640, height/480)` and areas by `scale²`.
 - Require neighborhood `color_score >= 200×scale²` and `color_score/expanded_area >= 0.10`.
-- Never overwrite source images; annotated outputs use the source stem plus `_traditional` in the explicitly requested output directory.
+- Do not parse command-line parameters; `main()` reads `SAMPLE_IMAGE_PATHS` and `OUTPUT_DIR` constants defined with project-relative paths.
+- Never overwrite source images; annotated outputs use the source stem plus `_traditional` under `build/traditional_light_cv_results`.
+- Draw only the bright-core candidate box and final label on output images. Do not draw or print the ROI. Print color score, component area, orientation, and projection peak only to the terminal.
 - The reference specification is `docs/superpowers/specs/2026-08-09-traditional-traffic-light-opencv-design.md`.
 
 ---
 
 ## File Structure
 
-- Create `src/traffic_light/scripts/traditional_light_cv.py`: configuration/result types, image validation, masks, candidate selection, shape classification, annotation, and CLI.
-- Create `src/traffic_light/test/test_traditional_light_cv.py`: standard-library unit tests, four-image regression tests, and CLI tests.
+- Create `src/traffic_light/scripts/traditional_light_cv.py`: configuration/result types, frame validation, normalized-ROI masks, candidate selection, shape classification, minimal annotation, and a fixed-path demo.
+- Create `src/traffic_light/test/test_traditional_light_cv.py`: standard-library unit tests, four-image regression tests, rendering-call tests, and fixed-path batch tests.
 - Do not modify `CMakeLists.txt`, `package.xml`, existing RKNN scripts, model files, or source images.
 
 ### Task 1: Validation, Configuration, and HSV Masks
@@ -125,7 +127,6 @@ Create `src/traffic_light/scripts/traditional_light_cv.py` with these definition
 ```python
 from __future__ import annotations
 
-import argparse
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -233,7 +234,7 @@ def build_masks(
     return Masks(roi, green, red, bright, roi_rect, scale)
 ```
 
-Keep the imported CLI names for Task 4; do not implement CLI behavior yet.
+Keep `sys`, `Path`, and `Sequence` for the fixed-path demo in Task 4; do not add argument parsing.
 
 - [ ] **Step 4: Run the tests and verify they pass**
 
@@ -606,7 +607,7 @@ git add src/traffic_light/scripts/traditional_light_cv.py src/traffic_light/test
 git commit -m "feat: classify traffic light arrow directions"
 ```
 
-### Task 4: Annotation and Multi-Image CLI
+### Task 4: Minimal Annotation and Fixed-Path Demo
 
 **Files:**
 - Modify: `src/traffic_light/scripts/traditional_light_cv.py`
@@ -614,15 +615,19 @@ git commit -m "feat: classify traffic light arrow directions"
 
 **Interfaces:**
 - Consumes: `Detection` from `detect_traffic_light`.
-- Produces: `draw_detection(image: np.ndarray, detection: Detection, config: Config = DEFAULT_CONFIG) -> np.ndarray`, `parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace`, and `main(argv: Optional[Sequence[str]] = None) -> int`.
+- Produces: `draw_detection(image: np.ndarray, detection: Detection) -> np.ndarray`, `process_images(image_paths: Sequence[Path], output_dir: Path) -> int`, and the no-argument `main() -> int`.
 
-- [ ] **Step 1: Add failing drawing and CLI tests**
+- [ ] **Step 1: Add failing minimal-rendering and fixed-batch tests**
 
 Add imports and the final test class:
 
 ```python
-import subprocess
+import io
 import tempfile
+from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
+
+import traditional_light_cv as detector
 
 from traditional_light_cv import (
     Config,
@@ -630,66 +635,83 @@ from traditional_light_cv import (
     classify_green_shape,
     detect_traffic_light,
     draw_detection,
+    process_images,
 )
 
 
-class DrawingAndCliTests(unittest.TestCase):
-    def test_draw_detection_returns_changed_copy_without_mutating_input(self):
+class DrawingAndFixedDemoTests(unittest.TestCase):
+    def test_draw_detection_only_draws_candidate_box_and_final_label(self):
         image = cv2.imread(str(PICTURES_DIR / "02051.jpg"))
         original = image.copy()
         detection = detect_traffic_light(image)
 
-        annotated = draw_detection(image, detection)
+        with mock.patch.object(
+            detector.cv2, "rectangle", wraps=cv2.rectangle
+        ) as rectangle_mock, mock.patch.object(
+            detector.cv2, "putText", wraps=cv2.putText
+        ) as text_mock:
+            annotated = draw_detection(image, detection)
 
         self.assertTrue(np.array_equal(original, image))
         self.assertFalse(np.array_equal(original, annotated))
+        self.assertEqual(1, rectangle_mock.call_count)
+        self.assertEqual(1, text_mock.call_count)
+        self.assertEqual(detection.label, text_mock.call_args.args[1])
 
-    def test_cli_processes_four_images_and_writes_annotations(self):
-        script = SCRIPT_DIR / "traditional_light_cv.py"
-        filenames = (
-            "02051.jpg",
-            "02052.jpg",
-            "003_0030.jpg",
-            "004_0001.jpg",
-        )
+    def test_process_images_writes_four_annotations_and_terminal_metrics(self):
         with tempfile.TemporaryDirectory() as output_dir:
-            command = [sys.executable, str(script)]
-            command.extend(str(PICTURES_DIR / name) for name in filenames)
-            command.extend(["--output-dir", output_dir])
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                status = process_images(
+                    detector.SAMPLE_IMAGE_PATHS, Path(output_dir)
+                )
 
-            completed = subprocess.run(
-                command, capture_output=True, text=True, check=False
-            )
-
-            self.assertEqual(0, completed.returncode, completed.stderr)
-            for name in filenames:
+            self.assertEqual(0, status)
+            terminal_output = stdout.getvalue()
+            expected_labels = {
+                "02051.jpg": "right",
+                "02052.jpg": "straight",
+                "003_0030.jpg": "left",
+                "004_0001.jpg": "stop",
+            }
+            for name, label in expected_labels.items():
+                self.assertIn(f"{name}: label={label}", terminal_output)
                 output_name = f"{Path(name).stem}_traditional{Path(name).suffix}"
                 output_path = Path(output_dir) / output_name
                 self.assertTrue(output_path.is_file(), output_path)
                 self.assertGreater(output_path.stat().st_size, 0)
+            self.assertIn("score=", terminal_output)
+            self.assertIn("area=", terminal_output)
+            self.assertIn("axis=", terminal_output)
+            self.assertIn("peak=", terminal_output)
+            self.assertNotIn("roi", terminal_output.lower())
 
-    def test_cli_continues_after_bad_input_and_returns_nonzero(self):
-        script = SCRIPT_DIR / "traditional_light_cv.py"
+    def test_process_images_continues_after_bad_input_and_returns_nonzero(self):
         with tempfile.TemporaryDirectory() as output_dir:
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    str(script),
-                    str(PICTURES_DIR / "missing.jpg"),
-                    str(PICTURES_DIR / "004_0001.jpg"),
-                    "--output-dir",
-                    output_dir,
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                status = process_images(
+                    (
+                        PICTURES_DIR / "missing.jpg",
+                        PICTURES_DIR / "004_0001.jpg",
+                    ),
+                    Path(output_dir),
+                )
 
-            self.assertEqual(1, completed.returncode)
-            self.assertIn("missing.jpg", completed.stderr)
+            self.assertEqual(1, status)
+            self.assertIn("missing.jpg", stderr.getvalue())
             self.assertTrue(
                 (Path(output_dir) / "004_0001_traditional.jpg").is_file()
             )
+
+    def test_main_uses_code_defined_paths_without_parameters(self):
+        with mock.patch.object(detector, "process_images", return_value=0) as batch:
+            status = detector.main()
+
+        self.assertEqual(0, status)
+        batch.assert_called_once_with(
+            detector.SAMPLE_IMAGE_PATHS, detector.OUTPUT_DIR
+        )
 ```
 
 - [ ] **Step 2: Run the new tests and verify the missing renderer failure**
@@ -697,7 +719,7 @@ class DrawingAndCliTests(unittest.TestCase):
 Run:
 
 ```powershell
-& 'D:\Anaconda\envs\opencv39\python.exe' 'src\traffic_light\test\test_traditional_light_cv.py' DrawingAndCliTests -v
+& 'D:\Anaconda\envs\opencv39\python.exe' 'src\traffic_light\test\test_traditional_light_cv.py' DrawingAndFixedDemoTests -v
 ```
 
 Expected: FAIL during import because `draw_detection` is not defined.
@@ -710,12 +732,9 @@ Add:
 def draw_detection(
     image: np.ndarray,
     detection: Detection,
-    config: Config = DEFAULT_CONFIG,
 ) -> np.ndarray:
     _validate_image(image)
     canvas = image.copy()
-    roi_x1, roi_y1, roi_x2, roi_y2 = _roi_rect(image, config)
-    cv2.rectangle(canvas, (roi_x1, roi_y1), (roi_x2, roi_y2), (255, 160, 0), 1)
 
     if detection.bbox is not None:
         x, y, width, height = detection.bbox
@@ -723,40 +742,40 @@ def draw_detection(
         cv2.rectangle(canvas, (x, y), (x + width, y + height), box_color, 2)
         text_origin = (x, max(18, y - 8))
     else:
-        text_origin = (roi_x1, max(18, roi_y1 - 8))
+        text_origin = (10, 24)
 
-    text = (
-        f"{detection.label} score={detection.color_score} "
-        f"area={detection.component_area} "
-        f"axis={detection.orientation} peak={detection.projection_peak}"
-    )
     cv2.putText(
         canvas,
-        text,
+        detection.label,
         text_origin,
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
+        0.65,
         (0, 255, 255),
-        1,
+        2,
         cv2.LINE_AA,
     )
     return canvas
 ```
 
-- [ ] **Step 4: Implement deterministic command-line processing and errors**
+- [ ] **Step 4: Implement project-relative constants, batch processing, and no-argument main**
 
-Add the parser and entry point:
+Add these constants after `DEFAULT_CONFIG`. They are relative to the script location and therefore contain no machine-specific workspace path:
 
 ```python
-def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Recognize fixed indoor LED traffic lights with OpenCV."
-    )
-    parser.add_argument("images", nargs="+", type=Path)
-    parser.add_argument("--output-dir", type=Path)
-    return parser.parse_args(argv)
+PACKAGE_DIR = Path(__file__).resolve().parents[1]
+WORKSPACE_ROOT = PACKAGE_DIR.parents[1]
+SAMPLE_IMAGE_PATHS = (
+    PACKAGE_DIR / "pictures" / "02051.jpg",
+    PACKAGE_DIR / "pictures" / "02052.jpg",
+    PACKAGE_DIR / "pictures" / "003_0030.jpg",
+    PACKAGE_DIR / "pictures" / "004_0001.jpg",
+)
+OUTPUT_DIR = WORKSPACE_ROOT / "build" / "traditional_light_cv_results"
+```
 
+Add the terminal formatter, batch function, and entry point. The formatted line deliberately omits ROI coordinates:
 
+```python
 def _format_detection(path: Path, detection: Detection) -> str:
     return (
         f"{path.name}: label={detection.label} bbox={detection.bbox} "
@@ -766,21 +785,19 @@ def _format_detection(path: Path, detection: Detection) -> str:
     )
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = parse_args(argv)
+def process_images(image_paths: Sequence[Path], output_dir: Path) -> int:
     failures = 0
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        print(
+            f"cannot create output directory {output_dir}: {error}",
+            file=sys.stderr,
+        )
+        return 1
 
-    if args.output_dir is not None:
-        try:
-            args.output_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as error:
-            print(
-                f"cannot create output directory {args.output_dir}: {error}",
-                file=sys.stderr,
-            )
-            return 1
-
-    for image_path in args.images:
+    for image_path in image_paths:
+        image_path = Path(image_path)
         image = cv2.imread(str(image_path))
         if image is None:
             print(f"cannot read image: {image_path}", file=sys.stderr)
@@ -790,10 +807,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         detection = detect_traffic_light(image)
         print(_format_detection(image_path, detection))
 
-        if args.output_dir is None:
-            continue
         suffix = image_path.suffix or ".png"
-        output_path = args.output_dir / f"{image_path.stem}_traditional{suffix}"
+        output_path = output_dir / f"{image_path.stem}_traditional{suffix}"
         if not cv2.imwrite(str(output_path), draw_detection(image, detection)):
             print(f"cannot write image: {output_path}", file=sys.stderr)
             failures += 1
@@ -801,11 +816,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return 1 if failures else 0
 
 
+def main() -> int:
+    return process_images(SAMPLE_IMAGE_PATHS, OUTPUT_DIR)
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 5: Run all ten tests**
+- [ ] **Step 5: Run all eleven tests**
 
 Run:
 
@@ -813,24 +832,18 @@ Run:
 & 'D:\Anaconda\envs\opencv39\python.exe' 'src\traffic_light\test\test_traditional_light_cv.py' -v
 ```
 
-Expected: `Ran 10 tests` and `OK`.
+Expected: `Ran 11 tests` and `OK`.
 
-- [ ] **Step 6: Run the real CLI and visually inspect all annotations**
+- [ ] **Step 6: Run the fixed-path demo and visually inspect all annotations**
 
 Run:
 
 ```powershell
-New-Item -ItemType Directory -Force 'build\traditional_light_cv_results'
 & 'D:\Anaconda\envs\opencv39\python.exe' `
-  'src\traffic_light\scripts\traditional_light_cv.py' `
-  'src\traffic_light\pictures\02051.jpg' `
-  'src\traffic_light\pictures\02052.jpg' `
-  'src\traffic_light\pictures\003_0030.jpg' `
-  'src\traffic_light\pictures\004_0001.jpg' `
-  --output-dir 'build\traditional_light_cv_results'
+  'src\traffic_light\scripts\traditional_light_cv.py'
 ```
 
-Expected stdout labels, in input order: `right`, `straight`, `left`, `stop`. Open the four images under `build/traditional_light_cv_results` and verify each box covers the illuminated traffic-light glyph rather than the floor reflection or ceiling lights.
+Expected stdout labels, in code-defined order: `right`, `straight`, `left`, `stop`, with score/area/axis/peak metrics and no ROI coordinates. Open the four images under `build/traditional_light_cv_results` and verify each image contains exactly one bright-core candidate box and the final label only; no ROI boundary or diagnostic metrics are drawn.
 
 - [ ] **Step 7: Commit the standalone example**
 
@@ -848,7 +861,7 @@ git commit -m "feat: add traditional traffic light OpenCV demo"
 - Verify unchanged: `src/traffic_light/scripts/judge_light_ros_correct.py`
 
 **Interfaces:**
-- Consumes: the completed public API and CLI from Tasks 1–4.
+- Consumes: the completed single-frame API and fixed-path demo from Tasks 1–4.
 - Produces: verification evidence only; no production-file changes are expected.
 
 - [ ] **Step 1: Run the complete focused test suite from the workspace root**
@@ -857,20 +870,16 @@ git commit -m "feat: add traditional traffic light OpenCV demo"
 & 'D:\Anaconda\envs\opencv39\python.exe' 'src\traffic_light\test\test_traditional_light_cv.py' -v
 ```
 
-Expected: all ten tests pass with no warnings or tracebacks.
+Expected: all eleven tests pass with no warnings or tracebacks.
 
-- [ ] **Step 2: Verify all four real labels in a no-output CLI run**
+- [ ] **Step 2: Verify the no-argument demo, terminal diagnostics, and saved images**
 
 ```powershell
 & 'D:\Anaconda\envs\opencv39\python.exe' `
-  'src\traffic_light\scripts\traditional_light_cv.py' `
-  'src\traffic_light\pictures\02051.jpg' `
-  'src\traffic_light\pictures\02052.jpg' `
-  'src\traffic_light\pictures\003_0030.jpg' `
-  'src\traffic_light\pictures\004_0001.jpg'
+  'src\traffic_light\scripts\traditional_light_cv.py'
 ```
 
-Expected: exit code `0`; one line per image; labels exactly `right`, `straight`, `left`, and `stop`; no files created.
+Expected: exit code `0`; one line per code-defined sample image; labels exactly `right`, `straight`, `left`, and `stop`; score/area/axis/peak are printed; ROI coordinates are absent; four `_traditional.jpg` images exist under `build/traditional_light_cv_results` and visually contain only one candidate box plus the final label.
 
 - [ ] **Step 3: Audit the final diff for accidental scope expansion**
 
