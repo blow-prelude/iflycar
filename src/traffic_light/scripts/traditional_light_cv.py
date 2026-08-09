@@ -57,6 +57,26 @@ class Masks:
     scale: float
 
 
+@dataclass(frozen=True)
+class Candidate:
+    bbox: BBox
+    component_mask: np.ndarray
+    color: str
+    color_score: int
+    green_score: int
+    red_score: int
+    component_area: int
+    color_density: float
+
+
+def _scaled_length(value: int, scale: float) -> int:
+    return max(1, int(round(value * scale)))
+
+
+def _scaled_area(value: int, scale: float) -> int:
+    return max(1, int(round(value * scale * scale)))
+
+
 def _validate_image(image: np.ndarray) -> None:
     if not isinstance(image, np.ndarray) or image.size == 0:
         raise ValueError("image must be a non-empty numpy array")
@@ -105,3 +125,92 @@ def build_masks(
     bright = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, kernel)
 
     return Masks(roi, green, red, bright, roi_rect, scale)
+
+
+def find_candidate(
+    masks: Masks, config: Config = DEFAULT_CONFIG
+) -> Optional[Candidate]:
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        masks.bright, connectivity=8
+    )
+    image_height, image_width = masks.bright.shape
+    min_width = _scaled_length(config.component_width[0], masks.scale)
+    max_width = _scaled_length(config.component_width[1], masks.scale)
+    min_height = _scaled_length(config.component_height[0], masks.scale)
+    max_height = _scaled_length(config.component_height[1], masks.scale)
+    min_area = _scaled_area(config.min_component_area, masks.scale)
+    min_color_score = _scaled_area(config.min_color_score, masks.scale)
+    padding = _scaled_length(config.candidate_padding, masks.scale)
+    candidates = []
+
+    for component_id in range(1, count):
+        x, y, width, height, area = stats[component_id]
+        if not (min_width <= width <= max_width):
+            continue
+        if not (min_height <= height <= max_height):
+            continue
+        if area < min_area:
+            continue
+
+        ex1 = max(0, x - padding)
+        ey1 = max(0, y - padding)
+        ex2 = min(image_width, x + width + padding)
+        ey2 = min(image_height, y + height + padding)
+        green_score = cv2.countNonZero(masks.green[ey1:ey2, ex1:ex2])
+        red_score = cv2.countNonZero(masks.red[ey1:ey2, ex1:ex2])
+        if green_score == red_score:
+            continue
+        color = "green" if green_score > red_score else "red"
+        color_score = max(green_score, red_score)
+        expanded_area = (ex2 - ex1) * (ey2 - ey1)
+        color_density = color_score / expanded_area
+        if color_score < min_color_score:
+            continue
+        if color_density < config.min_color_density:
+            continue
+
+        component_mask = np.where(
+            labels[y : y + height, x : x + width] == component_id,
+            255,
+            0,
+        ).astype(np.uint8)
+        candidates.append(
+            Candidate(
+                bbox=(int(x), int(y), int(width), int(height)),
+                component_mask=component_mask,
+                color=color,
+                color_score=int(color_score),
+                green_score=int(green_score),
+                red_score=int(red_score),
+                component_area=int(area),
+                color_density=float(color_density),
+            )
+        )
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item.color_score, item.component_area))
+
+
+def detect_traffic_light(
+    image: np.ndarray, config: Config = DEFAULT_CONFIG
+) -> Detection:
+    masks = build_masks(image, config)
+    candidate = find_candidate(masks, config)
+    if candidate is None:
+        return Detection(label="unknown")
+    if candidate.color == "red":
+        return Detection(
+            label="stop",
+            bbox=candidate.bbox,
+            color="red",
+            color_score=candidate.color_score,
+            component_area=candidate.component_area,
+        )
+    return Detection(
+        label="unknown",
+        bbox=candidate.bbox,
+        color="green",
+        color_score=candidate.color_score,
+        component_area=candidate.component_area,
+    )
