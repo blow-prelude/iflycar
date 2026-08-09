@@ -52,6 +52,7 @@ class DirectionDiagnostics:
     axis_margin: float
     eigenvalue_ratio: float
     projection_bands: tuple[int, ...]
+    projection_density: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -247,9 +248,11 @@ def classify_green_shape(component_mask: np.ndarray) -> ShapeResult:
     vx, vy = principal_axis
     abs_vx = abs(float(vx))
     abs_vy = abs(float(vy))
-    projection_bands = tuple(
-        int(cv2.countNonZero(part))
-        for part in np.array_split(component_mask, 8, axis=1)
+    band_parts = np.array_split(component_mask, 8, axis=1)
+    projection_bands = tuple(int(cv2.countNonZero(part)) for part in band_parts)
+    projection_density = tuple(
+        count / part.size if part.size else 0.0
+        for count, part in zip(projection_bands, band_parts)
     )
     minor_eigenvalue = float(eigenvalues[0])
     major_eigenvalue = float(eigenvalues[-1])
@@ -263,13 +266,14 @@ def classify_green_shape(component_mask: np.ndarray) -> ShapeResult:
         axis_margin=abs_vx - abs_vy,
         eigenvalue_ratio=eigenvalue_ratio,
         projection_bands=projection_bands,
+        projection_density=projection_density,
     )
 
     if abs_vy >= abs_vx:
         return ShapeResult("straight", "vertical", None, diagnostics)
 
-    bands = np.asarray(projection_bands)
-    peak_indices = np.flatnonzero(bands == bands.max())
+    density = np.asarray(projection_density)
+    peak_indices = np.flatnonzero(density == density.max())
     if peak_indices.size != 1:
         return ShapeResult("unknown", "horizontal", None, diagnostics)
     peak = int(peak_indices[0])

@@ -120,6 +120,29 @@ def make_arrow_mask(direction):
     raise ValueError(direction)
 
 
+def make_mask_from_logged_band_counts(counts):
+    height = 19
+    mask = np.zeros((height, 20), dtype=np.uint8)
+    band_ranges = (
+        (0, 3),
+        (3, 6),
+        (6, 9),
+        (9, 12),
+        (12, 14),
+        (14, 16),
+        (16, 18),
+        (18, 20),
+    )
+    for (start, end), count in zip(band_ranges, counts):
+        band_width = end - start
+        base, extra = divmod(count, band_width)
+        for offset, column in enumerate(range(start, end)):
+            pixels = base + (1 if offset < extra else 0)
+            top = (height - pixels) // 2
+            mask[top : top + pixels, column] = 255
+    return mask
+
+
 class ArrowClassificationTests(unittest.TestCase):
     def test_synthetic_arrow_shapes_have_expected_directions(self):
         for expected in ("straight", "left", "right"):
@@ -175,6 +198,26 @@ class ArrowClassificationTests(unittest.TestCase):
             Detection(label="left"),
             Detection(label="left", diagnostics=diagnostics),
         )
+
+    def test_unequal_band_widths_do_not_bias_right_arrow_to_left(self):
+        logged_right_bands = (
+            (15, 17, 16, 38, 36, 29, 21, 13),
+            (12, 15, 16, 37, 37, 29, 21, 12),
+            (13, 15, 16, 39, 36, 29, 20, 13),
+        )
+
+        for counts in logged_right_bands:
+            with self.subTest(counts=counts):
+                result = classify_green_shape(
+                    make_mask_from_logged_band_counts(counts)
+                )
+
+                self.assertEqual("right", result.label)
+                self.assertEqual(4, result.projection_peak)
+                self.assertGreater(
+                    result.diagnostics.projection_density[4],
+                    result.diagnostics.projection_density[3],
+                )
 
 
 class DrawingAndFixedDemoTests(unittest.TestCase):
