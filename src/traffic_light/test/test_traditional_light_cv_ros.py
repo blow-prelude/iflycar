@@ -62,6 +62,7 @@ class FpsAndOverlayTests(unittest.TestCase):
         self.assertIn("axis_margin=", message)
         self.assertIn("eig_ratio=", message)
         self.assertIn("bands=", message)
+        self.assertIn("density=", message)
 
     def test_log_tracker_reports_classification_state_changes_immediately(self):
         tracker = DetectionLogTracker()

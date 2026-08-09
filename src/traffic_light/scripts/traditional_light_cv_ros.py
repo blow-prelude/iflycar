@@ -108,6 +108,7 @@ def format_detection_log(detection: Detection) -> str:
         axis_margin = "none"
         eigenvalue_ratio = "none"
         projection_bands = "()"
+        projection_density = "()"
     else:
         pca_abs = (
             f"({diagnostics.principal_axis_abs[0]:.3f},"
@@ -116,6 +117,9 @@ def format_detection_log(detection: Detection) -> str:
         axis_margin = f"{diagnostics.axis_margin:+.3f}"
         eigenvalue_ratio = f"{diagnostics.eigenvalue_ratio:.3f}"
         projection_bands = str(diagnostics.projection_bands)
+        projection_density = "(" + ", ".join(
+            f"{value:.3f}" for value in diagnostics.projection_density
+        ) + ")"
 
     return (
         f"label={detection.label} bbox={detection.bbox} "
@@ -123,7 +127,8 @@ def format_detection_log(detection: Detection) -> str:
         f"score={detection.color_score} area={detection.component_area} "
         f"axis={detection.orientation} peak={detection.projection_peak} "
         f"pca_abs={pca_abs} axis_margin={axis_margin} "
-        f"eig_ratio={eigenvalue_ratio} bands={projection_bands}"
+        f"eig_ratio={eigenvalue_ratio} bands={projection_bands} "
+        f"density={projection_density}"
     )
 
 
