@@ -18,6 +18,8 @@ import traditional_light_cv as detector
 
 from traditional_light_cv import (
     Config,
+    Detection,
+    DirectionDiagnostics,
     build_masks,
     classify_green_shape,
     detect_traffic_light,
@@ -146,6 +148,33 @@ class ArrowClassificationTests(unittest.TestCase):
                 self.assertGreaterEqual(y, roi_y1)
                 self.assertLessEqual(x + width, roi_x2)
                 self.assertLessEqual(y + height, roi_y2)
+
+    def test_direction_diagnostics_explain_pca_axis_decision(self):
+        left = classify_green_shape(make_arrow_mask("left"))
+        straight = classify_green_shape(make_arrow_mask("straight"))
+
+        self.assertIsNotNone(left.diagnostics)
+        self.assertGreater(left.diagnostics.axis_margin, 0.0)
+        self.assertGreater(left.diagnostics.eigenvalue_ratio, 1.0)
+        self.assertEqual(8, len(left.diagnostics.projection_bands))
+
+        self.assertIsNotNone(straight.diagnostics)
+        self.assertLess(straight.diagnostics.axis_margin, 0.0)
+        self.assertGreater(straight.diagnostics.eigenvalue_ratio, 1.0)
+        self.assertEqual(8, len(straight.diagnostics.projection_bands))
+
+    def test_diagnostics_do_not_change_detection_equality(self):
+        diagnostics = DirectionDiagnostics(
+            principal_axis_abs=(0.9, 0.1),
+            axis_margin=0.8,
+            eigenvalue_ratio=2.0,
+            projection_bands=(1, 2, 3, 4, 5, 6, 7, 8),
+        )
+
+        self.assertEqual(
+            Detection(label="left"),
+            Detection(label="left", diagnostics=diagnostics),
+        )
 
 
 class DrawingAndFixedDemoTests(unittest.TestCase):
