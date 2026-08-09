@@ -68,7 +68,11 @@ echo "正在启动 ultrasound..."
 xfce4-terminal --tab --title="ultrasound" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; rosrun pcl_work ultrasound; exec bash'"
 sleep 3
 
+xfce4-terminal --title="traffic_light" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; rosrun traffic_light traditional_light_cv_ros.py; exec bash'" &
 
+xfce4-terminal --title="image_process" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; rosrun vision_line find_way_ros; exec bash'" &
+
+xfce4-terminal --title="vision_line_node" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; rosrun vision_line vision_line_node_fixed; exec bash'" &
 
 
 echo "所有 ROS 服务已在新终端窗口中启动"

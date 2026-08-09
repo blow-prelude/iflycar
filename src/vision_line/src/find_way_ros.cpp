@@ -63,7 +63,6 @@ public:
         stop_far_min_frames_ = nh_private_.param<int>("stop_far_min_frames", 3);
         stop_near_min_frames_ = nh_private_.param<int>("stop_near_min_frames", 3);
         stop_miss_min_frames_ = nh_private_.param<int>("stop_miss_min_frames", 3);
-        stop_hold_s_ = nh_private_.param<double>("stop_hold_s", 8.0);
 
         std::string initial_direction = nh_private_.param<std::string>("initial_direction", "stop");
 
@@ -161,17 +160,6 @@ public:
                     resetStopLineState();
                     has_last_valid_msg_ = false; // 换方向后清空上一帧缓存，避免方向间残留
                     ROS_INFO("State machine reset to IDLE (direction changed)");
-                }
-            }
-
-            // STOP 定时退出：到时恢复发布并清零计数
-            if (in_stop_)
-            {
-                double held = (ros::Time::now() - stop_enter_time_).toSec();
-                if (held >= stop_hold_s_)
-                {
-                    ROS_INFO("STOP exited after %.2fs, resuming publish", held);
-                    resetStopLineState();
                 }
             }
 
@@ -364,8 +352,7 @@ private:
     int loop_rate_ = 120;
 
     // ---- 停止线检测 / STOP 状态 ----
-    bool in_stop_ = false;      // STOP 抑制标志：为 true 时巡线照跑但不发布
-    ros::Time stop_enter_time_; // 进入 STOP 的时刻
+    bool in_stop_ = false;    // STOP 抑制标志：为 true 时巡线照跑但不发布
     int stop_line_count_ = 0;   // 已确认经过的停止线条数
     // 帧间去抖子状态机（跟踪单条停止线"远端→近端"的跨越）
     enum StopPhase
@@ -383,7 +370,6 @@ private:
     int stop_far_min_frames_ = 3;  // 远端连续确认帧数
     int stop_near_min_frames_ = 3; // 近端连续确认帧数
     int stop_miss_min_frames_ = 3; // 持续丢线多少帧才放弃当前 phase
-    double stop_hold_s_ = 8.0;     // STOP 持续秒数（定时退出）
 
     // ---- 中线丢帧回退：当前帧中线无效（空或太短）时，沿用上一帧有效数据 ----
     std_msgs::Float32MultiArray last_valid_msg_;
@@ -564,15 +550,15 @@ private:
         if (!in_stop_ && stop_line_count_ >= stop_line_target_)
         {
             in_stop_ = true;
-            stop_enter_time_ = ros::Time::now();
-            ROS_INFO("STOP entered: crossed %d stop lines, suppressing publish for %.2fs",
-                     stop_line_count_, stop_hold_s_);
+            ros::param::set("/vision_line_done", 1);
+            ROS_INFO("STOP entered: crossed %d stop lines, suppressing publish; /vision_line_done=1",
+                     stop_line_count_);
             return true;
         }
         return false;
     }
 
-    // 清零停止线检测全部状态（换方向复位 / STOP 定时退出时调用）
+    // 清零停止线检测全部状态（换方向复位时调用）
     void resetStopLineState()
     {
         in_stop_ = false;
