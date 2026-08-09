@@ -35,6 +35,16 @@ class Config:
 
 DEFAULT_CONFIG = Config()
 
+PACKAGE_DIR = Path(__file__).resolve().parents[1]
+WORKSPACE_ROOT = PACKAGE_DIR.parents[1]
+SAMPLE_IMAGE_PATHS = (
+    PACKAGE_DIR / "pictures" / "02051.jpg",
+    PACKAGE_DIR / "pictures" / "02052.jpg",
+    PACKAGE_DIR / "pictures" / "003_0030.jpg",
+    PACKAGE_DIR / "pictures" / "004_0001.jpg",
+)
+OUTPUT_DIR = WORKSPACE_ROOT / "build" / "traditional_light_cv_results"
+
 
 @dataclass(frozen=True)
 class Detection:
@@ -256,3 +266,79 @@ def detect_traffic_light(
         orientation=shape.orientation,
         projection_peak=shape.projection_peak,
     )
+
+
+def draw_detection(
+    image: np.ndarray,
+    detection: Detection,
+) -> np.ndarray:
+    _validate_image(image)
+    canvas = image.copy()
+
+    if detection.bbox is not None:
+        x, y, width, height = detection.bbox
+        box_color = (0, 0, 255) if detection.color == "red" else (0, 255, 0)
+        cv2.rectangle(canvas, (x, y), (x + width, y + height), box_color, 2)
+        text_origin = (x, max(18, y - 8))
+    else:
+        text_origin = (10, 24)
+
+    cv2.putText(
+        canvas,
+        detection.label,
+        text_origin,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (0, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    return canvas
+
+
+def _format_detection(path: Path, detection: Detection) -> str:
+    return (
+        f"{path.name}: label={detection.label} bbox={detection.bbox} "
+        f"color={detection.color} score={detection.color_score} "
+        f"area={detection.component_area} axis={detection.orientation} "
+        f"peak={detection.projection_peak}"
+    )
+
+
+def process_images(image_paths: Sequence[Path], output_dir: Path) -> int:
+    failures = 0
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        print(
+            f"cannot create output directory {output_dir}: {error}",
+            file=sys.stderr,
+        )
+        return 1
+
+    for image_path in image_paths:
+        image_path = Path(image_path)
+        image = cv2.imread(str(image_path))
+        if image is None:
+            print(f"cannot read image: {image_path}", file=sys.stderr)
+            failures += 1
+            continue
+
+        detection = detect_traffic_light(image)
+        print(_format_detection(image_path, detection))
+
+        suffix = image_path.suffix or ".png"
+        output_path = output_dir / f"{image_path.stem}_traditional{suffix}"
+        if not cv2.imwrite(str(output_path), draw_detection(image, detection)):
+            print(f"cannot write image: {output_path}", file=sys.stderr)
+            failures += 1
+
+    return 1 if failures else 0
+
+
+def main() -> int:
+    return process_images(SAMPLE_IMAGE_PATHS, OUTPUT_DIR)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

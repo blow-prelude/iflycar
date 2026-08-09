@@ -1,6 +1,10 @@
+import io
 import sys
+import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 import cv2
 import numpy as np
@@ -10,11 +14,15 @@ SCRIPT_DIR = PACKAGE_DIR / "scripts"
 PICTURES_DIR = PACKAGE_DIR / "pictures"
 sys.path.insert(0, str(SCRIPT_DIR))
 
+import traditional_light_cv as detector
+
 from traditional_light_cv import (
     Config,
     build_masks,
     classify_green_shape,
     detect_traffic_light,
+    draw_detection,
+    process_images,
 )
 
 
@@ -138,6 +146,81 @@ class ArrowClassificationTests(unittest.TestCase):
                 self.assertGreaterEqual(y, roi_y1)
                 self.assertLessEqual(x + width, roi_x2)
                 self.assertLessEqual(y + height, roi_y2)
+
+
+class DrawingAndFixedDemoTests(unittest.TestCase):
+    def test_draw_detection_only_draws_candidate_box_and_final_label(self):
+        image = cv2.imread(str(PICTURES_DIR / "02051.jpg"))
+        original = image.copy()
+        detection = detect_traffic_light(image)
+
+        with mock.patch.object(
+            detector.cv2, "rectangle", wraps=cv2.rectangle
+        ) as rectangle_mock, mock.patch.object(
+            detector.cv2, "putText", wraps=cv2.putText
+        ) as text_mock:
+            annotated = draw_detection(image, detection)
+
+        self.assertTrue(np.array_equal(original, image))
+        self.assertFalse(np.array_equal(original, annotated))
+        self.assertEqual(1, rectangle_mock.call_count)
+        self.assertEqual(1, text_mock.call_count)
+        self.assertEqual(detection.label, text_mock.call_args.args[1])
+
+    def test_process_images_writes_four_annotations_and_terminal_metrics(self):
+        with tempfile.TemporaryDirectory() as output_dir:
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                status = process_images(
+                    detector.SAMPLE_IMAGE_PATHS, Path(output_dir)
+                )
+
+            self.assertEqual(0, status)
+            terminal_output = stdout.getvalue()
+            expected_labels = {
+                "02051.jpg": "right",
+                "02052.jpg": "straight",
+                "003_0030.jpg": "left",
+                "004_0001.jpg": "stop",
+            }
+            for name, label in expected_labels.items():
+                self.assertIn(f"{name}: label={label}", terminal_output)
+                output_name = f"{Path(name).stem}_traditional{Path(name).suffix}"
+                output_path = Path(output_dir) / output_name
+                self.assertTrue(output_path.is_file(), output_path)
+                self.assertGreater(output_path.stat().st_size, 0)
+            self.assertIn("score=", terminal_output)
+            self.assertIn("area=", terminal_output)
+            self.assertIn("axis=", terminal_output)
+            self.assertIn("peak=", terminal_output)
+            self.assertNotIn("roi", terminal_output.lower())
+
+    def test_process_images_continues_after_bad_input_and_returns_nonzero(self):
+        with tempfile.TemporaryDirectory() as output_dir:
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                status = process_images(
+                    (
+                        PICTURES_DIR / "missing.jpg",
+                        PICTURES_DIR / "004_0001.jpg",
+                    ),
+                    Path(output_dir),
+                )
+
+            self.assertEqual(1, status)
+            self.assertIn("missing.jpg", stderr.getvalue())
+            self.assertTrue(
+                (Path(output_dir) / "004_0001_traditional.jpg").is_file()
+            )
+
+    def test_main_uses_code_defined_paths_without_parameters(self):
+        with mock.patch.object(detector, "process_images", return_value=0) as batch:
+            status = detector.main()
+
+        self.assertEqual(0, status)
+        batch.assert_called_once_with(
+            detector.SAMPLE_IMAGE_PATHS, detector.OUTPUT_DIR
+        )
 
 
 if __name__ == "__main__":
