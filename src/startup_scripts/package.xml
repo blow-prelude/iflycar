@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>startup_scripts</name>
+  <version>0.1.0</version>
+  <description>Launch files and helpers for starting the complete iFlyCar system.</description>
+
+  <maintainer email="ucar@todo.todo">ucar</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <exec_depend>camera_2d_lidar_calibration</exec_depend>
+  <exec_depend>find_signal</exec_depend>
+  <exec_depend>ourgoal</exec_depend>
+  <exec_depend>pcl_work</exec_depend>
+  <exec_depend>speech_command</exec_depend>
+  <exec_depend>traffic_light</exec_depend>
+  <exec_depend>ucar_camera</exec_depend>
+  <exec_depend>vision_line</exec_depend>
+
+  <export/>
+</package>

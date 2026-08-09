@@ -11,17 +11,11 @@ import cv2
 import numpy as np
 from traditional_light_cv import Detection, detect_traffic_light, draw_detection
 
-try:
-    import rospy
-    from cv_bridge import CvBridge, CvBridgeError
-    from sensor_msgs.msg import Image
-    from std_msgs.msg import String
-except ImportError:  # Keep FPS and frame-processing helpers testable off-ROS.
-    rospy = None
-    CvBridge = None
-    CvBridgeError = Exception
-    Image = None
-    String = None
+import rospy
+from cv_bridge import CvBridge, CvBridgeError
+from sensor_msgs.msg import Image
+from std_msgs.msg import String
+
 
 
 IMAGE_TOPIC = "/ucar_camera/image_raw"

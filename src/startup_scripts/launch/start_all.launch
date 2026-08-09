@@ -1,0 +1,25 @@
+<launch>
+  <!-- roslaunch starts roscore automatically when one is not already running. -->
+  <include file="$(find ourgoal)/launch/ourgoal.launch"/>
+
+  <node pkg="ucar_camera" type="ucar_camera.py" name="ucar_camera" output="screen"/>
+
+  <include file="$(find camera_2d_lidar_calibration)/launch/reprojection.launch"/>
+
+  <node pkg="ourgoal" type="getLaserPoint" name="getLaserPoint" output="screen"/>
+
+  <node pkg="find_signal" type="rknn_ros.py" name="find_signal" output="screen"/>
+
+  <node pkg="ourgoal" type="switch_test2" name="switch_test2" output="screen"/>
+  <node pkg="ourgoal" type="TransformListener2" name="TransformListener2" output="screen"/>
+
+  <node pkg="ourgoal" type="AI.py" name="AI" output="screen"/>
+
+  <include file="$(find speech_command)/launch/speech_command.launch"/>
+
+  <node pkg="pcl_work" type="laser2plc" name="laser2plc" output="screen"/>
+  <node pkg="pcl_work" type="ultrasound" name="ultrasound" output="screen"/>
+  <node pkg="traffic_light" type="traditional_light_cv_ros.py" name="traffic_light" output="screen"/>
+  <node pkg="vision_line" type="find_way_ros" name="image_process" output="screen"/>
+  <node pkg="vision_line" type="vision_line_node_fixed" name="vision_line_node" output="screen"/>
+</launch>
