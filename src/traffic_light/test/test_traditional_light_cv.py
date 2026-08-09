@@ -10,7 +10,12 @@ SCRIPT_DIR = PACKAGE_DIR / "scripts"
 PICTURES_DIR = PACKAGE_DIR / "pictures"
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from traditional_light_cv import Config, build_masks, detect_traffic_light
+from traditional_light_cv import (
+    Config,
+    build_masks,
+    classify_green_shape,
+    detect_traffic_light,
+)
 
 
 class MaskAndValidationTests(unittest.TestCase):
@@ -86,6 +91,53 @@ class CandidateDetectionTests(unittest.TestCase):
         self.assertGreaterEqual(y, roi_y1)
         self.assertLessEqual(x + width, roi_x2)
         self.assertLessEqual(y + height, roi_y2)
+
+
+def make_arrow_mask(direction):
+    right = np.zeros((48, 64), dtype=np.uint8)
+    cv2.rectangle(right, (8, 20), (40, 28), 255, thickness=-1)
+    cv2.fillConvexPoly(
+        right,
+        np.array([(36, 7), (59, 24), (36, 41)], dtype=np.int32),
+        255,
+    )
+    if direction == "right":
+        return right
+    if direction == "left":
+        return np.fliplr(right).copy()
+    if direction == "straight":
+        return cv2.rotate(right, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    raise ValueError(direction)
+
+
+class ArrowClassificationTests(unittest.TestCase):
+    def test_synthetic_arrow_shapes_have_expected_directions(self):
+        for expected in ("straight", "left", "right"):
+            with self.subTest(expected=expected):
+                result = classify_green_shape(make_arrow_mask(expected))
+                self.assertEqual(expected, result.label)
+
+    def test_four_supplied_images_have_expected_labels(self):
+        expected_labels = {
+            "02051.jpg": "right",
+            "02052.jpg": "straight",
+            "003_0030.jpg": "left",
+            "004_0001.jpg": "stop",
+        }
+
+        for filename, expected in expected_labels.items():
+            with self.subTest(filename=filename):
+                image = cv2.imread(str(PICTURES_DIR / filename))
+                self.assertIsNotNone(image)
+                detection = detect_traffic_light(image)
+                self.assertEqual(expected, detection.label)
+                self.assertIsNotNone(detection.bbox)
+                x, y, width, height = detection.bbox
+                roi_x1, roi_y1, roi_x2, roi_y2 = build_masks(image).roi_rect
+                self.assertGreaterEqual(x, roi_x1)
+                self.assertGreaterEqual(y, roi_y1)
+                self.assertLessEqual(x + width, roi_x2)
+                self.assertLessEqual(y + height, roi_y2)
 
 
 if __name__ == "__main__":

@@ -48,6 +48,13 @@ class Detection:
 
 
 @dataclass(frozen=True)
+class ShapeResult:
+    label: str
+    orientation: str
+    projection_peak: Optional[int]
+
+
+@dataclass(frozen=True)
 class Masks:
     roi: np.ndarray
     green: np.ndarray
@@ -192,6 +199,38 @@ def find_candidate(
     return max(candidates, key=lambda item: (item.color_score, item.component_area))
 
 
+def classify_green_shape(component_mask: np.ndarray) -> ShapeResult:
+    if not isinstance(component_mask, np.ndarray):
+        return ShapeResult("unknown", "unknown", None)
+    if component_mask.ndim != 2 or component_mask.size == 0:
+        return ShapeResult("unknown", "unknown", None)
+
+    ys, xs = np.nonzero(component_mask)
+    if xs.size < 2:
+        return ShapeResult("unknown", "unknown", None)
+
+    points_xy = np.column_stack((xs, ys)).astype(np.float64)
+    covariance = np.cov(points_xy, rowvar=False)
+    if covariance.shape != (2, 2) or not np.isfinite(covariance).all():
+        return ShapeResult("unknown", "unknown", None)
+
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    principal_axis = eigenvectors[:, int(np.argmax(eigenvalues))]
+    vx, vy = principal_axis
+    if abs(vy) >= abs(vx):
+        return ShapeResult("straight", "vertical", None)
+
+    bands = np.array(
+        [cv2.countNonZero(part) for part in np.array_split(component_mask, 8, axis=1)]
+    )
+    peak_indices = np.flatnonzero(bands == bands.max())
+    if peak_indices.size != 1:
+        return ShapeResult("unknown", "horizontal", None)
+    peak = int(peak_indices[0])
+    label = "left" if peak <= 3 else "right"
+    return ShapeResult(label, "horizontal", peak)
+
+
 def detect_traffic_light(
     image: np.ndarray, config: Config = DEFAULT_CONFIG
 ) -> Detection:
@@ -207,10 +246,13 @@ def detect_traffic_light(
             color_score=candidate.color_score,
             component_area=candidate.component_area,
         )
+    shape = classify_green_shape(candidate.component_mask)
     return Detection(
-        label="unknown",
+        label=shape.label,
         bbox=candidate.bbox,
         color="green",
         color_score=candidate.color_score,
         component_area=candidate.component_area,
+        orientation=shape.orientation,
+        projection_peak=shape.projection_peak,
     )
