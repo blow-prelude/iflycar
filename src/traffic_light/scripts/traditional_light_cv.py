@@ -318,6 +318,10 @@ def process_images(image_paths: Sequence[Path], output_dir: Path) -> int:
 
     for image_path in image_paths:
         image_path = Path(image_path)
+        if not image_path.is_file():
+            print(f"cannot read image: {image_path}", file=sys.stderr)
+            failures += 1
+            continue
         image = cv2.imread(str(image_path))
         if image is None:
             print(f"cannot read image: {image_path}", file=sys.stderr)
