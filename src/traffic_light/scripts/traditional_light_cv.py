@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
@@ -47,6 +47,14 @@ OUTPUT_DIR = WORKSPACE_ROOT / "build" / "traditional_light_cv_results"
 
 
 @dataclass(frozen=True)
+class DirectionDiagnostics:
+    principal_axis_abs: tuple[float, float]
+    axis_margin: float
+    eigenvalue_ratio: float
+    projection_bands: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class Detection:
     label: str
     bbox: BBox | None = None
@@ -55,6 +63,7 @@ class Detection:
     component_area: int = 0
     orientation: str = "unknown"
     projection_peak: int | None = None
+    diagnostics: DirectionDiagnostics | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -62,6 +71,7 @@ class ShapeResult:
     label: str
     orientation: str
     projection_peak: int | None
+    diagnostics: DirectionDiagnostics | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -235,18 +245,36 @@ def classify_green_shape(component_mask: np.ndarray) -> ShapeResult:
     eigenvalues, eigenvectors = np.linalg.eigh(covariance)
     principal_axis = eigenvectors[:, int(np.argmax(eigenvalues))]
     vx, vy = principal_axis
-    if abs(vy) >= abs(vx):
-        return ShapeResult("straight", "vertical", None)
-
-    bands = np.array(
-        [cv2.countNonZero(part) for part in np.array_split(component_mask, 8, axis=1)]
+    abs_vx = abs(float(vx))
+    abs_vy = abs(float(vy))
+    projection_bands = tuple(
+        int(cv2.countNonZero(part))
+        for part in np.array_split(component_mask, 8, axis=1)
     )
+    minor_eigenvalue = float(eigenvalues[0])
+    major_eigenvalue = float(eigenvalues[-1])
+    eigenvalue_ratio = (
+        major_eigenvalue / minor_eigenvalue
+        if minor_eigenvalue > np.finfo(np.float64).eps
+        else float("inf")
+    )
+    diagnostics = DirectionDiagnostics(
+        principal_axis_abs=(abs_vx, abs_vy),
+        axis_margin=abs_vx - abs_vy,
+        eigenvalue_ratio=eigenvalue_ratio,
+        projection_bands=projection_bands,
+    )
+
+    if abs_vy >= abs_vx:
+        return ShapeResult("straight", "vertical", None, diagnostics)
+
+    bands = np.asarray(projection_bands)
     peak_indices = np.flatnonzero(bands == bands.max())
     if peak_indices.size != 1:
-        return ShapeResult("unknown", "horizontal", None)
+        return ShapeResult("unknown", "horizontal", None, diagnostics)
     peak = int(peak_indices[0])
     label = "left" if peak <= 3 else "right"
-    return ShapeResult(label, "horizontal", peak)
+    return ShapeResult(label, "horizontal", peak, diagnostics)
 
 
 def detect_traffic_light(
@@ -273,6 +301,7 @@ def detect_traffic_light(
         component_area=candidate.component_area,
         orientation=shape.orientation,
         projection_peak=shape.projection_peak,
+        diagnostics=shape.diagnostics,
     )
 
 

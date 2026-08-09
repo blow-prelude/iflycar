@@ -93,6 +93,51 @@ def annotate_frame(
     return canvas, detection, fps
 
 
+def format_detection_log(detection: Detection) -> str:
+    """Format the values needed to diagnose unstable direction decisions."""
+    if detection.bbox is None or detection.bbox[3] <= 0:
+        bbox_ratio = "none"
+    else:
+        bbox_ratio = f"{detection.bbox[2] / detection.bbox[3]:.3f}"
+
+    diagnostics = detection.diagnostics
+    if diagnostics is None:
+        pca_abs = "none"
+        axis_margin = "none"
+        eigenvalue_ratio = "none"
+        projection_bands = "()"
+    else:
+        pca_abs = (
+            f"({diagnostics.principal_axis_abs[0]:.3f},"
+            f"{diagnostics.principal_axis_abs[1]:.3f})"
+        )
+        axis_margin = f"{diagnostics.axis_margin:+.3f}"
+        eigenvalue_ratio = f"{diagnostics.eigenvalue_ratio:.3f}"
+        projection_bands = str(diagnostics.projection_bands)
+
+    return (
+        f"label={detection.label} bbox={detection.bbox} "
+        f"bbox_ratio={bbox_ratio} color={detection.color} "
+        f"score={detection.color_score} area={detection.component_area} "
+        f"axis={detection.orientation} peak={detection.projection_peak} "
+        f"pca_abs={pca_abs} axis_margin={axis_margin} "
+        f"eig_ratio={eigenvalue_ratio} bands={projection_bands}"
+    )
+
+
+class DetectionLogTracker:
+    """Report the first decision and every later label/orientation change."""
+
+    def __init__(self) -> None:
+        self._last_state: tuple[str, str] | None = None
+
+    def update(self, detection: Detection) -> bool:
+        state = (detection.label, detection.orientation)
+        changed = state != self._last_state
+        self._last_state = state
+        return changed
+
+
 class TrafficLightRosNode:
     """Subscribe to the camera image topic and display annotated frames."""
 
@@ -106,6 +151,7 @@ class TrafficLightRosNode:
         self._frame_lock = threading.Lock()
         self._latest_frame: np.ndarray | None = None
         self._fps_meter = FpsMeter()
+        self._log_tracker = DetectionLogTracker()
         self._subscriber = rospy.Subscriber(
             IMAGE_TOPIC,
             Image,
@@ -140,17 +186,11 @@ class TrafficLightRosNode:
                     continue
 
                 canvas, detection, _ = annotate_frame(frame, self._fps_meter)
-                rospy.loginfo_throttle(
-                    1.0,
-                    "label=%s bbox=%s color=%s score=%d area=%d axis=%s peak=%s",
-                    detection.label,
-                    detection.bbox,
-                    detection.color,
-                    detection.color_score,
-                    detection.component_area,
-                    detection.orientation,
-                    detection.projection_peak,
-                )
+                log_message = format_detection_log(detection)
+                if self._log_tracker.update(detection):
+                    rospy.loginfo("decision_changed %s", log_message)
+                else:
+                    rospy.loginfo_throttle(1.0, log_message)
                 cv2.imshow(WINDOW_NAME, canvas)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (27, ord("q")):
