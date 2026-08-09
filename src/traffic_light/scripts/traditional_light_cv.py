@@ -1,32 +1,32 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
 
-BBox = Tuple[int, int, int, int]
+BBox = tuple[int, int, int, int]
 
 
 @dataclass(frozen=True)
 class Config:
-    roi_x: Tuple[float, float] = (0.25, 0.78)
-    roi_y: Tuple[float, float] = (0.28, 0.78)
-    reference_size: Tuple[int, int] = (640, 480)
-    green_low: Tuple[int, int, int] = (35, 80, 100)
-    green_high: Tuple[int, int, int] = (100, 255, 255)
-    red_low_1: Tuple[int, int, int] = (0, 80, 100)
-    red_high_1: Tuple[int, int, int] = (12, 255, 255)
-    red_low_2: Tuple[int, int, int] = (165, 80, 100)
-    red_high_2: Tuple[int, int, int] = (179, 255, 255)
-    bright_low: Tuple[int, int, int] = (0, 0, 220)
-    bright_high: Tuple[int, int, int] = (179, 110, 255)
+    roi_x: tuple[float, float] = (0.25, 0.78)
+    roi_y: tuple[float, float] = (0.28, 0.78)
+    reference_size: tuple[int, int] = (640, 480)
+    green_low: tuple[int, int, int] = (35, 80, 100)
+    green_high: tuple[int, int, int] = (100, 255, 255)
+    red_low_1: tuple[int, int, int] = (0, 80, 100)
+    red_high_1: tuple[int, int, int] = (12, 255, 255)
+    red_low_2: tuple[int, int, int] = (165, 80, 100)
+    red_high_2: tuple[int, int, int] = (179, 255, 255)
+    bright_low: tuple[int, int, int] = (0, 0, 220)
+    bright_high: tuple[int, int, int] = (179, 110, 255)
     close_kernel_size: int = 3
-    component_width: Tuple[int, int] = (15, 90)
-    component_height: Tuple[int, int] = (12, 90)
+    component_width: tuple[int, int] = (15, 90)
+    component_height: tuple[int, int] = (12, 90)
     min_component_area: int = 80
     candidate_padding: int = 10
     min_color_score: int = 200
@@ -49,19 +49,19 @@ OUTPUT_DIR = WORKSPACE_ROOT / "build" / "traditional_light_cv_results"
 @dataclass(frozen=True)
 class Detection:
     label: str
-    bbox: Optional[BBox] = None
+    bbox: BBox | None = None
     color: str = "unknown"
     color_score: int = 0
     component_area: int = 0
     orientation: str = "unknown"
-    projection_peak: Optional[int] = None
+    projection_peak: int | None = None
 
 
 @dataclass(frozen=True)
 class ShapeResult:
     label: str
     orientation: str
-    projection_peak: Optional[int]
+    projection_peak: int | None
 
 
 @dataclass(frozen=True)
@@ -123,11 +123,19 @@ def build_masks(
     x1, y1, x2, y2 = roi_rect
 
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    green = cv2.inRange(hsv, config.green_low, config.green_high)
-    red_1 = cv2.inRange(hsv, config.red_low_1, config.red_high_1)
-    red_2 = cv2.inRange(hsv, config.red_low_2, config.red_high_2)
+    green_low = np.asarray(config.green_low, dtype=np.uint8)
+    green_high = np.asarray(config.green_high, dtype=np.uint8)
+    red_low_1 = np.asarray(config.red_low_1, dtype=np.uint8)
+    red_high_1 = np.asarray(config.red_high_1, dtype=np.uint8)
+    red_low_2 = np.asarray(config.red_low_2, dtype=np.uint8)
+    red_high_2 = np.asarray(config.red_high_2, dtype=np.uint8)
+    bright_low = np.asarray(config.bright_low, dtype=np.uint8)
+    bright_high = np.asarray(config.bright_high, dtype=np.uint8)
+    green = cv2.inRange(hsv, green_low, green_high)
+    red_1 = cv2.inRange(hsv, red_low_1, red_high_1)
+    red_2 = cv2.inRange(hsv, red_low_2, red_high_2)
     red = cv2.bitwise_or(red_1, red_2)
-    bright = cv2.inRange(hsv, config.bright_low, config.bright_high)
+    bright = cv2.inRange(hsv, bright_low, bright_high)
 
     roi = np.zeros((height, width), dtype=np.uint8)
     roi[y1:y2, x1:x2] = 255
@@ -146,7 +154,7 @@ def build_masks(
 
 def find_candidate(
     masks: Masks, config: Config = DEFAULT_CONFIG
-) -> Optional[Candidate]:
+) -> Candidate | None:
     count, labels, stats, _ = cv2.connectedComponentsWithStats(
         masks.bright, connectivity=8
     )
