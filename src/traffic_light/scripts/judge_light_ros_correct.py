@@ -1,8 +1,11 @@
 #!/home/ucar/venv3.9/bin/python3
+from __future__ import annotations
+
 import os
 import queue
 import threading
 import time
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -24,6 +27,329 @@ NMS_THRESH = 0.45
 IMG_SIZE = (640, 640)  # (width, height), such as (1280, 736)
 
 CLASSES = ("stop", "straight", "right", "left")
+
+BBox = tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class Config:
+    reference_size: tuple[int, int] = (640, 480)
+    green_low: tuple[int, int, int] = (35, 80, 100)
+    green_high: tuple[int, int, int] = (100, 255, 255)
+    red_low_1: tuple[int, int, int] = (0, 80, 100)
+    red_high_1: tuple[int, int, int] = (12, 255, 255)
+    red_low_2: tuple[int, int, int] = (165, 80, 100)
+    red_high_2: tuple[int, int, int] = (179, 255, 255)
+    bright_low: tuple[int, int, int] = (0, 0, 220)
+    bright_high: tuple[int, int, int] = (179, 110, 255)
+    close_kernel_size: int = 3
+    component_width: tuple[int, int] = (15, 90)
+    component_height: tuple[int, int] = (12, 90)
+    min_component_area: int = 80
+    roi_padding: int = 10
+    candidate_padding: int = 10
+    min_color_score: int = 200
+    min_color_density: float = 0.10
+
+
+DEFAULT_CONFIG = Config()
+
+
+@dataclass(frozen=True)
+class DirectionDiagnostics:
+    principal_axis_abs: tuple[float, float]
+    axis_margin: float
+    eigenvalue_ratio: float
+    projection_bands: tuple[int, ...]
+    projection_density: tuple[float, ...] = ()
+
+
+@dataclass(frozen=True)
+class Detection:
+    label: str = "unknown"
+    bbox: BBox | None = None
+    color: str = "unknown"
+    color_score: int = 0
+    component_area: int = 0
+    orientation: str = "unknown"
+    projection_peak: int | None = None
+    diagnostics: DirectionDiagnostics | None = field(default=None, compare=False)
+
+
+@dataclass(frozen=True)
+class ShapeResult:
+    label: str
+    orientation: str
+    projection_peak: int | None
+    diagnostics: DirectionDiagnostics | None = field(default=None, compare=False)
+
+
+@dataclass(frozen=True)
+class Masks:
+    green: np.ndarray
+    red: np.ndarray
+    bright: np.ndarray
+    scale: float
+
+
+@dataclass(frozen=True)
+class Candidate:
+    bbox: BBox
+    component_mask: np.ndarray
+    color: str
+    color_score: int
+    component_area: int
+    color_density: float
+
+
+def _scaled_length(value, scale):
+    return max(1, int(round(value * scale)))
+
+
+def _scaled_area(value, scale):
+    return max(1, int(round(value * scale * scale)))
+
+
+def _validate_image(image):
+    if not isinstance(image, np.ndarray) or image.size == 0:
+        raise ValueError("image must be a non-empty numpy array")
+    if image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError("image must be a three-channel BGR image")
+    if image.dtype != np.uint8:
+        raise ValueError("image dtype must be uint8")
+
+
+def _normalize_roi(image, roi_xyxy, config, scale):
+    try:
+        values = np.asarray(roi_xyxy, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if values.size < 4 or not np.isfinite(values[:4]).all():
+        return None
+
+    pad = _scaled_length(config.roi_padding, scale)
+    height, width = image.shape[:2]
+    x1 = max(0, int(np.floor(values[0])) - pad)
+    y1 = max(0, int(np.floor(values[1])) - pad)
+    x2 = min(width, int(np.ceil(values[2])) + pad)
+    y2 = min(height, int(np.ceil(values[3])) + pad)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return x1, y1, x2, y2
+
+
+def build_masks(image, roi_rect, scale, config=DEFAULT_CONFIG):
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    green = cv2.inRange(
+        hsv,
+        np.asarray(config.green_low, dtype=np.uint8),
+        np.asarray(config.green_high, dtype=np.uint8),
+    )
+    red_1 = cv2.inRange(
+        hsv,
+        np.asarray(config.red_low_1, dtype=np.uint8),
+        np.asarray(config.red_high_1, dtype=np.uint8),
+    )
+    red_2 = cv2.inRange(
+        hsv,
+        np.asarray(config.red_low_2, dtype=np.uint8),
+        np.asarray(config.red_high_2, dtype=np.uint8),
+    )
+    red = cv2.bitwise_or(red_1, red_2)
+    bright = cv2.inRange(
+        hsv,
+        np.asarray(config.bright_low, dtype=np.uint8),
+        np.asarray(config.bright_high, dtype=np.uint8),
+    )
+
+    x1, y1, x2, y2 = roi_rect
+    roi_mask = np.zeros(image.shape[:2], dtype=np.uint8)
+    roi_mask[y1:y2, x1:x2] = 255
+    bright = cv2.bitwise_and(bright, roi_mask)
+
+    kernel_size = max(1, int(config.close_kernel_size))
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)
+    )
+    bright = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, kernel)
+    return Masks(green=green, red=red, bright=bright, scale=scale)
+
+
+def find_candidate(masks, config=DEFAULT_CONFIG):
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        masks.bright, connectivity=8
+    )
+    image_height, image_width = masks.bright.shape
+    min_width = _scaled_length(config.component_width[0], masks.scale)
+    max_width = _scaled_length(config.component_width[1], masks.scale)
+    min_height = _scaled_length(config.component_height[0], masks.scale)
+    max_height = _scaled_length(config.component_height[1], masks.scale)
+    min_area = _scaled_area(config.min_component_area, masks.scale)
+    min_color_score = _scaled_area(config.min_color_score, masks.scale)
+    padding = _scaled_length(config.candidate_padding, masks.scale)
+    candidates = []
+
+    for component_id in range(1, count):
+        x, y, width, height, area = stats[component_id]
+        if not (min_width <= width <= max_width):
+            continue
+        if not (min_height <= height <= max_height):
+            continue
+        if area < min_area:
+            continue
+
+        ex1 = max(0, x - padding)
+        ey1 = max(0, y - padding)
+        ex2 = min(image_width, x + width + padding)
+        ey2 = min(image_height, y + height + padding)
+        green_score = cv2.countNonZero(masks.green[ey1:ey2, ex1:ex2])
+        red_score = cv2.countNonZero(masks.red[ey1:ey2, ex1:ex2])
+        if green_score == red_score:
+            continue
+
+        color = "green" if green_score > red_score else "red"
+        color_score = max(green_score, red_score)
+        expanded_area = (ex2 - ex1) * (ey2 - ey1)
+        color_density = color_score / expanded_area
+        if color_score < min_color_score:
+            continue
+        if color_density < config.min_color_density:
+            continue
+
+        component_mask = np.where(
+            labels[y : y + height, x : x + width] == component_id,
+            255,
+            0,
+        ).astype(np.uint8)
+        candidates.append(
+            Candidate(
+                bbox=(int(x), int(y), int(width), int(height)),
+                component_mask=component_mask,
+                color=color,
+                color_score=int(color_score),
+                component_area=int(area),
+                color_density=float(color_density),
+            )
+        )
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item.color_score, item.component_area))
+
+
+def classify_green_shape(component_mask):
+    if not isinstance(component_mask, np.ndarray):
+        return ShapeResult("unknown", "unknown", None)
+    if component_mask.ndim != 2 or component_mask.size == 0:
+        return ShapeResult("unknown", "unknown", None)
+
+    ys, xs = np.nonzero(component_mask)
+    if xs.size < 2:
+        return ShapeResult("unknown", "unknown", None)
+
+    points_xy = np.column_stack((xs, ys)).astype(np.float64)
+    covariance = np.cov(points_xy, rowvar=False)
+    if covariance.shape != (2, 2) or not np.isfinite(covariance).all():
+        return ShapeResult("unknown", "unknown", None)
+
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    principal_axis = eigenvectors[:, int(np.argmax(eigenvalues))]
+    abs_vx = abs(float(principal_axis[0]))
+    abs_vy = abs(float(principal_axis[1]))
+    band_parts = np.array_split(component_mask, 8, axis=1)
+    projection_bands = tuple(
+        int(cv2.countNonZero(part)) if part.size else 0 for part in band_parts
+    )
+    projection_density = tuple(
+        count / part.size if part.size else 0.0
+        for count, part in zip(projection_bands, band_parts)
+    )
+    minor_eigenvalue = float(eigenvalues[0])
+    major_eigenvalue = float(eigenvalues[-1])
+    eigenvalue_ratio = (
+        major_eigenvalue / minor_eigenvalue
+        if minor_eigenvalue > np.finfo(np.float64).eps
+        else float("inf")
+    )
+    diagnostics = DirectionDiagnostics(
+        principal_axis_abs=(abs_vx, abs_vy),
+        axis_margin=abs_vx - abs_vy,
+        eigenvalue_ratio=eigenvalue_ratio,
+        projection_bands=projection_bands,
+        projection_density=projection_density,
+    )
+
+    if abs_vy >= abs_vx:
+        return ShapeResult("straight", "vertical", None, diagnostics)
+
+    density = np.asarray(projection_density)
+    peak_indices = np.flatnonzero(density == density.max())
+    if peak_indices.size != 1:
+        return ShapeResult("unknown", "horizontal", None, diagnostics)
+    peak = int(peak_indices[0])
+    label = "left" if peak <= 3 else "right"
+    return ShapeResult(label, "horizontal", peak, diagnostics)
+
+
+def detect_traffic_light_in_roi(image, roi_xyxy, config=DEFAULT_CONFIG):
+    _validate_image(image)
+    reference_width, reference_height = config.reference_size
+    scale = min(
+        image.shape[1] / reference_width,
+        image.shape[0] / reference_height,
+    )
+    roi_rect = _normalize_roi(image, roi_xyxy, config, scale)
+    if roi_rect is None:
+        return Detection()
+
+    masks = build_masks(image, roi_rect, scale, config)
+    candidate = find_candidate(masks, config)
+    if candidate is None:
+        return Detection()
+    if candidate.color == "red":
+        return Detection(
+            label="stop",
+            bbox=candidate.bbox,
+            color="red",
+            color_score=candidate.color_score,
+            component_area=candidate.component_area,
+        )
+
+    shape = classify_green_shape(candidate.component_mask)
+    return Detection(
+        label=shape.label,
+        bbox=candidate.bbox,
+        color="green",
+        color_score=candidate.color_score,
+        component_area=candidate.component_area,
+        orientation=shape.orientation,
+        projection_peak=shape.projection_peak,
+        diagnostics=shape.diagnostics,
+    )
+
+
+def draw_detection(image, detection):
+    _validate_image(image)
+    canvas = image.copy()
+    if detection.bbox is not None:
+        x, y, width, height = detection.bbox
+        box_color = (0, 0, 255) if detection.color == "red" else (0, 255, 0)
+        cv2.rectangle(canvas, (x, y), (x + width, y + height), box_color, 2)
+        text_origin = (x, max(18, y - 8))
+    else:
+        text_origin = (10, 24)
+
+    cv2.putText(
+        canvas,
+        detection.label,
+        text_origin,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (0, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    return canvas
 
 
 def sigmoid(x):
@@ -173,87 +499,6 @@ def post_process(input_data):
     scores = np.concatenate(nscores)
 
     return boxes, classes, scores
-
-
-def check_arrow_direction(img_src, box_letterbox, co_helper):
-    """OpenCV 复核交通灯箭头方向。
-
-    用 HSV 高V高S 提取亮绿核心区域，取最大连通域；以核心质心 x 相对
-    检测框中心 (cx_bbox) 的偏移定方向：核心在左=>left，核心在右=>right，
-    |offset|<=band 视为居中不可靠返回 None。打印 cx_core/cx_bbox/offset/area
-    便于验证核心是否稳定落在大头侧。
-    返回 "left"/"right"/None。
-    """
-    if box_letterbox is None or len(box_letterbox) < 4:
-        return None
-    real_box = co_helper.get_real_box(np.array(box_letterbox, dtype=np.float32).reshape(1, -1))[0]
-    x1, y1, x2, y2 = [int(v) for v in real_box]
-    h0, w0 = img_src.shape[:2]
-    pad = 5
-    x1 = max(0, x1 - pad)
-    y1 = max(0, y1 - pad)
-    x2 = min(w0, x2 + pad)
-    y2 = min(h0, y2 + pad)
-    if x2 - x1 < 8 or y2 - y1 < 8:
-        return None
-
-    roi = img_src[y1:y2, x1:x2]
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    # hue 放宽到 100 容青绿; 去掉开运算(它在把勉强抓到的薄绿色削掉)
-    mask = cv2.inRange(hsv, (35, 60, 60), (100, 255, 255))
-
-    num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    mask_area = int(mask.sum() // 255)
-    if num <= 1:
-        print(
-            f"arrow None: no green component | mask_total={mask_area} roi={x2-x1}x{y2-y1}",
-            flush=True,
-        )
-        return None
-    largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    area = stats[largest, cv2.CC_STAT_AREA]
-    if area < 80:
-        print(
-            f"arrow None: largest too small | area={area} ncomp={num-1} mask_total={mask_area}",
-            flush=True,
-        )
-        return None
-
-    comp = (labels == largest)
-    ys, xs = np.where(labels == largest)
-    if xs.size == 0:
-        return None
-    # ROI 宽切成 8 段, 峰段位置区分方向(左转峰在 idx<=2, 右转峰在 idx>=3)
-    col_mass = comp.sum(axis=0)
-    w = comp.shape[1]
-    seg = max(1, w // 8)
-    bands = [int(col_mass[i*seg:(i+1)*seg].sum()) for i in range(8)]
-    peak_idx = int(np.argmax(bands))
-    result = "left" if peak_idx <= 2 else "right"
-    print(
-        f"arrow check: bands={bands} peak_idx={peak_idx} "
-        f"area={area} w={w} -> {result}",
-        flush=True,
-    )
-    return result
-
-
-def draw(image, boxes, scores, classes):
-    for box, score, cl in zip(boxes, scores, classes):
-        top, left, right, bottom = [int(_b) for _b in box]
-        rospy.loginfo(
-            "%s @ (%d %d %d %d) %.3f" % (CLASSES[cl], top, left, right, bottom, score)
-        )
-        cv2.rectangle(image, (top, left), (right, bottom), (255, 0, 0), 2)
-        cv2.putText(
-            image,
-            "{0} {1:.2f}".format(CLASSES[cl], score),
-            (top, left - 6),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 0, 255),
-            2,
-        )
 
 
 def setup_model(model_path, target="rk3588", device_id=RKNNLite.NPU_CORE_0_1):
@@ -461,65 +706,61 @@ def main():
             # 从输出队列获取结果并显示
             try:
                 result = output_queue.get(timeout=0.1)
-                img_rgb = result["img_rgb"]
                 boxes = result["boxes"]
-                classes = result["classes"]
                 scores = result["scores"]
                 inference_time = result["inference_time"]
                 worker_id = result["worker_id"]
 
-                # 发布检测到的方向到 /vision_line_direction 话题
-                if scores is not None and len(scores) > 0:
+                detection = Detection()
+                if boxes is not None and scores is not None and len(scores) > 0:
                     best_idx = int(scores.argmax())
                     best_score = scores[best_idx]
-                    best_class = (
-                        classes[best_idx]
-                        if classes is not None and len(classes) > best_idx
-                        else None
-                    )
                 else:
                     best_idx = None
                     best_score = 0
-                    best_class = None
 
                 rospy.loginfo(
-                    f"worker-{worker_id}: best_class: {best_class}, best_score: {best_score} ,inference time: {inference_time:.4f} s"
+                    f"worker-{worker_id}: best_score: {best_score}, "
+                    f"inference time: {inference_time:.4f} s"
                 )
 
-                if best_class is not None and best_score >= OBJ_THRESH:
-                    direction_name = CLASSES[best_class]
-                    publish = True
-                    if direction_name in ("left", "right") and best_idx is not None:
-                        cv_dir = check_arrow_direction(
-                            img_src, boxes[best_idx], co_helper
-                        )
-                        if cv_dir is None:
-                            publish = False
-                            print(
-                                "CV unsure (None), skip publish this frame",
-                                flush=True,
-                            )
-                        elif cv_dir != direction_name:
-                            rospy.loginfo(
-                                f"OpenCV override: {direction_name} -> {cv_dir}"
-                            )
-                            direction_name = cv_dir
-                    if publish:
-                        if pub_counter % pub_skip_n != 0:
-                            pub_counter += 1
-                        else:
-                            pub_counter += 1
-                            direction_pub.publish(String(direction_name))
-                            rospy.loginfo(f"Detected direction: {direction_name}")
-                            # 等待消息被消费，避免订阅者未收到就退出
-                            if direction_name != "stop":
-                                time.sleep(1.0)
-                                break
+                if best_idx is not None and best_score >= OBJ_THRESH:
+                    real_box = co_helper.get_real_box(
+                        np.asarray(
+                            boxes[best_idx], dtype=np.float32
+                        ).reshape(1, -1)
+                    )[0]
+                    detection = detect_traffic_light_in_roi(img_src, real_box)
+
+                direction_name = detection.label
+                detection_log = (
+                    f"traditional: label={direction_name}, "
+                    f"bbox={detection.bbox}, color={detection.color}, "
+                    f"score={detection.color_score}, "
+                    f"area={detection.component_area}, "
+                    f"axis={detection.orientation}, "
+                    f"peak={detection.projection_peak}"
+                )
+
+                if direction_name != "unknown":
+                    rospy.loginfo(detection_log)
+                    if pub_counter % pub_skip_n != 0:
+                        pub_counter += 1
+                    else:
+                        pub_counter += 1
+                        direction_pub.publish(String(direction_name))
+                        rospy.loginfo(f"Detected direction: {direction_name}")
+                        # 等待消息被消费，避免订阅者未收到就退出
+                        if direction_name != "stop":
+                            time.sleep(1.0)
+                            break
+                else:
+                    rospy.loginfo_throttle(
+                        1.0, f"{detection_log}, skip frame"
+                    )
 
                 # 在主线程中绘制结果
-                canvas = img_src.copy()
-                if boxes is not None:
-                    draw(canvas, co_helper.get_real_box(boxes), scores, classes)
+                canvas = draw_detection(img_src, detection)
 
                 # 统计FPS
                 current_time = time.perf_counter()

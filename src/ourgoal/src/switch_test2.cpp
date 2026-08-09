@@ -3,7 +3,7 @@
 #include <chrono>
 
 // 导航点宏定义
-#define goto_B sendPos(-1.56, -0.5, 3.14)
+// #define goto_B sendPos(-1.56, -0.5, 3.14)
 #define goto_D sendPos(0.2, -3.2, -1.57)
 
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseAction;
@@ -385,56 +385,150 @@ void OURSWITCH::GotoA()
 // =========================================================================
 void OURSWITCH::GotoB()
 {
-    ROS_INFO("Entering GotoB state: Navigating to Point B");
+    ROS_INFO("Entering GotoB state: Multi-point QR search");
 
-    goto_B;
-    while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED) && ros::ok())
+    struct Pose
     {
-        ros::spinOnce();
-    }
-    ROS_INFO("Arrived at Point B!");
+        double x;
+        double y;
+        double yaw;
+    };
 
-    // 🚑 到了 B 点必须第一时间通知 AI 开启摄像头或开始结算！
-    nh_.setParam("start_qr_scan", 1);
+    std::vector<Pose> qr_points = {
+        {-1.56, -0.50, 3.14},
+        {-1.56, -0.70, 3.14},
+        {-1.56, -0.30, 3.14}
+    };
 
-    // ================= 核心战术：检查是否在路上已经扫齐了 =================
     int scan_done = 0;
-    nh_.getParam("qr_scan_done", scan_done);
+    bool start_qr_scan_sent = false;
 
-    if (scan_done == 1) 
-    {
-        ROS_INFO("🏆 PERFECT! All 3 QR codes were already scanned during GotoA!");
-    } 
-    else 
-    {
-        ROS_WARN("⚠️ Not all QR codes found yet. Starting [Continuous Spin] search...");
-        
-        geometry_msgs::Twist spin_cmd;
-        ros::Rate r(10); 
-        
-        // 持续匀速旋转策略
-        // 注意：角速度设置得越慢，拖影越小，扫上的概率越大。这里设为 0.3。
-        spin_cmd.angular.z = 0.3; 
+    const double spin_speed = 0.30;
+    const double spin_duration = 2.0 * M_PI / spin_speed + 1.0;
+    const double nav_timeout = 15.0;
 
-        while (scan_done == 0 && ros::ok())
+    for (int i = 0; i < (int)qr_points.size() && ros::ok(); ++i)
+    {
+        nh_.getParam("qr_scan_done", scan_done);
+        if (scan_done == 1)
         {
-            cmd_vel_pub__.publish(spin_cmd);
-            
-            nh_.getParam("qr_scan_done", scan_done);
-            ros::spinOnce();
-            r.sleep();
+            ROS_INFO("All 3 QR codes already found before point %d", i + 1);
+            break;
         }
 
-        // 扫齐后彻底刹车
-        spin_cmd.angular.z = 0.0;
-        cmd_vel_pub__.publish(spin_cmd);
-        ROS_INFO("3 QR Codes found! Car stopped.");
+        ROS_INFO("Navigating to QR observation point %d", i + 1);
+        sendPos(qr_points[i].x, qr_points[i].y, qr_points[i].yaw);
+
+        bool arrived = ac_.waitForResult(ros::Duration(nav_timeout));
+        if (!arrived)
+        {
+            ROS_WARN("QR point %d timeout, cancel and go next", i + 1);
+            ac_.cancelGoal();
+            continue;
+        }
+
+        if (ac_.getState() != actionlib::SimpleClientGoalState::SUCCEEDED)
+        {
+            ROS_WARN("QR point %d unreachable, state=%s",
+                     i + 1, ac_.getState().toString().c_str());
+            continue;
+        }
+
+        ROS_INFO("Arrived QR point %d", i + 1);
+
+        geometry_msgs::Twist stop_cmd;
+        cmd_vel_pub__.publish(stop_cmd);
+        ros::Duration(0.3).sleep();
+
+        // 关键：到第一个成功抵达的观察点后，再通知 AI.py 开始最终二维码流程
+        if (!start_qr_scan_sent)
+        {
+            nh_.setParam("start_qr_scan", 1);
+            start_qr_scan_sent = true;
+            ROS_INFO("start_qr_scan set to 1 after arriving first QR point");
+        }
+
+        nh_.getParam("qr_scan_done", scan_done);
+        if (scan_done == 1)
+        {
+            ROS_INFO("All 3 QR codes found before spinning at point %d", i + 1);
+            break;
+        }
+
+        ROS_INFO("Rotating one circle at QR point %d", i + 1);
+
+        geometry_msgs::Twist spin_cmd;
+        spin_cmd.angular.z = spin_speed;
+
+        ros::Time spin_start = ros::Time::now();
+        ros::Rate rate(20);
+
+        while (ros::ok() && (ros::Time::now() - spin_start).toSec() < spin_duration)
+        {
+            nh_.getParam("qr_scan_done", scan_done);
+            if (scan_done == 1)
+            {
+                ROS_INFO("All 3 QR codes found while spinning at point %d", i + 1);
+                break;
+            }
+
+            cmd_vel_pub__.publish(spin_cmd);
+            ros::spinOnce();
+            rate.sleep();
+        }
+
+        cmd_vel_pub__.publish(stop_cmd);
+        ros::Duration(0.3).sleep();
+
+        nh_.getParam("qr_scan_done", scan_done);
+        if (scan_done == 1)
+        {
+            ROS_INFO("QR search completed at point %d", i + 1);
+            break;
+        }
+
+        ROS_WARN("QR codes not complete after one circle at point %d, go next point", i + 1);
     }
 
-    // ================= 等待 AI 播报完毕 =================
-    ROS_INFO("Waiting for AI.py to finish LLM matching and Broadcasting...");
+    nh_.getParam("qr_scan_done", scan_done);
+
+    if (!start_qr_scan_sent)
+    {
+        ROS_WARN("No QR observation point reached. Force start_qr_scan=1 to avoid AI waiting forever.");
+        nh_.setParam("start_qr_scan", 1);
+        start_qr_scan_sent = true;
+    }
+
+    if (scan_done == 0)
+    {
+        ROS_WARN("QR codes still incomplete after all observation points. Starting fallback continuous spin.");
+
+        geometry_msgs::Twist spin_cmd;
+        spin_cmd.angular.z = 0.25;
+        ros::Rate rate(20);
+
+        while (ros::ok())
+        {
+            nh_.getParam("qr_scan_done", scan_done);
+            if (scan_done == 1)
+            {
+                break;
+            }
+
+            cmd_vel_pub__.publish(spin_cmd);
+            ros::spinOnce();
+            rate.sleep();
+        }
+
+        geometry_msgs::Twist stop_cmd;
+        cmd_vel_pub__.publish(stop_cmd);
+    }
+
+    ROS_INFO("Waiting for AI.py to finish LLM matching and broadcasting...");
+
     int task1_done = 0;
     ros::Rate wait_rate(10);
+
     while (task1_done == 0 && ros::ok())
     {
         nh_.getParam("task1_all_done", task1_done);
@@ -442,7 +536,7 @@ void OURSWITCH::GotoB()
         wait_rate.sleep();
     }
 
-    ROS_INFO("AI.py broadcast completed and self-terminated to save CPU.");
+    ROS_INFO("AI.py task1 completed. Switching to XingHuoAI state.");
     current_state = XingHuoAI_;
 }
 
@@ -871,18 +965,6 @@ void OURSWITCH::GotoD()
     }
 
     nh_.setParam("start_traffic_light_det", 1);
-    nh_.setParam("traffic_light_result", "WAITING");
-    
-    std::string tl_result = "WAITING";
-    while (tl_result == "WAITING" && ros::ok())
-    {
-        nh_.getParam("traffic_light_result", tl_result);
-        ros::Duration(0.1).sleep();
-        ros::spinOnce();
-    }
-    
-    ROS_INFO("Traffic Light Detected: [%s]", tl_result.c_str());
-    nh_.setParam("start_traffic_light_det", 0);
 
     current_state = VISION_LINE_;
 }
@@ -893,9 +975,6 @@ void OURSWITCH::GotoD()
 void OURSWITCH::vision_line()
 {
     ROS_INFO("Entering VISION_LINE state");
-
-    nh_.setParam("start_vision_line", 1);
-    nh_.setParam("vision_line_done", 0); 
 
     int line_done = 0;
     while (line_done == 0 && ros::ok())
