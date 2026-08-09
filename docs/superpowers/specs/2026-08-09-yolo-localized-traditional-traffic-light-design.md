@@ -32,11 +32,7 @@
 
 - `src/traffic_light/scripts/judge_light_ros_correct.py`
 
-新增：
-
-- `src/traffic_light/test/test_judge_light_traditional_cv.py`
-
-测试文件只验证 `judge_light_ros_correct.py` 内直接定义的纯 OpenCV 辅助逻辑。测试可为 ROS、RKNN 和消息模块提供最小桩对象，但不得从另外两个传统视觉脚本导入实现。
+不新增测试文件。传统视觉所需逻辑全部直接定义在 `judge_light_ros_correct.py` 中。
 
 ## 组件设计
 
@@ -117,26 +113,16 @@ ROS Image (BGR)
 - OpenCV 单帧处理异常：记录错误并继续主循环，不终止节点。
 - 节点关闭或发生不可恢复异常：设置停止事件、等待推理线程并释放三个 RKNN 模型，沿用当前清理逻辑。
 
-## 测试设计
+## 验证边界
 
-新增标准库 `unittest` 测试，至少覆盖：
+按用户要求不新增或运行自动化测试。实现后只执行 Python 语法编译和源码核对，确认没有导入 `traditional_light_cv.py` 或 `traditional_light_cv_ros.py`，且发布值不再取自 YOLO 类别。
 
-1. 四张现有样例图在包含目标的模拟 YOLO 区域内分别输出 `right`、`straight`、`left`、`stop`。
-2. 全黑图、有框但无合格亮核时返回 `unknown`。
-3. 空框、倒置框、完全越界框返回 `unknown`；部分越界框被安全裁剪。
-4. 合成的左、右、直行箭头掩膜得到预期方向。
-5. 八段宽度不等时按密度而不是像素总数选峰，防止方向偏置回归。
-6. 并列峰值返回 `unknown`。
-7. 最高分 YOLO 框被选中，且传统分类入口不读取 YOLO 类别。
-8. 源码中不存在对 `traditional_light_cv` 或 `traditional_light_cv_ros` 的导入。
-
-本地验证包括 Python 语法编译、传统视觉单元测试和既有 `traditional_light_cv`/`traditional_light_cv_ros` 回归测试。ROS、相机与 RKNN 的完整联调需在目标设备执行：确认 `/vision_line_direction` 只发布传统视觉的有效结果，`unknown` 不发布，且非 `stop` 发布后节点按原逻辑退出。
+ROS、相机与 RKNN 的完整运行效果仍需在目标设备观察：`/vision_line_direction` 只发布传统视觉的有效结果，`unknown` 不发布，且非 `stop` 发布后节点按原逻辑退出。
 
 ## 验收标准
 
 - `judge_light_ros_correct.py` 仍由 `track_test.sh` 原命令启动，无需改启动脚本。
 - YOLO/RKNN 只定位，最终方向完全由文件内直接加入的传统视觉代码决定。
-- 四张样例图回归测试全部通过。
 - `unknown` 跳过且绝不回退 YOLO 类别。
 - ROS 话题名称、发布节流、`stop` 持续运行和非 `stop` 退出行为保持兼容。
 - `traditional_light_cv.py` 与 `traditional_light_cv_ros.py` 无需作为运行时依赖。
