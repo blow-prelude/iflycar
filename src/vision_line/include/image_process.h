@@ -1,11 +1,9 @@
 #pragma once
 #include <opencv2/opencv.hpp>
-// #include <Eigen/Dense>
+#include <array>
 #include <cstddef>
-#include <iostream>
 #include <string>
 #include <vector>
-#include <array>
 
 struct ImageProcessConfig
 {
@@ -22,8 +20,8 @@ struct ImageProcessConfig
     float up_ratio = 0.50;
     float down_ratio = 0.90;
     // get_side_line_task_1 专用纵向扫描区间（与 task_2 的 up_ratio/down_ratio 相互独立）
-    float task1_down_ratio = 0.88f; // 起始扫描行比例（靠下，对应 scan_y_start）
-    float task1_up_ratio = 0.65f;   // 结束扫描行比例（靠上，对应 scan_y_end）
+    float task1_down_ratio = 0.88f;      // 起始扫描行比例（靠下，对应 scan_y_start）
+    float task1_up_ratio = 0.65f;        // 结束扫描行比例（靠上，对应 scan_y_end）
     int search_range_wide = 50;          // 动态搜索窗口最大宽度
     int search_range_narrow = 30;        // 动态搜索窗口最小宽度
     float search_range_threshold = 0.60; // 搜索窗口宽度调整阈值
@@ -68,6 +66,13 @@ struct ImageProcessConfig
     int turning_mid_offset = 33;
 };
 
+// 线性拟合结果
+struct LineFit
+{
+    float k;
+    float b;
+};
+
 // 判断丢线状态机
 enum MissLineState
 {
@@ -92,10 +97,25 @@ enum SearchSide
     RIGHT_ONLY = 2,
 };
 
-struct LineFit
+// 绘制目标点所属的跟踪策略，与显示文本解耦。
+enum class TrackingTarget
 {
-    float k;
-    float b;
+    STRAIGHT,
+    TURNING,
+    TRACKING2,
+};
+
+struct StopLineDetection
+{
+    StopLineDetection() : found(false) {}
+    StopLineDetection(cv::Point detected_center, cv::Rect detected_bounds)
+        : found(true), center(detected_center), bounds(detected_bounds) {}
+
+    explicit operator bool() const { return found; }
+
+    bool found;
+    cv::Point center;
+    cv::Rect bounds;
 };
 
 class ImageProcess
@@ -124,65 +144,75 @@ public:
                         YuyvColorSpace color_space = YUYV_BT601_LIMIT) const;
 
     // 预处理图像；未提供掩膜时，将纯黑区域视为透视变换产生的无效区域。
-    cv::Mat preprocess(cv::Mat &img);
+    cv::Mat1b preprocess(const cv::Mat &img);
     // 使用显式有效区域掩膜进行预处理。掩膜必须是单通道且尺寸与图像一致。
-    cv::Mat preprocess(cv::Mat &img, const cv::Mat &valid_mask);
+    cv::Mat1b preprocess(const cv::Mat &img, const cv::Mat &valid_mask);
     void resize_frame(cv::Mat &img);
-    void set_frame(const cv::Mat &frame);
-    cv::Mat return_frame();
+    cv::Mat return_frame() const;
 
     void clear_lines();
-    float get_angle_k(float k1, float k2);
-    float get_angle_p(cv::Point p1, cv::Point p2, cv::Point p3);
-    LineFit fit_line_1d(int N, int sx, int sy, int sxx, int syy, int sxy);
-    float det3x3(float a00, float a01, float a02,
-                 float a10, float a11, float a12,
-                 float a20, float a21, float a22);
-    std::array<float, 3> polyfit_quadratic(const std::vector<float> &x, const std::vector<float> &y);
-    void update_prev_frame_lines(); // 更新上一帧的边线数据
-    // void linear_interpolation(Eigen::MatrixX2d &line);
-    void linear_interpolation(std::vector<cv::Point> &line, std::vector<cv::Point> &interp_line);
-    bool add_point_with_stable_start(std::vector<cv::Point> &line, cv::Point point, std::vector<cv::Point> &stable_buf, bool &stable, int x_thresh, int y_thresh);
-    int get_search_start_point(std::vector<cv::Point> &pre_line, int cur_y, int img_w, bool is_left);
-    // void fill_boundary(Eigen::MatrixX2d &left_line, Eigen::MatrixX2d &right_line, std::vector<int> img_shape, Eigen::MatrixX2d &supple_left_line, Eigen::MatrixX2d &supple_right_line);
-    void fill_boundary(std::vector<cv::Point> &left_line, std::vector<cv::Point> &right_line, std::vector<int> img_shape, std::vector<cv::Point> &supple_left_line, std::vector<cv::Point> &supple_right_line, bool allow_prev_fallack = false);
     void fit_polynomial();
     void fit_polynomial2();
-    std::vector<int> get_stop_line(cv::Mat &binary, cv::Mat &canvas, bool is_draw);
-    bool judge_enter_turning(std::vector<int> &stop_mid, int img_h, int img_w, float &y_norm);
+    StopLineDetection get_stop_line(const cv::Mat &binary, cv::Mat &canvas, bool is_draw);
+    bool judge_enter_turning(const StopLineDetection &stop_line,
+                             int img_h, int img_w, float &y_norm);
     bool judge_turing_end(int img_w, int img_h, MissLineState &miss_line);
-    void get_side_line_task_1(cv::Mat &img, cv::Mat &canvas, bool is_draw);
-    void get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_draw, bool find_corner, SearchSide side = BOTH);
-    void calculate_mid_line(cv::Mat &img, float left_weight = 0.5f);
+    void get_side_line_task_1(const cv::Mat &img, cv::Mat &canvas, bool is_draw);
+    void get_side_line_task_2(const cv::Mat &img, cv::Mat &canvas, bool is_draw, bool find_corner, SearchSide side = BOTH);
+    void calculate_mid_line(cv::Size image_size, float left_weight = 0.5f);
 
-    void draw_line(cv::Mat &canvas, float fps, std::string state);
+    void draw_line(cv::Mat &canvas, float fps, const std::string &state,
+                   TrackingTarget target);
 
     // 公开访问线检测结果（Python 版本直接访问这些成员）
-    void set_mid_line_mode(MidLineMode mode) { mid_line_mode_ = mode; }
+    void set_mid_line_mode(MidLineMode mode);
     MidLineMode get_mid_line_mode() const { return mid_line_mode_; }
-    std::vector<cv::Point> &get_fit_mid_line() { return fit_mid_line_; }
-    cv::Point &get_left_corners() { return left_corners_; }
-    cv::Point &get_right_corners() { return right_corners_; }
+    const std::vector<cv::Point> &get_fit_mid_line() const { return fit_mid_line_; }
+    const cv::Point &get_left_corners() const { return left_corners_; }
+    const cv::Point &get_right_corners() const { return right_corners_; }
 
 private:
-    cv::Mat preprocess_impl(cv::Mat &img, const cv::Mat *valid_mask);
+    struct ValidatedScanFrame
+    {
+        ValidatedScanFrame(const cv::Mat &binary_image, cv::Mat *drawing_canvas,
+                           cv::Size max_image_size);
+
+        const cv::Mat &binary;
+        cv::Mat *canvas;
+    };
+
+    cv::Mat1b preprocess_impl(const cv::Mat &img, const cv::Mat *valid_mask);
+    void scan_side_lines(const ValidatedScanFrame &frame,
+                         float scan_down_ratio, float scan_up_ratio,
+                         bool find_corner, SearchSide side);
+
+    float get_angle_k(float k1, float k2) const;
+    float get_angle_p(cv::Point p1, cv::Point p2, cv::Point p3) const;
+    std::array<float, 3> polyfit_quadratic(const std::vector<float> &x,
+                                           const std::vector<float> &y) const;
+    void update_prev_frame_lines();
+    void linear_interpolation(const std::vector<cv::Point> &line,
+                              std::vector<cv::Point> &interp_line) const;
+    bool add_point_with_stable_start(std::vector<cv::Point> &line,
+                                     cv::Point point,
+                                     std::vector<cv::Point> &stable_buf,
+                                     bool &stable) const;
+    void fill_boundary(const std::vector<cv::Point> &left_line,
+                       const std::vector<cv::Point> &right_line,
+                       cv::Size image_size,
+                       std::vector<cv::Point> &supple_left_line,
+                       std::vector<cv::Point> &supple_right_line,
+                       bool allow_prev_fallback = false) const;
+
     MidLineMode mid_line_mode_ = MID_AVG; // TURNING 时单边线 mid_line 模式
-    ImageProcessConfig config_;
+    const ImageProcessConfig config_;     // 构造期校验后不再变化
     cv::Mat frame_;
-    // Eigen::MatrixX2d left_line_;
-    // Eigen::MatrixX2d right_line_;
-    // Eigen::MatrixX2d supple_left_line_;
-    // Eigen::MatrixX2d supple_right_line_;
-    // Eigen::MatrixX2d mid_line_;
-    // Eigen::MatrixX2d fit_mid_line_;
     std::vector<cv::Point> left_line_;
     std::vector<cv::Point> right_line_;
     std::vector<cv::Point> supple_left_line_;
     std::vector<cv::Point> supple_right_line_;
     std::vector<cv::Point> mid_line_;
     std::vector<cv::Point> fit_mid_line_;
-    std::vector<cv::Point> prev_left_line_;
-    std::vector<cv::Point> prev_right_line_;
     std::vector<cv::Point> prev_supple_left_line_;
     std::vector<cv::Point> prev_supple_right_line_;
     // 拐点

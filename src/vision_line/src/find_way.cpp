@@ -166,57 +166,67 @@ int main()
             }
             else
             {
-                cv::Mat process_frame = frame;
-                if (state == ProcessState::STRAIGHT_TRACKING)
+                try
                 {
-                    // 固定透视矩阵要求输入尺寸为 320x240；这一步不能交给
-                    // preprocess，否则必须先完成透视变换才能得到处理图像。
-                    cv::Mat perspective_input = frame;
-                    img_process.resize_frame(perspective_input);
-                    process_frame = vision_line::warpFixedGroundPerspective(perspective_input);
-                }
-                img_process.set_frame(process_frame);
-
-                // preprocess 负责按配置缩放、有效区域背景估计、二值化和闭运算。
-                cv::Mat binary_img = img_process.preprocess(process_frame);
-
-                if (state == ProcessState::RIGHT_TURNING || state == ProcessState::LEFT_TURNING)
-                {
-                    cv::Mat canvas = img_process.return_frame();
-
-                    const float left_weight = (state == ProcessState::LEFT_TURNING) ? 0.55f : 0.45f;
-                    img_process.set_mid_line_mode(MID_AVG);
-                    img_process.get_side_line_task_1(binary_img, canvas, true);
-                    img_process.calculate_mid_line(binary_img, left_weight);
-                    img_process.fit_polynomial2();
-
-                    img_process.draw_line(canvas, fps, state_name(state));
-
-                    cv::imshow("binary", binary_img);
-                    cv::imshow("canvas", canvas);
-                }
-
-                else
-                {
-                    SearchSide side = BOTH;
-                    MidLineMode mode = MID_AVG;
+                    cv::Mat process_frame = frame;
                     if (state == ProcessState::STRAIGHT_TRACKING)
                     {
-                        side = straight_side;
-                        mode = straight_mode;
+                        // 固定透视矩阵要求输入尺寸为 320x240；这一步不能交给
+                        // preprocess，否则必须先完成透视变换才能得到处理图像。
+                        cv::Mat perspective_input = frame;
+                        img_process.resize_frame(perspective_input);
+                        process_frame = vision_line::warpFixedGroundPerspective(perspective_input);
                     }
-                    img_process.set_mid_line_mode(mode);
+                    // preprocess 负责按配置缩放、有效区域背景估计、二值化和闭运算。
+                    cv::Mat1b binary_img = img_process.preprocess(process_frame);
 
-                    cv::Mat canvas = img_process.return_frame();
-                    img_process.get_side_line_task_2(binary_img, canvas, true, false, side);
-                    img_process.calculate_mid_line(binary_img);
-                    img_process.fit_polynomial();
+                    if (state == ProcessState::RIGHT_TURNING || state == ProcessState::LEFT_TURNING)
+                    {
+                        cv::Mat canvas = img_process.return_frame();
 
-                    img_process.draw_line(canvas, fps, state_name(state));
+                        const float left_weight = (state == ProcessState::LEFT_TURNING) ? 0.55f : 0.45f;
+                        img_process.set_mid_line_mode(MID_AVG);
+                        img_process.get_side_line_task_1(binary_img, canvas, true);
+                        img_process.calculate_mid_line(binary_img.size(), left_weight);
+                        img_process.fit_polynomial2();
 
-                    cv::imshow("perspective", process_frame);
-                    cv::imshow("binary", binary_img);
-                    cv::imshow("canvas", canvas);
+                        img_process.draw_line(canvas, fps, state_name(state), TrackingTarget::TURNING);
+
+                        cv::imshow("binary", binary_img);
+                        cv::imshow("canvas", canvas);
+                    }
+                    else
+                    {
+                        SearchSide side = BOTH;
+                        MidLineMode mode = MID_AVG;
+                        if (state == ProcessState::STRAIGHT_TRACKING)
+                        {
+                            side = straight_side;
+                            mode = straight_mode;
+                        }
+                        img_process.set_mid_line_mode(mode);
+
+                        cv::Mat canvas = img_process.return_frame();
+                        img_process.get_side_line_task_2(binary_img, canvas, true, false, side);
+                        img_process.calculate_mid_line(binary_img.size());
+                        img_process.fit_polynomial();
+
+                        img_process.draw_line(canvas, fps, state_name(state), TrackingTarget::STRAIGHT);
+
+                        cv::imshow("perspective", process_frame);
+                        cv::imshow("binary", binary_img);
+                        cv::imshow("canvas", canvas);
+                    }
+                }
+                catch (const cv::Exception &e)
+                {
+                    img_process.clear_lines();
+                    std::cerr << "OpenCV frame processing error: " << e.what() << std::endl;
+                }
+                catch (const std::exception &e)
+                {
+                    img_process.clear_lines();
+                    std::cerr << "Frame processing error: " << e.what() << std::endl;
                 }
             }
 

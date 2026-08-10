@@ -1,8 +1,10 @@
 #include "image_process.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -28,14 +30,16 @@ namespace
         }
     }
 
-    /** 校验 RGA 接口所使用的缓冲区大小是否在其 int 参数范围内。 */
-    void check_rga_buffer_size(std::size_t size, const char *name)
+    /** 已验证的 YUYV 缓冲区视图，下游 RGA 调用不再重复检查尺寸。 */
+    struct ValidatedYuyvView
     {
-        if (size == 0 || size > static_cast<std::size_t>(std::numeric_limits<int>::max()))
-        {
-            throw std::invalid_argument(std::string(name) + " buffer is too large for RGA.");
-        }
-    }
+        const void *data;
+        int width;
+        int height;
+        int stride_pixels;
+        int source_size;
+        int destination_size;
+    };
 
     /** 执行带溢出检查的 size_t 乘法。 */
     bool checked_multiply(std::size_t lhs, std::size_t rhs, std::size_t &result)
@@ -48,9 +52,108 @@ namespace
         return true;
     }
 
+    int checked_rga_buffer_size(std::size_t size, const char *name)
+    {
+        if (size == 0 || size > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+            throw std::invalid_argument(std::string(name) + " buffer is too large for RGA.");
+        return static_cast<int>(size);
+    }
+
+    ValidatedYuyvView validate_yuyv_view(const void *data, int width, int height,
+                                         std::size_t stride_bytes)
+    {
+        if (data == nullptr)
+            throw std::invalid_argument("YUYV data is null.");
+        if (width <= 0 || height <= 0 || (width & 1) != 0)
+            throw std::invalid_argument("YUYV width must be a positive even number and height must be positive.");
+
+        std::size_t packed_row_bytes = 0;
+        if (!checked_multiply(static_cast<std::size_t>(width), 2, packed_row_bytes))
+            throw std::invalid_argument("YUYV row size overflows.");
+        if (stride_bytes == 0)
+            stride_bytes = packed_row_bytes;
+        if (stride_bytes < packed_row_bytes || (stride_bytes % 2) != 0)
+            throw std::invalid_argument("YUYV stride must be at least width * 2 and aligned to two bytes.");
+        if (stride_bytes / 2 > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+            throw std::invalid_argument("YUYV stride is too large for RGA.");
+
+        std::size_t preceding_rows = 0;
+        if (!checked_multiply(stride_bytes, static_cast<std::size_t>(height - 1), preceding_rows) ||
+            preceding_rows > std::numeric_limits<std::size_t>::max() - packed_row_bytes)
+        {
+            throw std::invalid_argument("YUYV buffer size overflows.");
+        }
+        const std::size_t source_size = preceding_rows + packed_row_bytes;
+
+        std::size_t pixel_count = 0;
+        std::size_t destination_size = 0;
+        if (!checked_multiply(static_cast<std::size_t>(width), static_cast<std::size_t>(height), pixel_count) ||
+            !checked_multiply(pixel_count, 3, destination_size))
+        {
+            throw std::invalid_argument("RGB buffer size overflows.");
+        }
+
+        return {data,
+                width,
+                height,
+                static_cast<int>(stride_bytes / 2),
+                checked_rga_buffer_size(source_size, "YUYV source"),
+                checked_rga_buffer_size(destination_size, "RGB destination")};
+    }
+
+    struct RgaHandleGuard
+    {
+        explicit RgaHandleGuard(rga_buffer_handle_t value) : handle(value) {}
+        RgaHandleGuard(const RgaHandleGuard &) = delete;
+        RgaHandleGuard &operator=(const RgaHandleGuard &) = delete;
+
+        ~RgaHandleGuard()
+        {
+            if (handle != 0)
+                releasebuffer_handle(handle);
+        }
+
+        rga_buffer_handle_t handle;
+    };
+
+    cv::Mat convert_yuyv_view(const ValidatedYuyvView &input,
+                              ImageProcess::YuyvColorSpace color_space)
+    {
+        const int src_format = RK_FORMAT_YUYV_422;
+        const int dst_format = RK_FORMAT_RGB_888;
+        const int color_mode = get_rga_color_space(color_space);
+
+        cv::Mat rgb(input.height, input.width, CV_8UC3);
+        assert(rgb.isContinuous() && rgb.data != nullptr);
+
+        RgaHandleGuard src_handle{importbuffer_virtualaddr(
+            const_cast<void *>(input.data), input.source_size)};
+        RgaHandleGuard dst_handle{importbuffer_virtualaddr(
+            rgb.data, input.destination_size)};
+
+        if (src_handle.handle == 0 || dst_handle.handle == 0)
+            throw std::runtime_error("RGA importbuffer_virtualaddr() failed.");
+
+        rga_buffer_t src_img = wrapbuffer_handle(src_handle.handle, input.width, input.height,
+                                                 src_format, input.stride_pixels, input.height);
+        rga_buffer_t dst_img = wrapbuffer_handle(dst_handle.handle, input.width, input.height,
+                                                 dst_format, input.width, input.height);
+
+        int ret = imcheck(src_img, dst_img, {}, {}, 0);
+        if (ret != IM_STATUS_NOERROR)
+            throw std::runtime_error(std::string("RGA imcheck() failed: ") + imStrError((IM_STATUS)ret));
+
+        ret = imcvtcolor(src_img, dst_img, src_format, dst_format, color_mode);
+        if (ret != IM_STATUS_SUCCESS)
+            throw std::runtime_error(std::string("RGA imcvtcolor() failed: ") + imStrError((IM_STATUS)ret));
+
+        return rgb;
+    }
+
     /** 将整数限制在指定的闭区间内。 */
     int clamp_int(int value, int lower, int upper)
     {
+        assert(lower <= upper);
         return std::max(lower, std::min(value, upper));
     }
 
@@ -71,10 +174,8 @@ namespace
     /** 根据比例计算坐标，避免浮点转整数时的边界未定义行为。 */
     int scaled_coordinate(int size, float ratio)
     {
-        if (size <= 0 || !std::isfinite(ratio))
-        {
-            return 0;
-        }
+        assert(size > 0);
+        assert(std::isfinite(ratio) && ratio >= 0.0f && ratio <= 1.0f);
         const double value = static_cast<double>(size) * ratio;
         if (value <= 0.0)
         {
@@ -90,6 +191,7 @@ namespace
     /** 将搜索区间裁剪到有效下标，并按搜索方向整理端点顺序。 */
     void normalize_search_range(int &start, int &end, int max_index, bool descending)
     {
+        assert(max_index >= 0);
         start = clamp_int(start, 0, max_index);
         end = clamp_int(end, 0, max_index);
         if ((descending && start < end) || (!descending && start > end))
@@ -106,21 +208,20 @@ namespace
     }
 
     /** 判断输入是否为边线扫描所需的二维单通道 8 位图像。 */
-    bool is_valid_binary_scan_image(const cv::Mat &image)
+    bool is_valid_binary_scan_image(const cv::Mat &image, cv::Size max_image_size)
     {
         return !image.empty() && image.dims == 2 && image.type() == CV_8UC1 &&
-               image.rows > 0 && image.cols >= 2;
+               image.rows > 0 && image.cols >= 2 &&
+               image.rows <= max_image_size.height && image.cols <= max_image_size.width;
     }
 
     /** 根据累计统计量拟合 x = k*y + b，并处理退化数据。 */
     LineFit fit_line_from_sums(std::size_t count, double sx, double sy,
                                double syy, double sxy)
     {
-        if (count == 0 || !std::isfinite(sx) || !std::isfinite(sy) ||
-            !std::isfinite(syy) || !std::isfinite(sxy))
-        {
-            throw std::invalid_argument("At least one finite point is required for line fitting.");
-        }
+        assert(count > 0);
+        assert(std::isfinite(sx) && std::isfinite(sy) &&
+               std::isfinite(syy) && std::isfinite(sxy));
 
         const double n = static_cast<double>(count);
         const double denominator = n * syy - sy * sy;
@@ -144,7 +245,7 @@ namespace
     /** 校验图像处理配置，尽早拒绝可能导致除零或越界的参数。 */
     void validate_config(const ImageProcessConfig &config)
     {
-        if (config.process_max_h <= 0 || config.process_max_w <= 0 ||
+        if (config.process_max_h <= 0 || config.process_max_w < 2 ||
             config.x_continual <= 0 || config.y_continual <= 0 ||
             config.init_stable_count <= 0 || config.miss_threshold < 0 ||
             config.search_offset < 0 || config.search_range_wide <= 0 ||
@@ -155,6 +256,15 @@ namespace
             config.interp_dy_thresh <= 0 || config.turning_mid_offset < 0)
         {
             throw std::invalid_argument("ImageProcessConfig contains an invalid integer value.");
+        }
+        if (config.init_stable_count > config.process_max_h ||
+            config.search_offset > config.process_max_w ||
+            config.search_range_wide > config.process_max_w ||
+            config.search_range_narrow > config.search_range_wide ||
+            config.min_left_right_distance > config.process_max_w ||
+            config.stop_min_width > config.process_max_w)
+        {
+            throw std::invalid_argument("ImageProcessConfig integer values are inconsistent with the frame limits.");
         }
 
         const auto in_unit_interval = [](float value)
@@ -176,28 +286,58 @@ namespace
             throw std::invalid_argument("ImageProcessConfig contains an invalid ratio.");
         }
 
-        if (!std::isfinite(config.corner_angle_high) || !std::isfinite(config.corner_angle_low) ||
-            config.corner_angle_low < 0 || config.corner_angle_high > 180 ||
+        const float fit_weight_sum = config.fit_y_div_far_w + config.fit_y_div_near_w;
+        if (config.corner_angle_low < 0 || config.corner_angle_high > 180 ||
             config.corner_angle_low >= config.corner_angle_high ||
-            !std::isfinite(config.turning_enter_y_thresh) ||
             !std::isfinite(config.fit_angle_thresh) || config.fit_angle_thresh < 0.0f ||
             !std::isfinite(config.fit_y_div_far_w) || !std::isfinite(config.fit_y_div_near_w) ||
             config.fit_y_div_far_w < 0.0f || config.fit_y_div_near_w < 0.0f ||
-            !std::isfinite(config.fit_y_div_far_w + config.fit_y_div_near_w) ||
-            config.fit_y_div_far_w + config.fit_y_div_near_w <= 0.0f)
+            !std::isfinite(fit_weight_sum) || std::abs(fit_weight_sum - 1.0f) > 1e-5f)
         {
             throw std::invalid_argument("ImageProcessConfig contains an invalid floating-point value.");
         }
+    }
+
+    ImageProcessConfig validated_config(const ImageProcessConfig &config)
+    {
+        validate_config(config);
+        return config;
     }
 
 } // namespace
 
 /** 使用给定配置创建图像处理器。 */
 ImageProcess::ImageProcess(const ImageProcessConfig &config)
-    : config_(config)
+    : config_(validated_config(config))
 {
-    validate_config(config_);
     std::cout << "ImageProcess initialized with config" << std::endl;
+}
+
+ImageProcess::ValidatedScanFrame::ValidatedScanFrame(const cv::Mat &binary_image,
+                                                     cv::Mat *drawing_canvas,
+                                                     cv::Size max_image_size)
+    : binary(binary_image), canvas(drawing_canvas)
+{
+    assert(max_image_size.width >= 2 && max_image_size.height > 0);
+    if (!is_valid_binary_scan_image(binary, max_image_size))
+    {
+        throw std::invalid_argument(
+            "Binary scan image must be a non-empty 2D CV_8UC1 image with width >= 2 "
+            "and fit within the configured processing size.");
+    }
+
+    if (canvas != nullptr &&
+        (!is_drawable_canvas(*canvas) || canvas->size() != binary.size()))
+    {
+        throw std::invalid_argument("Drawing canvas must be drawable and match the binary image size.");
+    }
+}
+
+void ImageProcess::set_mid_line_mode(MidLineMode mode)
+{
+    if (mode != MID_AVG && mode != LEFT_OFFSET && mode != RIGHT_OFFSET)
+        throw std::invalid_argument("Unsupported mid-line mode.");
+    mid_line_mode_ = mode;
 }
 
 /** 将 OpenCV 中的 YUYV422 图像转换为 RGB 图像。 */
@@ -211,20 +351,17 @@ cv::Mat ImageProcess::yuyv_to_rgb(const cv::Mat &yuyv, YuyvColorSpace color_spac
     {
         throw std::invalid_argument("YUYV image must be CV_8UC1 or CV_8UC2.");
     }
-
-    // OpenCV/V4L2 既可能将 YUYV 表示成 [H, W] 的 CV_8UC2，也可能表示成
-    // [H, 2W] 的 CV_8UC1。RGA 以像素宽度接收 YUYV，单个像素占 2 字节。
-    const int width = yuyv.channels() == 2 ? yuyv.cols : yuyv.cols / 2;
-    std::size_t packed_row_bytes = 0;
-    if (width <= 0 || (width & 1) != 0 ||
-        (yuyv.channels() == 1 && (yuyv.cols & 1) != 0) ||
-        !checked_multiply(static_cast<std::size_t>(width), 2, packed_row_bytes) ||
-        yuyv.step[0] < packed_row_bytes)
+    if (yuyv.channels() == 1 && (yuyv.cols & 1) != 0)
     {
-        throw std::invalid_argument("YUYV image width must be a positive even number.");
+        throw std::invalid_argument("Single-channel YUYV image width must contain an even number of bytes.");
     }
 
-    return yuyv_to_rgb(yuyv.data, width, yuyv.rows, yuyv.step[0], color_space);
+    // OpenCV/V4L2 既可能将 YUYV 表示成 [H, W] 的 CV_8UC2，也可能表示成
+    // [H, 2W] 的 CV_8UC1。公共入口只解析表示形式，共用验证器负责缓冲区契约。
+    const int width = yuyv.channels() == 2 ? yuyv.cols : yuyv.cols / 2;
+    return convert_yuyv_view(
+        validate_yuyv_view(yuyv.data, width, yuyv.rows, yuyv.step[0]),
+        color_space);
 }
 
 /** 将裸 YUYV422 缓冲区通过 RGA 转换为 RGB 图像。 */
@@ -232,120 +369,25 @@ cv::Mat ImageProcess::yuyv_to_rgb(const void *yuyv_data, int width, int height,
                                   std::size_t stride_bytes,
                                   YuyvColorSpace color_space) const
 {
-    if (yuyv_data == nullptr)
-    {
-        throw std::invalid_argument("YUYV data is null.");
-    }
-    if (width <= 0 || height <= 0 || (width & 1) != 0)
-    {
-        throw std::invalid_argument("YUYV width must be a positive even number and height must be positive.");
-    }
-
-    std::size_t packed_row_bytes = 0;
-    if (!checked_multiply(static_cast<std::size_t>(width), 2, packed_row_bytes))
-    {
-        throw std::invalid_argument("YUYV row size overflows.");
-    }
-    if (stride_bytes == 0)
-    {
-        stride_bytes = packed_row_bytes;
-    }
-    if (stride_bytes < packed_row_bytes || (stride_bytes % 2) != 0)
-    {
-        throw std::invalid_argument("YUYV stride must be at least width * 2 and aligned to two bytes.");
-    }
-    if (stride_bytes / 2 > static_cast<std::size_t>(std::numeric_limits<int>::max()))
-    {
-        throw std::invalid_argument("YUYV stride is too large for RGA.");
-    }
-
-    std::size_t preceding_rows = 0;
-    if (!checked_multiply(stride_bytes, static_cast<std::size_t>(height - 1), preceding_rows) ||
-        preceding_rows > std::numeric_limits<std::size_t>::max() - packed_row_bytes)
-    {
-        throw std::invalid_argument("YUYV buffer size overflows.");
-    }
-    const std::size_t src_size = preceding_rows + packed_row_bytes;
-
-    std::size_t pixel_count = 0;
-    std::size_t dst_size = 0;
-    if (!checked_multiply(static_cast<std::size_t>(width), static_cast<std::size_t>(height), pixel_count) ||
-        !checked_multiply(pixel_count, 3, dst_size))
-    {
-        throw std::invalid_argument("RGB buffer size overflows.");
-    }
-    check_rga_buffer_size(src_size, "YUYV source");
-    check_rga_buffer_size(dst_size, "RGB destination");
-
-    const int src_format = RK_FORMAT_YUYV_422;
-    const int dst_format = RK_FORMAT_RGB_888;
-    const int color_mode = get_rga_color_space(color_space);
-
-    cv::Mat rgb(height, width, CV_8UC3);
-    if (!rgb.isContinuous() || rgb.data == nullptr)
-    {
-        throw std::runtime_error("Failed to allocate a continuous RGB destination.");
-    }
-
-    struct RgaHandleGuard
-    {
-        explicit RgaHandleGuard(rga_buffer_handle_t value) : handle(value) {}
-        rga_buffer_handle_t handle;
-        ~RgaHandleGuard()
-        {
-            if (handle != 0)
-            {
-                releasebuffer_handle(handle);
-            }
-        }
-    };
-
-    RgaHandleGuard src_handle{importbuffer_virtualaddr(
-        const_cast<void *>(yuyv_data), static_cast<int>(src_size))};
-    RgaHandleGuard dst_handle{importbuffer_virtualaddr(
-        rgb.data, static_cast<int>(dst_size))};
-
-    if (src_handle.handle == 0 || dst_handle.handle == 0)
-    {
-        throw std::runtime_error("RGA importbuffer_virtualaddr() failed.");
-    }
-
-    const int src_wstride = static_cast<int>(stride_bytes / 2);
-    rga_buffer_t src_img = wrapbuffer_handle(src_handle.handle, width, height,
-                                             src_format, src_wstride, height);
-    rga_buffer_t dst_img = wrapbuffer_handle(dst_handle.handle, width, height,
-                                             dst_format, width, height);
-
-    int ret = imcheck(src_img, dst_img, {}, {}, 0);
-    if (ret != IM_STATUS_NOERROR)
-    {
-        throw std::runtime_error(std::string("RGA imcheck() failed: ") + imStrError((IM_STATUS)ret));
-    }
-
-    ret = imcvtcolor(src_img, dst_img, src_format, dst_format, color_mode);
-
-    if (ret != IM_STATUS_SUCCESS)
-    {
-        throw std::runtime_error(std::string("RGA imcvtcolor() failed: ") + imStrError((IM_STATUS)ret));
-    }
-
-    return rgb;
+    return convert_yuyv_view(
+        validate_yuyv_view(yuyv_data, width, height, stride_bytes),
+        color_space);
 }
 
 /** 使用默认的黑色无效区域推断规则执行预处理。 */
-cv::Mat ImageProcess::preprocess(cv::Mat &img)
+cv::Mat1b ImageProcess::preprocess(const cv::Mat &img)
 {
     return preprocess_impl(img, nullptr);
 }
 
 /** 使用显式有效区域掩膜执行预处理。 */
-cv::Mat ImageProcess::preprocess(cv::Mat &img, const cv::Mat &valid_mask)
+cv::Mat1b ImageProcess::preprocess(const cv::Mat &img, const cv::Mat &valid_mask)
 {
     return preprocess_impl(img, &valid_mask);
 }
 
-/** 对输入彩色图像执行与 Python 版本一致的预处理。 */
-cv::Mat ImageProcess::preprocess_impl(cv::Mat &img, const cv::Mat *valid_mask_input)
+/** 对输入彩色图像执行预处理。 */
+cv::Mat1b ImageProcess::preprocess_impl(const cv::Mat &img, const cv::Mat *valid_mask_input)
 {
     if (img.empty())
     {
@@ -376,10 +418,10 @@ cv::Mat ImageProcess::preprocess_impl(cv::Mat &img, const cv::Mat *valid_mask_in
         }
     }
 
-    // Python 版本在 preprocess 内按比例缩小图像，且使用 >= 判断边界。
+    // 仅在超过配置上限时按比例缩小图像。
     // 使用局部 Mat，避免意外修改调用方持有的输入图像。
     cv::Mat frame = img;
-    if (frame.rows >= config_.process_max_h || frame.cols >= config_.process_max_w)
+    if (frame.rows > config_.process_max_h || frame.cols > config_.process_max_w)
     {
         const double scale = std::min(static_cast<double>(config_.process_max_h) / frame.rows,
                                       static_cast<double>(config_.process_max_w) / frame.cols);
@@ -456,7 +498,8 @@ cv::Mat ImageProcess::preprocess_impl(cv::Mat &img, const cv::Mat *valid_mask_in
                      cv::Point(-1, -1), 3);
     closed.setTo(0, valid_mask == 0);
 
-    return closed;
+    assert(closed.type() == CV_8UC1);
+    return cv::Mat1b(closed);
 }
 
 /** 按配置限制图像尺寸，同时保持原始宽高比。 */
@@ -467,7 +510,7 @@ void ImageProcess::resize_frame(cv::Mat &img)
         return;
     }
 
-    if (img.rows >= this->config_.process_max_h || img.cols >= this->config_.process_max_w)
+    if (img.rows > this->config_.process_max_h || img.cols > this->config_.process_max_w)
     {
         int h = img.rows;
         int w = img.cols;
@@ -483,58 +526,15 @@ void ImageProcess::resize_frame(cv::Mat &img)
     }
 }
 
-/*
- * 拟合一维直线
- * N: 点的数量
- * sx: x坐标的和
- * sy: y坐标的和
- * sxx: x坐标平方和
- * syy: y坐标平方和
- * sxy: x和y坐标的乘积和
- *
- * 返回值：LineFit结构体，包含斜率k和截距b
- *
- * 逻辑：
- * 1. 计算分母denom = N * syy - sy * sy
- * 2. 如果denom的绝对值大于一个小阈值（1e-9），则计算斜率k和截距b，并返回
- */
-/** 使用外部传入的整数统计量拟合一维直线。 */
-LineFit ImageProcess::fit_line_1d(int N, int sx, int sy, int sxx, int syy, int sxy)
-{
-    (void)sxx;
-    if (N <= 0)
-    {
-        throw std::invalid_argument("N must be positive for line fitting.");
-    }
-    return fit_line_from_sums(static_cast<std::size_t>(N), static_cast<double>(sx),
-                              static_cast<double>(sy), static_cast<double>(syy),
-                              static_cast<double>(sxy));
-}
-
-/** 计算 3x3 矩阵的行列式。 */
-float ImageProcess::det3x3(float a00, float a01, float a02,
-                           float a10, float a11, float a12,
-                           float a20, float a21, float a22)
-{
-
-    return a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) + a02 * (a10 * a21 - a11 * a20);
-}
-
 /** 对输入点执行二次曲线拟合，返回 x = a*y^2 + b*y + c 的系数。 */
-std::array<float, 3> ImageProcess::polyfit_quadratic(const std::vector<float> &x, const std::vector<float> &y)
+std::array<float, 3> ImageProcess::polyfit_quadratic(const std::vector<float> &x, const std::vector<float> &y) const
 {
-    if (x.size() != y.size() || x.size() < 3)
-    {
-        throw std::invalid_argument("At least three paired points are required for quadratic fitting.");
-    }
+    assert(x.size() == y.size() && x.size() >= 3);
 
     double y_center = 0.0;
     for (std::size_t i = 0; i < y.size(); ++i)
     {
-        if (!std::isfinite(x[i]) || !std::isfinite(y[i]))
-        {
-            throw std::invalid_argument("Quadratic fitting points must be finite.");
-        }
+        assert(std::isfinite(x[i]) && std::isfinite(y[i]));
         y_center += static_cast<double>(y[i]);
     }
     y_center /= static_cast<double>(y.size());
@@ -573,10 +573,7 @@ std::array<float, 3> ImageProcess::polyfit_quadratic(const std::vector<float> &x
                             m02, m12, m22);
     const cv::Mat rhs = (cv::Mat_<double>(3, 1) << v0, v1, v2);
     cv::SVD svd(normal, cv::SVD::NO_UV);
-    if (svd.w.empty() || svd.w.total() != 3)
-    {
-        throw std::runtime_error("Failed to analyze the quadratic fitting matrix.");
-    }
+    assert(!svd.w.empty() && svd.w.total() == 3);
     const double largest_singular = svd.w.at<double>(0, 0);
     const double smallest_singular = svd.w.at<double>(svd.w.rows - 1, 0);
     if (!std::isfinite(largest_singular) || !std::isfinite(smallest_singular) ||
@@ -586,11 +583,11 @@ std::array<float, 3> ImageProcess::polyfit_quadratic(const std::vector<float> &x
     }
 
     cv::Mat normalized_coeffs;
-    if (!cv::solve(normal, rhs, normalized_coeffs, cv::DECOMP_SVD) ||
-        normalized_coeffs.rows != 3 || normalized_coeffs.cols != 1)
+    if (!cv::solve(normal, rhs, normalized_coeffs, cv::DECOMP_SVD))
     {
         throw std::runtime_error("Failed to solve the quadratic fitting matrix.");
     }
+    assert(normalized_coeffs.rows == 3 && normalized_coeffs.cols == 1);
 
     const double a_norm = normalized_coeffs.at<double>(0, 0);
     const double b_norm = normalized_coeffs.at<double>(1, 0);
@@ -619,12 +616,9 @@ std::array<float, 3> ImageProcess::polyfit_quadratic(const std::vector<float> &x
 3. 将夹角theta从弧度转换为角度，并返回
 */
 /** 计算两条由斜率表示的直线之间的夹角，单位为度。 */
-float ImageProcess::get_angle_k(float k1, float k2)
+float ImageProcess::get_angle_k(float k1, float k2) const
 {
-    if (!std::isfinite(k1) || !std::isfinite(k2))
-    {
-        return 0.0f;
-    }
+    assert(std::isfinite(k1) && std::isfinite(k2));
     // 直接比较斜率向量会在极大斜率时发生乘法溢出；atan 的结果始终有限。
     const double theta = std::abs(std::atan(static_cast<double>(k2)) -
                                   std::atan(static_cast<double>(k1)));
@@ -641,7 +635,7 @@ float ImageProcess::get_angle_k(float k1, float k2)
 4. 将夹角theta从弧度转换为角度，并返回
 */
 /** 计算三个点以 p2 为顶点形成的夹角，单位为度。 */
-float ImageProcess::get_angle_p(cv::Point p1, cv::Point p2, cv::Point p3)
+float ImageProcess::get_angle_p(cv::Point p1, cv::Point p2, cv::Point p3) const
 {
     const double v1x = static_cast<double>(p1.x) - p2.x;
     const double v1y = static_cast<double>(p1.y) - p2.y;
@@ -664,34 +658,6 @@ float ImageProcess::get_angle_p(cv::Point p1, cv::Point p2, cv::Point p3)
 }
 
 /*
-* 根据上一帧的边线位置获取当前帧的搜索起点
-* pre_line: 上一帧的边线点集合，每行一个点，第一列为x坐标，第二列为y坐标
-* cur_y: 当前帧的y坐标
-* img_w: 图像宽度
-* is_left: 是否为左边线
-* 返回值：搜索起点的x坐标
-* 逻辑：
-
-*/
-/** 从上一帧边线中查找最接近当前行的搜索起点。 */
-int ImageProcess::get_search_start_point(std::vector<cv::Point> &pre_line, int cur_y, int img_w, bool is_left)
-{
-    (void)is_left;
-    if (img_w <= 0 || pre_line.empty())
-    {
-        return std::max(0, img_w / 2);
-    }
-
-    const auto closest = std::min_element(pre_line.begin(), pre_line.end(),
-                                          [cur_y](const cv::Point &lhs, const cv::Point &rhs)
-                                          {
-                                              return std::abs(static_cast<int>(lhs.y) - cur_y) <
-                                                     std::abs(static_cast<int>(rhs.y) - cur_y);
-                                          });
-    return clamp_int(closest->x, 0, img_w - 1);
-}
-
-/*
  * 将点加入边线并维持稳定性
  * std::vector<cv::Point> &line: 当前边线点集合
  * cv::Point point: 当前候选点
@@ -705,24 +671,19 @@ int ImageProcess::get_search_start_point(std::vector<cv::Point> &pre_line, int c
  * 2. 如果边线不稳定（stable为false），则将当前点加入稳定点缓冲区，并比较当前点与缓冲区最后一个点的坐标差异。如果在阈值范围内，则继续积累稳定点；如果达到预设的稳定点数量，则将缓冲区的点加入边线，并将stable置为true；如果不在阈值范围内，则清空缓冲区，重新开始积累。
  */
 /** 将候选点加入边线，并在初始阶段通过连续点缓冲建立稳定状态。 */
-bool ImageProcess::add_point_with_stable_start(std::vector<cv::Point> &line, cv::Point point, std::vector<cv::Point> &stable_buf, bool &stable, int x_thresh, int y_thresh)
+bool ImageProcess::add_point_with_stable_start(std::vector<cv::Point> &line,
+                                               cv::Point point,
+                                               std::vector<cv::Point> &stable_buf,
+                                               bool &stable) const
 {
-    if (x_thresh <= 0 || y_thresh <= 0)
-    {
-        stable = false;
-        stable_buf.clear();
-        return false;
-    }
-
-    // stable 标志与 line 必须保持一致，避免 line.back() 在异常状态下越界。
-    if (stable && line.empty())
-    {
-        stable = false;
-    }
+    assert(!stable || !line.empty());
+    assert(point.x >= 0 && point.x < config_.process_max_w);
+    assert(point.y >= 0 && point.y < config_.process_max_h);
 
     if (stable)
     {
-        if (std::abs(line.back().x - point.x) < x_thresh && std::abs(line.back().y - point.y) < y_thresh)
+        if (std::abs(line.back().x - point.x) < config_.x_continual &&
+            std::abs(line.back().y - point.y) < config_.y_continual)
         {
             line.push_back(point);
             return true;
@@ -734,7 +695,8 @@ bool ImageProcess::add_point_with_stable_start(std::vector<cv::Point> &line, cv:
         {
             stable_buf.push_back(point);
         }
-        else if (std::abs(stable_buf.back().x - point.x) < x_thresh && std::abs(stable_buf.back().y - point.y) < y_thresh)
+        else if (std::abs(stable_buf.back().x - point.x) < config_.x_continual &&
+                 std::abs(stable_buf.back().y - point.y) < config_.y_continual)
         {
             stable_buf.push_back(point);
             if (stable_buf.size() >= static_cast<std::size_t>(this->config_.init_stable_count))
@@ -756,12 +718,10 @@ bool ImageProcess::add_point_with_stable_start(std::vector<cv::Point> &line, cv:
 }
 
 /** 在指定 ROI 中检测横向停止线，并按需将结果绘制到画布。 */
-std::vector<int> ImageProcess::get_stop_line(cv::Mat &binary, cv::Mat &canvas, bool is_draw)
+StopLineDetection ImageProcess::get_stop_line(const cv::Mat &binary, cv::Mat &canvas, bool is_draw)
 {
-    if (binary.empty() || binary.dims != 2 || binary.type() != CV_8UC1)
-    {
-        throw std::runtime_error("Input binary image must be a non-empty 2D CV_8UC1 image.");
-    }
+    const ValidatedScanFrame frame(binary, is_draw ? &canvas : nullptr,
+                                   cv::Size(config_.process_max_w, config_.process_max_h));
     int img_h = binary.rows;
     int img_w = binary.cols;
 
@@ -770,10 +730,6 @@ std::vector<int> ImageProcess::get_stop_line(cv::Mat &binary, cv::Mat &canvas, b
     int roi_y1 = scaled_coordinate(img_h, this->config_.stop_roi_y1);
     int roi_x0 = scaled_coordinate(img_w, this->config_.stop_roi_x0);
     int roi_x1 = scaled_coordinate(img_w, this->config_.stop_roi_x1);
-    roi_x0 = clamp_int(roi_x0, 0, img_w);
-    roi_x1 = clamp_int(roi_x1, 0, img_w);
-    roi_y0 = clamp_int(roi_y0, 0, img_h);
-    roi_y1 = clamp_int(roi_y1, 0, img_h);
     if (roi_x1 <= roi_x0 || roi_y1 <= roi_y0)
     {
         return {};
@@ -783,7 +739,7 @@ std::vector<int> ImageProcess::get_stop_line(cv::Mat &binary, cv::Mat &canvas, b
     cv::Mat roi = binary(stop_roi);
 
     // 横向形态学削弱斜线
-    const int kernel_w = std::max(1, std::min(this->config_.stop_kernel_w, stop_roi.width));
+    const int kernel_w = std::min(this->config_.stop_kernel_w, stop_roi.width);
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(kernel_w, 1));
     cv::Mat morph;
     cv::morphologyEx(roi, morph, cv::MORPH_OPEN, kernel);
@@ -798,17 +754,14 @@ std::vector<int> ImageProcess::get_stop_line(cv::Mat &binary, cv::Mat &canvas, b
     }
 
     // 找到最像横线的轮廓
-    std::vector<int> stop_line; // {x_center, y_bottom}：左下/右下两点连线的中点
     int line_w = 0, line_h = 0, line_x = 0, line_y = 0;
     double max_score = 0;
     bool found = false;
     for (const auto &contour : contours)
     {
-        cv::Rect bbox = cv::boundingRect(contour);
-        if (bbox.width <= 0 || bbox.height <= 0)
-        {
-            continue;
-        }
+        assert(!contour.empty());
+        const cv::Rect bbox = cv::boundingRect(contour);
+        assert(bbox.width > 0 && bbox.height > 0);
         double aspect_ratio = double(bbox.width) / bbox.height;
         double score = aspect_ratio * bbox.width; // 评估分数，倾向于宽且长的轮廓
         if (score > max_score && bbox.width >= this->config_.stop_min_width)
@@ -825,36 +778,34 @@ std::vector<int> ImageProcess::get_stop_line(cv::Mat &binary, cv::Mat &canvas, b
     {
         return {};
     }
-    // 取停止线左下、右下两点连线的中点（即 bbox 底边中点）
-    stop_line = {line_x + line_w / 2 + roi_x0, line_y + line_h + roi_y0};
+    // 取停止线 bbox 底边中点；Rect 的 bottom 是排他边界，因此减 1。
+    const cv::Rect bounds(line_x + roi_x0, line_y + roi_y0, line_w, line_h);
+    const cv::Point center(bounds.x + bounds.width / 2,
+                           bounds.y + bounds.height - 1);
+    const StopLineDetection result(center, bounds);
 
-    if (is_draw && !stop_line.empty() && is_drawable_canvas(canvas))
+    if (frame.canvas != nullptr)
     {
         const cv::Rect canvas_rect(0, 0, canvas.cols, canvas.rows);
-        const cv::Point center(stop_line[0], stop_line[1]);
-        if (canvas_rect.contains(center))
-        {
-            cv::circle(canvas, center, 5, cv::Scalar(0, 0, 255), -1);
-        }
-        const cv::Rect draw_rect = cv::Rect(line_x + roi_x0, line_y + roi_y0, line_w, line_h) & canvas_rect;
-        if (draw_rect.width > 0 && draw_rect.height > 0)
-        {
-            cv::rectangle(canvas, draw_rect, cv::Scalar(255, 0, 0), 2);
-        }
+        assert(canvas_rect.contains(center));
+        assert((bounds & canvas_rect) == bounds);
+        cv::circle(canvas, center, 5, cv::Scalar(0, 0, 255), -1);
+        cv::rectangle(canvas, bounds, cv::Scalar(255, 0, 0), 2);
     }
-    return stop_line;
+    return result;
 }
 
 /** 根据停止线中心点的归一化纵坐标判断是否进入转弯阶段。 */
-bool ImageProcess::judge_enter_turning(std::vector<int> &stop_mid, int img_h, int img_w, float &y_norm)
+bool ImageProcess::judge_enter_turning(const StopLineDetection &stop_line,
+                                       int img_h, int img_w, float &y_norm)
 {
     (void)img_w;
     y_norm = 0.0f;
-    if (stop_mid.size() < 2 || img_h <= 0)
+    if (!stop_line || img_h <= 0)
     {
         return false;
     }
-    y_norm = stop_mid[1] / float(img_h);
+    y_norm = stop_line.center.y / float(img_h);
     return y_norm > this->config_.turning_enter_y_thresh;
 }
 
@@ -900,70 +851,15 @@ bool ImageProcess::judge_turing_end(int img_w, int img_h, MissLineState &miss_li
 }
 
 /*
-Eigen::MatrixX2d &line: 当前边线点集合，每行一个点，第一列为x坐标，第二列为y坐标
-逻辑：
-1. 遍历边线点集合，比较相邻点之间的坐标差异
-2. 如果相邻点之间的坐标差异超过预设的阈值，则在两点之间进行线性插值，生成新的点，并将其加入边线集合
-3. 最后将插值后的点集合转换回Eigen::MatrixX2d格式
-*/
-// void ImageProcess::linear_interpolation(Eigen::MatrixX2d &line)
-// {
-//     std::vector<Eigen::Vector2d> interp_points;
-//     // 预扩容
-//     interp_points.reserve(line.rows() * 2); // 预估插值后点的数量，避免频繁扩容
-
-//     for (int i = 0; i < line.rows() - 1; i++)
-//     {
-//         Eigen::Vector2d p1 = line.row(i);
-//         Eigen::Vector2d p2 = line.row(i + 1);
-//         interp_points.push_back(p1);
-
-//         double dx = std::abs(p1.x() - p2.x());
-//         double dy = std::abs(p1.y() - p2.y());
-//         if (dx > this->config_.interp_dx_thresh || dy > this->config_.interp_dy_thresh)
-//         {
-//             int interp_count = std::max(dx / this->config_.interp_dx_thresh, dy / this->config_.interp_dy_thresh);
-//             for (int j = 1; j < interp_count; j++)
-//             {
-//                 double alpha = double(j) / interp_count;
-//                 Eigen::Vector2d interp_point = (1 - alpha) * p1 + alpha * p2;
-//                 interp_points.push_back(interp_point);
-//                 // line.conservativeResize(line.rows() + 1, Eigen::NoChange);
-//                 // line.row(line.rows() - 1) = interp_point;
-//             }
-//         }
-//     }
-//     interp_points.push_back(line.row(line.rows() - 1));
-
-//     line.resize(interp_points.size(), 2);
-//     // Convert the vector of interpolated points to an Eigen::MatrixX2d
-//     for (size_t i = 0; i < interp_points.size(); ++i)
-//     {
-//         line.row(i) = interp_points[i];
-//     }
-// }
-
-/*
  更新边线信息
 */
 /** 保存当前有效边线，供下一帧丢线回退使用。 */
 void ImageProcess::update_prev_frame_lines()
 {
-    if (!this->left_line_.empty())
-    {
-        this->prev_left_line_ = this->left_line_;
-    }
-    if (!this->right_line_.empty())
-    {
-        this->prev_right_line_ = this->right_line_;
-    }
-
+    assert(this->supple_left_line_.empty() == this->supple_right_line_.empty());
     if (!this->supple_left_line_.empty())
     {
         this->prev_supple_left_line_ = this->supple_left_line_;
-    }
-    if (!this->supple_right_line_.empty())
-    {
         this->prev_supple_right_line_ = this->supple_right_line_;
     }
 }
@@ -974,23 +870,16 @@ std::vector<cv::Point> &line: 当前边线点集合，每行一个点，第一�
 2. 如果相邻点之间的坐标差异超过预设的阈值，则在两点之间进行线性插值，生成新的点，并将其加入边线集合
 */
 /** 对边线相邻点进行插值，使点列在空间上更加连续。 */
-void ImageProcess::linear_interpolation(std::vector<cv::Point> &line, std::vector<cv::Point> &interp_points)
+void ImageProcess::linear_interpolation(const std::vector<cv::Point> &line,
+                                        std::vector<cv::Point> &interp_points) const
 {
     interp_points.clear();
-    if (line.empty())
-    {
-        std::cout << "[linear_interpolation] Input line is empty!" << std::endl;
-        return;
-    }
+    assert(!line.empty());
 
-    // 预扩容，避免 size_t 乘法溢出。
-    if (line.size() <= std::numeric_limits<std::size_t>::max() / 2)
-    {
-        interp_points.reserve(line.size() * 2);
-    }
+    interp_points.reserve(line.size());
 
-    const double dx_threshold = std::max(1, this->config_.interp_dx_thresh);
-    const double dy_threshold = std::max(1, this->config_.interp_dy_thresh);
+    const double dx_threshold = config_.interp_dx_thresh;
+    const double dy_threshold = config_.interp_dy_thresh;
 
     // 从后向前遍历，使输出的点按 y 从小到大排列
     for (size_t i = line.size() - 1; i > 0; i--)
@@ -1004,7 +893,7 @@ void ImageProcess::linear_interpolation(std::vector<cv::Point> &line, std::vecto
         if (dx > dx_threshold || dy > dy_threshold)
         {
             const double required_count = std::max(dx / dx_threshold, dy / dy_threshold);
-            const std::size_t interp_count = static_cast<std::size_t>(std::min(required_count, 10000.0));
+            const std::size_t interp_count = static_cast<std::size_t>(required_count);
             for (std::size_t j = 1; j < interp_count; j++)
             {
                 const double alpha = static_cast<double>(j) / interp_count;
@@ -1020,7 +909,7 @@ void ImageProcess::linear_interpolation(std::vector<cv::Point> &line, std::vecto
 
 /*
 std::vector<cv::Point> &left_line, &right_line: 当前左右边线点集合，每行一个点，第一列为x坐标，第二列为y坐标
-std::vector<int> img_shape: 图像的高度和宽度，格式为{height, width}
+cv::Size image_size: 已验证图像的宽度和高度
 std::vector<cv::Point> &supple_left_line, &supple_right_line: 用于存储填充后的边线点集合
 逻辑：
 1. 根据图像高度计算填充的底部y坐标限制，通常为图像高度的某个比例位置
@@ -1030,14 +919,16 @@ std::vector<cv::Point> &supple_left_line, &supple_right_line: 用于存储填充
    c. 如果右线丢失但左线存在，则以左线为基准进行插值，并从左线的底部y坐标开始向下填充，同时将右线的填充点x坐标设置为图像宽度减1
 */
 /** 插值并补齐左右边线，必要时使用上一帧结果作为回退。 */
-void ImageProcess::fill_boundary(std::vector<cv::Point> &left_line, std::vector<cv::Point> &right_line, std::vector<int> img_shape, std::vector<cv::Point> &supple_left_line, std::vector<cv::Point> &supple_right_line, bool allow_prev_fallack)
+void ImageProcess::fill_boundary(const std::vector<cv::Point> &left_line,
+                                 const std::vector<cv::Point> &right_line,
+                                 cv::Size image_size,
+                                 std::vector<cv::Point> &supple_left_line,
+                                 std::vector<cv::Point> &supple_right_line,
+                                 bool allow_prev_fallback) const
 {
-    if (img_shape.size() < 2 || img_shape[0] <= 0 || img_shape[1] <= 0)
-    {
-        throw std::invalid_argument("Image shape must contain positive height and width.");
-    }
-    int img_h = img_shape[0];
-    int img_w = img_shape[1];
+    assert(image_size.width > 0 && image_size.height > 0);
+    const int img_h = image_size.height;
+    const int img_w = image_size.width;
 
     // 输出参数可能复用自上一帧，必须先清空，避免本帧无边线时沿用旧结果。
     supple_left_line.clear();
@@ -1055,8 +946,10 @@ void ImageProcess::fill_boundary(std::vector<cv::Point> &left_line, std::vector<
         linear_interpolation(right_line, supple_right_line);
 
         // 先判断哪边 y 值更大，把另一边填充到对应的 y（插值点按 y 从小到大，push_back 即可）
-        int left_bottom_y = clamp_int(int(supple_left_line.back().y), 0, img_h - 1);
-        int right_bottom_y = clamp_int(int(supple_right_line.back().y), 0, img_h - 1);
+        const int left_bottom_y = supple_left_line.back().y;
+        const int right_bottom_y = supple_right_line.back().y;
+        assert(left_bottom_y >= 0 && left_bottom_y < img_h);
+        assert(right_bottom_y >= 0 && right_bottom_y < img_h);
         if (left_bottom_y > right_bottom_y)
         {
             for (int y = right_bottom_y + 2; y <= left_bottom_y; y += 2)
@@ -1113,7 +1006,7 @@ void ImageProcess::fill_boundary(std::vector<cv::Point> &left_line, std::vector<
     else
     {
         // std::cout << "[fill_boundary] Both lines missing, using previous fallback..." << std::endl;
-        if (allow_prev_fallack && !this->prev_supple_left_line_.empty() && !this->prev_supple_right_line_.empty())
+        if (allow_prev_fallback && !this->prev_supple_left_line_.empty() && !this->prev_supple_right_line_.empty())
         {
             const auto copy_clamped = [img_w, img_h](const std::vector<cv::Point> &source,
                                                      std::vector<cv::Point> &target)
@@ -1198,12 +1091,9 @@ void ImageProcess::fit_polynomial()
                 near_syy + far_syy, near_sxy + far_sxy);
             const int y_start = rounded_int_saturated(std::min(near_y_min, far_y_min));
             const int y_end = rounded_int_saturated(std::max(near_y_max, far_y_max));
-            if (y_start > y_end)
-            {
-                return;
-            }
+            assert(y_start <= y_end);
             const std::size_t reserve_size = static_cast<std::size_t>(
-                static_cast<int>(y_end) - y_start + 1);
+                y_end - y_start + 1);
             fit_mid_line_.reserve(reserve_size);
             for (int y = y_start; y <= y_end; ++y)
             {
@@ -1232,19 +1122,13 @@ void ImageProcess::fit_polynomial()
         const int far_y_end = rounded_int_saturated(far_y_max);
         const int near_y_start = rounded_int_saturated(near_y_min);
         const int near_y_end = rounded_int_saturated(near_y_max);
-        if (near_y_start > near_y_end || far_y_start > far_y_end)
-        {
-            return;
-        }
+        assert(near_y_start <= near_y_end && far_y_start <= far_y_end);
 
         const std::size_t near_size = static_cast<std::size_t>(
-            static_cast<int>(near_y_end) - near_y_start + 1);
+            near_y_end - near_y_start + 1);
         const std::size_t far_size = static_cast<std::size_t>(
-            static_cast<int>(far_y_end) - far_y_start + 1);
-        if (near_size > std::numeric_limits<std::size_t>::max() - far_size)
-        {
-            throw std::runtime_error("Fitted line size overflows.");
-        }
+            far_y_end - far_y_start + 1);
+        assert(near_size <= std::numeric_limits<std::size_t>::max() - far_size);
         fit_mid_line_.reserve(near_size + far_size);
 
         // 按 y 从小到大生成：远段在前，近段在后。
@@ -1259,7 +1143,7 @@ void ImageProcess::fit_polynomial()
             fit_mid_line_.emplace_back(x, static_cast<int>(y));
         }
     }
-    catch (const std::exception &e)
+    catch (const std::runtime_error &e)
     {
         fit_mid_line_.clear();
         std::cerr << "Line fitting failed: " << e.what() << std::endl;
@@ -1316,15 +1200,10 @@ void ImageProcess::fit_polynomial2()
         float b = coeffs[1];
         float c = coeffs[2];
 
-        if (!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(c))
-        {
-            throw std::runtime_error("Quadratic fitting returned non-finite coefficients.");
-        }
-
         const int y_start = std::min(this->mid_line_.front().y, this->mid_line_.back().y);
         const int y_end = std::max(this->mid_line_.front().y, this->mid_line_.back().y);
         const std::size_t span = static_cast<std::size_t>(
-            static_cast<int>(y_end) - y_start + 1);
+            y_end - y_start + 1);
         this->fit_mid_line_.reserve((span + 2) / 3);
         for (int y = y_start; y <= y_end; y += 3)
         {
@@ -1332,413 +1211,50 @@ void ImageProcess::fit_polynomial2()
             this->fit_mid_line_.emplace_back(cv::Point(x, static_cast<int>(y)));
         }
     }
-    catch (const std::exception &e)
+    catch (const std::runtime_error &e)
     {
         this->fit_mid_line_.clear();
         std::cerr << "Polynomial fitting failed: " << e.what() << std::endl;
     }
 }
 
-/** 逐行搜索左右边线并执行可选调试绘制；补线与中线计算交由 calculate_mid_line 完成，与 task_2 解耦。 */
-void ImageProcess::get_side_line_task_1(cv::Mat &img, cv::Mat &canvas, bool is_draw)
+void ImageProcess::get_side_line_task_1(const cv::Mat &img, cv::Mat &canvas, bool is_draw)
 {
-    if (!is_valid_binary_scan_image(img))
-    {
-        clear_lines();
-        return;
-    }
-
-    int mid_x = int(img.cols / 2);
-    int img_h = img.rows;
-    int img_w = img.cols;
-    const int max_edge_x = img_w - 2; // row_diff 的最后一个有效下标
-    // task_1 使用独立的扫描区间（task1_down_ratio/task1_up_ratio），与 task_2 解耦
-    const int scan_y_start = clamp_int(scaled_coordinate(img_h, this->config_.task1_down_ratio), 0, img_h - 1);
-    const int scan_y_end = clamp_int(scaled_coordinate(img_h, this->config_.task1_up_ratio), 0, img_h - 1);
-    const bool draw = is_draw && is_drawable_canvas(canvas);
-
-    // 逐行地推的搜索起点
-    int prev_row_left_x = mid_x;
-    int prev_row_right_x = mid_x;
-
-    int search_left_start;
-    int search_left_end;
-    int search_right_start;
-    int search_right_end;
-
-    // miss计数
-    int miss_left_count = 0;
-    int miss_right_count = 0;
-
-    // 稳定点缓冲区及标志
-    std::vector<cv::Point> left_stable_buf;
-    std::vector<cv::Point> right_stable_buf;
-    bool left_stable_flag = false;
-    bool right_stable_flag = false;
-
-    try
-    {
-        clear_lines();
-
-        int lx = 0, rx = 0, y = 0;
-        for (y = scan_y_start; y >= scan_y_end; y--)
-        {
-            // 逐行计算相邻像素差异，避免计算整张图
-            cv::Mat row_mask = (img.row(y) == 0);
-            cv::Mat row_left = row_mask(cv::Range::all(), cv::Range(0, img_w - 1));
-            cv::Mat row_right = row_mask(cv::Range::all(), cv::Range(1, img_w));
-            cv::Mat row_diff;
-            cv::bitwise_xor(row_left, row_right, row_diff);
-
-            // 动态搜索：二段阶梯
-            const float y_norm = static_cast<float>(y) / static_cast<float>(img_h);
-            int cur_range = y_norm > this->config_.search_range_threshold ? this->config_.search_range_wide : this->config_.search_range_narrow;
-
-            // 搜索左边线
-            if (left_stable_flag)
-            {
-                // 左侧稳定时，围绕上一帧位置向左右搜索
-                search_left_start = std::min(prev_row_left_x + cur_range, max_edge_x);
-                search_left_end = std::max(prev_row_left_x - cur_range, 0);
-            }
-            else
-            {
-                // 左侧不稳定时，从中线偏左位置向左搜索到图像边缘
-                search_left_start = mid_x - this->config_.search_offset;
-                search_left_end = 0;
-            }
-
-            // // 调试输出：显示搜索区间
-            // if (y % 10 == 0) // 每10行输出一次，避免过多输出
-            // {
-            //     std::cout << "[LEFT] y: " << y << ", range: [" << search_left_end << ", " << search_left_start << "], prev_x: " << prev_row_left_x << std::endl;
-            // }
-
-            normalize_search_range(search_left_start, search_left_end, max_edge_x, true);
-            if (draw)
-            {
-                cv::circle(canvas, cv::Point(search_left_start, y), 1, cv::Scalar(0, 255, 255), -1);
-                cv::circle(canvas, cv::Point(search_left_end, y), 1, cv::Scalar(0, 255, 255), -1);
-            }
-
-            // 获取当前行的候选点
-            const uchar *row_ptr = row_diff.ptr<uchar>(0); // 获取当前行的指针
-
-            lx = -1;                                                   // 重置x，避免使用旧值
-            for (int i = search_left_start; i >= search_left_end; i--) // 修复：应该用 >= 而不是 <=
-            {
-                if (row_ptr[i] != 0)
-                { // 非0表示存在黑白跳变点
-                    lx = i;
-                    break;
-                }
-            }
-            bool left_added = false;
-            if (0 <= lx && lx <= max_edge_x)
-            {
-                left_added = add_point_with_stable_start(this->left_line_, cv::Point(lx, y), left_stable_buf, left_stable_flag, this->config_.x_continual, this->config_.y_continual);
-            }
-
-            // // 调试输出
-            // if (y % 10 == 0)
-            // {
-            //     std::cout << "[LEFT] found x=" << lx << ", left_added=" << left_added << ", stable=" << left_stable_flag << std::endl;
-            // }
-
-            // 如果当前行的点没有加入左边线，则下一行的搜索起点不更新
-            if (left_added)
-                prev_row_left_x = lx;
-
-            // miss记数，只有在左边线稳定时才计算
-            if (left_stable_flag && !left_added)
-                miss_left_count++;
-            else
-                miss_left_count = 0;
-            if (miss_left_count > this->config_.miss_threshold)
-            {
-                miss_left_count = 0;
-                prev_row_left_x = mid_x - this->config_.search_offset;
-                left_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
-                left_stable_buf.clear();  // 清空稳定缓冲区
-            }
-
-            // 搜索右边线
-            if (right_stable_flag)
-            {
-                // 右侧稳定时，围绕上一帧位置向左右搜索
-                search_right_start = std::max(prev_row_right_x - cur_range, 0);
-                search_right_end = std::min(prev_row_right_x + cur_range, max_edge_x);
-            }
-            else
-            {
-                // 右侧不稳定时，从中线偏右位置向右搜索到图像边缘
-                search_right_start = mid_x + this->config_.search_offset;
-                search_right_end = max_edge_x;
-            }
-            // // 调试输出：显示搜索区间
-            // if (y % 10 == 0) // 每10行输出一次，避免过多输出
-            // {
-            //     std::cout << "[RIGHT] y: " << y << ", range: [" << search_right_start << ", " << search_right_end << "], prev_x: " << prev_row_right_x << std::endl;
-            // }
-
-            normalize_search_range(search_right_start, search_right_end, max_edge_x, false);
-            if (draw)
-            {
-                cv::circle(canvas, cv::Point(search_right_start, y), 1, cv::Scalar(255, 255, 0), -1);
-                cv::circle(canvas, cv::Point(search_right_end, y), 1, cv::Scalar(255, 255, 0), -1);
-            }
-
-            rx = -1; // 重置x，避免使用旧值
-            for (int i = search_right_start; i <= search_right_end; i++)
-            {
-                if (row_ptr[i] != 0)
-                { // 非0表示存在黑白跳变点
-                    rx = i;
-                    break; // 找到第一个跳变点就停止
-                }
-            }
-            bool right_added = false;
-            if (0 <= rx && rx <= max_edge_x)
-            {
-                right_added = add_point_with_stable_start(this->right_line_, cv::Point(rx, y), right_stable_buf, right_stable_flag, this->config_.x_continual, this->config_.y_continual);
-            }
-
-            // // 调试输出
-            // if (y % 10 == 0)
-            // {
-            //     std::cout << "[RIGHT] found x=" << rx << ", right_added=" << right_added << ", stable=" << right_stable_flag << std::endl;
-            // }
-
-            if (right_added)
-                prev_row_right_x = rx;
-            if (right_stable_flag && !right_added)
-                miss_right_count++;
-            else
-                miss_right_count = 0;
-            if (miss_right_count > this->config_.miss_threshold)
-            {
-                miss_right_count = 0;
-                prev_row_right_x = mid_x + this->config_.search_offset;
-                right_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
-                right_stable_buf.clear();  // 清空稳定缓冲区
-            }
-
-            // 检测左右边线距离，如果太小则认为是噪点，移除这一对
-            if (left_added && right_added)
-            {
-                const int distance = std::abs(static_cast<int>(lx) - rx);
-                if (distance < this->config_.min_left_right_distance)
-                {
-                    // 移除最后加入的点
-                    this->left_line_.pop_back();
-                    this->right_line_.pop_back();
-                    left_stable_flag = false;
-                    right_stable_flag = false;
-                    left_stable_buf.clear();
-                    right_stable_buf.clear();
-                    prev_row_left_x = mid_x - this->config_.search_offset;
-                    prev_row_right_x = mid_x + this->config_.search_offset;
-                }
-            }
-        }
-    }
-    catch (const std::exception &e)
-    {
-        clear_lines();
-        std::cerr << "Error in get_side_line_task_1: " << e.what() << std::endl;
-    }
+    const ValidatedScanFrame frame(img, is_draw ? &canvas : nullptr,
+                                   cv::Size(config_.process_max_w, config_.process_max_h));
+    scan_side_lines(frame, config_.task1_down_ratio, config_.task1_up_ratio,
+                    false, BOTH);
 }
 
-// void ImageProcess::get_side_line_task_1(cv::Mat &img, cv::Mat &canvas, bool is_draw)
-// {
-//     int mid_x = int(img.cols / 2);
-//     int img_h = img.rows;
-//     int img_w = img.cols;
-
-//     // 逐行地推的搜索起点
-//     int prev_row_left_x = mid_x;
-//     int prev_row_right_x = mid_x;
-
-//     int search_left_start;
-//     int search_left_end;
-//     int search_right_start;
-//     int search_right_end;
-
-//     std::vector<int> candidate_xs;
-
-//     // miss计数
-//     int miss_left_count = 0;
-//     int miss_right_count = 0;
-
-//     // 稳定点缓冲区及标志
-//     std::vector<cv::Point> left_stable_buf;
-//     std::vector<cv::Point> right_stable_buf;
-//     bool left_stable_flag;
-//     bool right_stable_flag;
-
-//     try
-//     {
-//         clear_lines();
-
-//         auto local_left_line = std::vector<cv::Point>();
-//         auto local_right_line = std::vector<cv::Point>();
-
-//         // 获取布尔掩码
-//         cv::Mat mask = (img == 0);
-
-//         // 无拷贝切片
-//         cv::Mat left = mask(cv::Range::all(), cv::Range(0, img_w - 1));
-//         cv::Mat right = mask(cv::Range::all(), cv::Range(1, img_w));
-
-//         // 按位异或，得到0与非0的差异
-//         cv::Mat diff;
-//         cv::bitwise_xor(left, right, diff);
-
-//         int x, y;
-//         for (y = img_h * this->config_.down_ratio; y < img_h * this->config_.up_ratio; y--)
-//         {
-//             cv::Mat row_diff = diff.row(y); // 浅拷贝，指向当前行的相邻像素差异数据
-
-//             // 动态搜索：二段阶梯
-//             float y_norm = y / img_h;
-//             int cur_range = y_norm > this->config_.search_range_threshold ? this->config_.search_range_wide : this->config_.search_range_narrow;
-
-//             // 搜索左边线
-//             if (left_stable_flag)
-//             {
-//                 search_left_start = std::min(prev_row_left_x + cur_range, img_w - 1);
-//                 search_left_end = std::max(prev_row_left_x - cur_range, 0);
-//             }
-//             else
-//             {
-//                 search_left_start = mid_x - this->config_.search_offset;
-//                 search_left_end = 0;
-//             }
-
-//             if (is_draw)
-//             {
-//                 cv::circle(canvas, cv::Point(search_left_start, y), 1, cv::Scalar(0, 255, 255), -1);
-//                 cv::circle(canvas, cv::Point(search_left_end, y), 1, cv::Scalar(0, 255, 255), -1);
-//             }
-
-//             // 获取当前行的候选点
-//             const uchar *row_ptr = row_diff.ptr<uchar>(0); // 获取当前行的指针
-//             for (int i = search_left_start; i <= search_left_end; i--)
-//             {
-//                 if (row_ptr[i] != 0)
-//                 { // 非0表示存在黑白跳变点
-//                     x = i;
-//                 }
-//             }
-//             bool left_added = false;
-//             if (0 < x && x < img_w - 1)
-//             {
-//                 left_added = add_point_with_stable_start(local_left_line, cv::Point(x, y), left_stable_buf, left_stable_flag, this->config_.x_continual, this->config_.y_continual);
-//             }
-
-//             // 如果当前行的点没有加入左边线，则下一行的搜索起点不更新
-//             if (left_added)
-//                 prev_row_left_x = x;
-
-//             // miss记数，只有在左边线稳定时才计算
-//             if (left_stable_flag && !left_added)
-//                 miss_left_count++;
-//             else
-//                 miss_left_count = 0;
-//             if (miss_left_count > this->config_.miss_threshold)
-//             {
-//                 miss_left_count = 0;
-//                 prev_row_left_x = mid_x - this->config_.search_offset;
-//             }
-
-//             // 搜索右边线
-//             if (right_stable_flag)
-//             {
-//                 search_right_start = std::max(std::min(prev_row_right_x - cur_range, img_w - 1), 0);
-//                 search_right_end = std::min(prev_row_right_x + cur_range, img_w - 1);
-//             }
-//             else
-//             {
-//                 search_right_start = mid_x + this->config_.search_offset;
-//                 search_right_end = img_w - 1;
-//             }
-//             if (is_draw)
-//             {
-//                 cv::circle(canvas, cv::Point(search_right_start, y), 1, cv::Scalar(255, 255, 0), -1);
-//                 cv::circle(canvas, cv::Point(search_right_end, y), 1, cv::Scalar(255, 255, 0), -1);
-//             }
-
-//             for (int i = search_right_start; i <= search_right_end; i++)
-//             {
-//                 if (row_ptr[i] != 0)
-//                 { // 非0表示存在黑白跳变点
-//                     x = i;
-//                 }
-//             }
-//             bool right_added = false;
-//             if (0 < x && x < img_w - 1)
-//             {
-//                 right_added = add_point_with_stable_start(local_right_line, cv::Point(x, y), right_stable_buf, right_stable_flag, this->config_.x_continual, this->config_.y_continual);
-//             }
-//             if (right_stable_flag && !right_added)
-//                 miss_right_count++;
-//             else
-//                 miss_right_count = 0;
-//             if (miss_right_count > this->config_.miss_threshold)
-//             {
-//                 miss_right_count = 0;
-//                 prev_row_right_x = mid_x + this->config_.search_offset;
-//             }
-//         }
-
-//         // 转成Eigen格式
-//         this->left_line_ = Eigen::MatrixX2d(local_left_line.size(), 2);
-//         for (size_t i = 0; i < local_left_line.size(); i++)
-//         {
-//             this->left_line_(i, 0) = local_left_line[i].x;
-//             this->left_line_(i, 1) = local_left_line[i].y;
-//         }
-//         this->right_line_ = Eigen::MatrixX2d(local_right_line.size(), 2);
-//         for (size_t i = 0; i < local_right_line.size(); i++)
-//         {
-//             this->right_line_(i, 0) = local_right_line[i].x;
-//             this->right_line_(i, 1) = local_right_line[i].y;
-//         }
-
-//         // 插值+填充边线（同时处理边线情况）
-//         fill_boundary(this->left_line_, this->right_line_, {img_h, img_w}, this->supple_left_line_, this->supple_right_line_);
-
-//         //  使用优化后的边线计算中线
-//         int n = std::min(this->supple_left_line_.rows(), this->supple_right_line_.rows());
-//         this->mid_line_ = Eigen::MatrixX2d(n, 2);
-//         for (int i = 0; i < n; i++)
-//         {
-//             this->mid_line_(i, 0) = (this->supple_left_line_(i, 0) + this->supple_right_line_(i, 0)) / 2.0;
-//             this->mid_line_(i, 1) = (this->supple_left_line_(i, 1) + this->supple_right_line_(i, 1)) / 2.0;
-//         }
-//     }
-//     catch (const std::exception &e)
-//     {
-//         std::cerr << "Error in get_side_line_task_1: " << e.what() << std::endl;
-//     }
-// }
-
-/** 按指定搜索侧逐行检测边线，并可选执行拐点识别。 */
-void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_draw, bool find_corner, SearchSide side)
+void ImageProcess::get_side_line_task_2(const cv::Mat &img, cv::Mat &canvas,
+                                        bool is_draw, bool find_corner, SearchSide side)
 {
-    if (!is_valid_binary_scan_image(img))
-    {
-        clear_lines();
-        return;
-    }
+    if (side != BOTH && side != LEFT_ONLY && side != RIGHT_ONLY)
+        throw std::invalid_argument("Unsupported side-line search mode.");
+    const ValidatedScanFrame frame(img, is_draw ? &canvas : nullptr,
+                                   cv::Size(config_.process_max_w, config_.process_max_h));
+    scan_side_lines(frame, config_.down_ratio, config_.up_ratio,
+                    find_corner, side);
+}
 
-    int mid_x = int(img.cols / 2);
-    int img_h = img.rows;
-    int img_w = img.cols;
+/** 对已验证的二值帧逐行检测边线，两种 task 只提供不同静态策略。 */
+void ImageProcess::scan_side_lines(const ValidatedScanFrame &frame,
+                                   float scan_down_ratio, float scan_up_ratio,
+                                   bool find_corner, SearchSide side)
+{
+    assert(side == BOTH || side == LEFT_ONLY || side == RIGHT_ONLY);
+    assert(std::isfinite(scan_down_ratio) && std::isfinite(scan_up_ratio));
+    assert(scan_up_ratio >= 0.0f && scan_up_ratio <= scan_down_ratio && scan_down_ratio <= 1.0f);
+
+    const cv::Mat &img = frame.binary;
+
+    const int mid_x = img.cols / 2;
+    const int img_h = img.rows;
+    const int img_w = img.cols;
     const int max_edge_x = img_w - 2; // row_diff 的最后一个有效下标
-    const int scan_y_start = clamp_int(scaled_coordinate(img_h, this->config_.down_ratio), 0, img_h - 1);
-    const int scan_y_end = clamp_int(scaled_coordinate(img_h, this->config_.up_ratio), 0, img_h - 1);
-    const bool draw = is_draw && is_drawable_canvas(canvas);
+    const int scan_y_start = clamp_int(scaled_coordinate(img_h, scan_down_ratio), 0, img_h - 1);
+    const int scan_y_end = clamp_int(scaled_coordinate(img_h, scan_up_ratio), 0, img_h - 1);
+    const bool draw = frame.canvas != nullptr;
 
     // 逐行地推的搜索起点
     int prev_row_left_x = mid_x;
@@ -1762,231 +1278,239 @@ void ImageProcess::get_side_line_task_2(cv::Mat &img, cv::Mat &canvas, bool is_d
     // 拐点检测标志
     bool find_left_corner = false;
     bool find_right_corner = false;
-    cv::Point left_nxt_p, left_cur_p, left_pre_p;
-    cv::Point right_nxt_p, right_cur_p, right_pre_p;
+    std::array<cv::Point, 2> left_corner_history{};
+    std::array<cv::Point, 2> right_corner_history{};
+    std::size_t left_corner_count = 0;
+    std::size_t right_corner_count = 0;
 
-    try
+    clear_lines();
+
+    int lx = 0, rx = 0, y = 0;
+    for (y = scan_y_start; y >= scan_y_end; y--)
     {
-        clear_lines();
+        // 逐行计算相邻像素差异，避免计算整张图
+        cv::Mat row_mask = (img.row(y) == 0);
+        cv::Mat row_left = row_mask(cv::Range::all(), cv::Range(0, img_w - 1));
+        cv::Mat row_right = row_mask(cv::Range::all(), cv::Range(1, img_w));
+        cv::Mat row_diff;
+        cv::bitwise_xor(row_left, row_right, row_diff);
 
-        int lx = 0, rx = 0, y = 0;
-        for (y = scan_y_start; y >= scan_y_end; y--)
+        // 动态搜索：二段阶梯
+        const float y_norm = static_cast<float>(y) / static_cast<float>(img_h);
+        int cur_range = y_norm > this->config_.search_range_threshold ? this->config_.search_range_wide : this->config_.search_range_narrow;
+
+        // 共用行指针与本行搜索结果/添加标志（左右搜索块及 L+R 距离检查都要用）
+        const uchar *row_ptr = row_diff.ptr<uchar>(0);
+        lx = -1; // 重置 x，避免使用旧值
+        rx = -1;
+        bool left_added = false;
+        bool right_added = false;
+
+        // 搜索左边线
+        if (side != RIGHT_ONLY)
         {
-            // 逐行计算相邻像素差异，避免计算整张图
-            cv::Mat row_mask = (img.row(y) == 0);
-            cv::Mat row_left = row_mask(cv::Range::all(), cv::Range(0, img_w - 1));
-            cv::Mat row_right = row_mask(cv::Range::all(), cv::Range(1, img_w));
-            cv::Mat row_diff;
-            cv::bitwise_xor(row_left, row_right, row_diff);
-
-            // 动态搜索：二段阶梯
-            const float y_norm = static_cast<float>(y) / static_cast<float>(img_h);
-            int cur_range = y_norm > this->config_.search_range_threshold ? this->config_.search_range_wide : this->config_.search_range_narrow;
-
-            // 共用行指针与本行搜索结果/添加标志（左右搜索块及 L+R 距离检查都要用）
-            const uchar *row_ptr = row_diff.ptr<uchar>(0);
-            lx = -1; // 重置 x，避免使用旧值
-            rx = -1;
-            bool left_added = false;
-            bool right_added = false;
-
-            // 搜索左边线
-            if (side != RIGHT_ONLY)
+            if (left_stable_flag)
             {
-                if (left_stable_flag)
-                {
-                    // 左侧稳定时，围绕上一帧位置向左右搜索
-                    search_left_start = std::min(prev_row_left_x + cur_range, max_edge_x);
-                    search_left_end = std::max(prev_row_left_x - cur_range, 0);
-                }
-                else
-                {
-                    // 左侧不稳定时，从中线偏左位置向左搜索到图像边缘
-                    search_left_start = mid_x - this->config_.search_offset;
-                    search_left_end = 0;
-                }
+                // 左侧稳定时，围绕上一帧位置向左右搜索
+                search_left_start = std::min(prev_row_left_x + cur_range, max_edge_x);
+                search_left_end = std::max(prev_row_left_x - cur_range, 0);
+            }
+            else
+            {
+                // 左侧不稳定时，从中线偏左位置向左搜索到图像边缘
+                search_left_start = mid_x - this->config_.search_offset;
+                search_left_end = 0;
+            }
 
-                normalize_search_range(search_left_start, search_left_end, max_edge_x, true);
-                if (draw)
-                {
-                    cv::circle(canvas, cv::Point(search_left_start, y), 1, cv::Scalar(0, 255, 255), -1);
-                    cv::circle(canvas, cv::Point(search_left_end, y), 1, cv::Scalar(0, 255, 255), -1);
-                }
+            normalize_search_range(search_left_start, search_left_end, max_edge_x, true);
+            if (draw)
+            {
+                cv::circle(*frame.canvas, cv::Point(search_left_start, y), 1, cv::Scalar(0, 255, 255), -1);
+                cv::circle(*frame.canvas, cv::Point(search_left_end, y), 1, cv::Scalar(0, 255, 255), -1);
+            }
 
-                for (int i = search_left_start; i >= search_left_end; i--)
-                {
-                    if (row_ptr[i] != 0)
-                    { // 非0表示存在黑白跳变点
-                        lx = i;
-                        break;
-                    }
-                }
-
-                // 先进行稳定点判断
-                if (0 <= lx && lx <= max_edge_x)
-                {
-                    left_added = add_point_with_stable_start(this->left_line_, cv::Point(lx, y), left_stable_buf, left_stable_flag, this->config_.x_continual, this->config_.y_continual);
-                }
-
-                // 如果当前行的点没有加入左边线，则下一行的搜索起点不更新
-                if (left_added)
-                {
-                    prev_row_left_x = lx;
-                    // 只有稳定点才参与拐点检测
-                    if (find_corner && !find_left_corner)
-                    {
-                        left_nxt_p = cv::Point(lx, y);
-                        if (left_cur_p.x != 0 && left_cur_p.y != 0 && left_pre_p.x != 0 && left_pre_p.y != 0)
-                        {
-                            float angle = get_angle_p(left_pre_p, left_cur_p, left_nxt_p);
-                            if (angle < this->config_.corner_angle_high && angle > this->config_.corner_angle_low)
-                            {
-                                find_left_corner = true;
-                                this->left_corners_ = left_cur_p;
-                            }
-                        }
-                        // 更新拐点检测的点
-                        left_pre_p = left_cur_p;
-                        left_cur_p = left_nxt_p;
-                    }
-                }
-
-                // miss计数逻辑应该在left_added条件之外
-                if (left_stable_flag && !left_added)
-                    miss_left_count++;
-                else
-                    miss_left_count = 0;
-                if (miss_left_count > this->config_.miss_threshold)
-                {
-                    miss_left_count = 0;
-                    prev_row_left_x = mid_x - this->config_.search_offset;
-                    left_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
-                    left_stable_buf.clear();  // 清空稳定缓冲区
+            for (int i = search_left_start; i >= search_left_end; i--)
+            {
+                if (row_ptr[i] != 0)
+                { // 非0表示存在黑白跳变点
+                    lx = i;
+                    break;
                 }
             }
 
-            // 搜索右边线
-            if (side != LEFT_ONLY)
+            // 先进行稳定点判断
+            if (lx >= 0)
             {
-                if (right_stable_flag)
-                {
-                    // 右侧稳定时，围绕上一帧位置向左右搜索
-                    search_right_start = std::max(prev_row_right_x - cur_range, 0);
-                    search_right_end = std::min(prev_row_right_x + cur_range, max_edge_x);
-                }
-                else
-                {
-                    // 右侧不稳定时，从中线偏右位置向右搜索到图像边缘
-                    search_right_start = mid_x + this->config_.search_offset;
-                    search_right_end = max_edge_x;
-                }
+                assert(lx <= max_edge_x);
+                left_added = add_point_with_stable_start(
+                    this->left_line_, cv::Point(lx, y), left_stable_buf, left_stable_flag);
+            }
 
-                normalize_search_range(search_right_start, search_right_end, max_edge_x, false);
-                if (draw)
+            // 如果当前行的点没有加入左边线，则下一行的搜索起点不更新
+            if (left_added)
+            {
+                prev_row_left_x = lx;
+                // 只有稳定点才参与拐点检测
+                if (find_corner && !find_left_corner)
                 {
-                    cv::circle(canvas, cv::Point(search_right_start, y), 1, cv::Scalar(255, 255, 0), -1);
-                    cv::circle(canvas, cv::Point(search_right_end, y), 1, cv::Scalar(255, 255, 0), -1);
-                }
-
-                for (int i = search_right_start; i <= search_right_end; i++)
-                {
-                    if (row_ptr[i] != 0)
-                    { // 非0表示存在黑白跳变点
-                        rx = i;
-                        break; // 右侧搜索：找到第一个跳变点就停止
-                    }
-                }
-                if (0 <= rx && rx <= max_edge_x)
-                {
-                    right_added = add_point_with_stable_start(this->right_line_, cv::Point(rx, y), right_stable_buf, right_stable_flag, this->config_.x_continual, this->config_.y_continual);
-                }
-
-                if (right_added)
-                {
-                    prev_row_right_x = rx;
-                    // 只有稳定点才参与拐点检测
-                    if (find_corner && !find_right_corner)
+                    const cv::Point current(lx, y);
+                    if (left_corner_count == left_corner_history.size())
                     {
-                        right_nxt_p = cv::Point(rx, y);
-                        if (right_cur_p.x != 0 && right_cur_p.y != 0 && right_pre_p.x != 0 && right_pre_p.y != 0)
+                        const float angle = get_angle_p(
+                            left_corner_history[0], left_corner_history[1], current);
+                        if (angle < this->config_.corner_angle_high && angle > this->config_.corner_angle_low)
                         {
-                            float angle = get_angle_p(right_pre_p, right_cur_p, right_nxt_p);
-                            if (angle < this->config_.corner_angle_high && angle > this->config_.corner_angle_low)
-                            {
-                                find_right_corner = true;
-                                this->right_corners_ = right_cur_p;
-                            }
+                            find_left_corner = true;
+                            this->left_corners_ = left_corner_history[1];
                         }
-                        // 更新拐点检测的点
-                        right_pre_p = right_cur_p;
-                        right_cur_p = right_nxt_p;
+                        left_corner_history[0] = left_corner_history[1];
+                        left_corner_history[1] = current;
                     }
-                }
-
-                // miss计数逻辑应该在right_added条件之外
-                if (right_stable_flag && !right_added)
-                    miss_right_count++;
-                else
-                    miss_right_count = 0;
-                if (miss_right_count > this->config_.miss_threshold)
-                {
-                    miss_right_count = 0;
-                    prev_row_right_x = mid_x + this->config_.search_offset;
-                    right_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
-                    right_stable_buf.clear();  // 清空稳定缓冲区
+                    else
+                    {
+                        left_corner_history[left_corner_count++] = current;
+                    }
                 }
             }
 
-            // 检测左右边线距离，如果太小则认为是噪点，移除这一对
-            // (side != BOTH 时被跳过的一侧 *_added 为 false，这里自然短路)
-            if (left_added && right_added)
+            // miss计数逻辑应该在left_added条件之外
+            if (left_stable_flag && !left_added)
+                miss_left_count++;
+            else
+                miss_left_count = 0;
+            if (miss_left_count > this->config_.miss_threshold)
             {
-                const int distance = std::abs(static_cast<int>(lx) - rx);
-                if (distance < this->config_.min_left_right_distance)
-                {
-                    // 移除最后加入的点
-                    this->left_line_.pop_back();
-                    this->right_line_.pop_back();
-                    left_stable_flag = false;
-                    right_stable_flag = false;
-                    prev_row_left_x = mid_x - this->config_.search_offset;
-                    prev_row_right_x = mid_x + this->config_.search_offset;
-                    left_stable_buf.clear();
-                    right_stable_buf.clear();
-                }
+                miss_left_count = 0;
+                prev_row_left_x = mid_x - this->config_.search_offset;
+                left_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
+                left_stable_buf.clear();  // 清空稳定缓冲区
             }
         }
-    }
 
-    catch (const std::exception &e)
-    {
-        clear_lines();
-        std::cerr << "Error in get_side_line_task_2: " << e.what() << std::endl;
+        // 搜索右边线
+        if (side != LEFT_ONLY)
+        {
+            if (right_stable_flag)
+            {
+                // 右侧稳定时，围绕上一帧位置向左右搜索
+                search_right_start = std::max(prev_row_right_x - cur_range, 0);
+                search_right_end = std::min(prev_row_right_x + cur_range, max_edge_x);
+            }
+            else
+            {
+                // 右侧不稳定时，从中线偏右位置向右搜索到图像边缘
+                search_right_start = mid_x + this->config_.search_offset;
+                search_right_end = max_edge_x;
+            }
+
+            normalize_search_range(search_right_start, search_right_end, max_edge_x, false);
+            if (draw)
+            {
+                cv::circle(*frame.canvas, cv::Point(search_right_start, y), 1, cv::Scalar(255, 255, 0), -1);
+                cv::circle(*frame.canvas, cv::Point(search_right_end, y), 1, cv::Scalar(255, 255, 0), -1);
+            }
+
+            for (int i = search_right_start; i <= search_right_end; i++)
+            {
+                if (row_ptr[i] != 0)
+                { // 非0表示存在黑白跳变点
+                    rx = i;
+                    break; // 右侧搜索：找到第一个跳变点就停止
+                }
+            }
+            if (rx >= 0)
+            {
+                assert(rx <= max_edge_x);
+                right_added = add_point_with_stable_start(
+                    this->right_line_, cv::Point(rx, y), right_stable_buf, right_stable_flag);
+            }
+
+            if (right_added)
+            {
+                prev_row_right_x = rx;
+                // 只有稳定点才参与拐点检测
+                if (find_corner && !find_right_corner)
+                {
+                    const cv::Point current(rx, y);
+                    if (right_corner_count == right_corner_history.size())
+                    {
+                        const float angle = get_angle_p(
+                            right_corner_history[0], right_corner_history[1], current);
+                        if (angle < this->config_.corner_angle_high && angle > this->config_.corner_angle_low)
+                        {
+                            find_right_corner = true;
+                            this->right_corners_ = right_corner_history[1];
+                        }
+                        right_corner_history[0] = right_corner_history[1];
+                        right_corner_history[1] = current;
+                    }
+                    else
+                    {
+                        right_corner_history[right_corner_count++] = current;
+                    }
+                }
+            }
+
+            // miss计数逻辑应该在right_added条件之外
+            if (right_stable_flag && !right_added)
+                miss_right_count++;
+            else
+                miss_right_count = 0;
+            if (miss_right_count > this->config_.miss_threshold)
+            {
+                miss_right_count = 0;
+                prev_row_right_x = mid_x + this->config_.search_offset;
+                right_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
+                right_stable_buf.clear();  // 清空稳定缓冲区
+            }
+        }
+
+        // 检测左右边线距离，如果太小则认为是噪点，移除这一对
+        // (side != BOTH 时被跳过的一侧 *_added 为 false，这里自然短路)
+        if (left_added && right_added)
+        {
+            const int distance = std::abs(static_cast<int>(lx) - rx);
+            if (distance < this->config_.min_left_right_distance)
+            {
+                // 移除最后加入的点
+                this->left_line_.pop_back();
+                this->right_line_.pop_back();
+                left_stable_flag = false;
+                right_stable_flag = false;
+                prev_row_left_x = mid_x - this->config_.search_offset;
+                prev_row_right_x = mid_x + this->config_.search_offset;
+                left_stable_buf.clear();
+                right_stable_buf.clear();
+            }
+        }
     }
 }
 
 /*
  * 根据当前左右原始边线插值+填充，并计算中线
- * img: 当前二值化图像（仅用于获取宽高）
+ * image_size: 已验证二值图的几何尺寸
  * 逻辑：
  * 1. 调用 fill_boundary 对左右边线做插值和底部填充，得到 supple_left_line_/supple_right_line_
  * 2. 按相同索引对左右填充线的点求中点，写入 mid_line_
- * 3. 更新 prev_* 成员，供下一帧 fill_boundary 的 allow_prev_fallack 使用
+ * 3. 更新 prev_* 成员，供下一帧 fill_boundary 的 allow_prev_fallback 使用
  */
-/** 根据当前左右边线补线，并按照当前模式计算中线；MID_AVG 模式下按 left_weight 对左右边线加权（左转 0.55、右转 0.45，默认 0.5 即均值）。 */
-void ImageProcess::calculate_mid_line(cv::Mat &img, float left_weight)
+/** 根据当前左右边线补线，并按照当前模式计算中线；MID_AVG 模式下按 left_weight 对左右边线加权。 */
+void ImageProcess::calculate_mid_line(cv::Size image_size, float left_weight)
 {
-    if (img.empty() || img.dims != 2 || img.rows <= 0 || img.cols <= 0)
+    if (image_size.width <= 0 || image_size.height <= 0 ||
+        image_size.width > config_.process_max_w || image_size.height > config_.process_max_h)
     {
-        clear_lines();
-        return;
+        throw std::invalid_argument("Mid-line image size is outside the configured processing bounds.");
     }
-
-    int img_h = img.rows;
-    int img_w = img.cols;
+    if (!std::isfinite(left_weight) || left_weight < 0.0f || left_weight > 1.0f)
+        throw std::invalid_argument("Left boundary weight must be finite and in [0, 1].");
+    assert(mid_line_mode_ == MID_AVG || mid_line_mode_ == LEFT_OFFSET ||
+           mid_line_mode_ == RIGHT_OFFSET);
+    const int img_w = image_size.width;
 
     // 插值+填充边线（同时处理边线情况）
-    fill_boundary(this->left_line_, this->right_line_, {img_h, img_w}, this->supple_left_line_, this->supple_right_line_, true);
+    fill_boundary(this->left_line_, this->right_line_, image_size,
+                  this->supple_left_line_, this->supple_right_line_, true);
 
     if (this->mid_line_mode_ == LEFT_OFFSET)
     {
@@ -1995,9 +1519,9 @@ void ImageProcess::calculate_mid_line(cv::Mat &img, float left_weight)
         this->mid_line_.resize(n);
         for (std::size_t i = 0; i < n; i++)
         {
-            const int x = static_cast<int>(this->supple_left_line_[i].x) +
-                          this->config_.turning_mid_offset;
-            this->mid_line_[i].x = clamp_int(rounded_int_saturated(static_cast<double>(x)), 0, img_w - 1);
+            const double x = static_cast<double>(this->supple_left_line_[i].x) +
+                             this->config_.turning_mid_offset;
+            this->mid_line_[i].x = clamp_int(rounded_int_saturated(x), 0, img_w - 1);
             this->mid_line_[i].y = this->supple_left_line_[i].y;
         }
     }
@@ -2008,9 +1532,9 @@ void ImageProcess::calculate_mid_line(cv::Mat &img, float left_weight)
         this->mid_line_.resize(n);
         for (std::size_t i = 0; i < n; i++)
         {
-            const int x = static_cast<int>(this->supple_right_line_[i].x) -
-                          this->config_.turning_mid_offset;
-            this->mid_line_[i].x = clamp_int(rounded_int_saturated(static_cast<double>(x)), 0, img_w - 1);
+            const double x = static_cast<double>(this->supple_right_line_[i].x) -
+                             this->config_.turning_mid_offset;
+            this->mid_line_[i].x = clamp_int(rounded_int_saturated(x), 0, img_w - 1);
             this->mid_line_[i].y = this->supple_right_line_[i].y;
         }
     }
@@ -2032,12 +1556,15 @@ void ImageProcess::calculate_mid_line(cv::Mat &img, float left_weight)
 }
 
 /** 在画布上绘制边线、中线、拟合线、状态信息和目标点。 */
-void ImageProcess::draw_line(cv::Mat &canvas, float fps, std::string state)
+void ImageProcess::draw_line(cv::Mat &canvas, float fps, const std::string &state,
+                             TrackingTarget target)
 {
-    if (canvas.empty() || canvas.dims != 2 ||
-        (canvas.channels() != 1 && canvas.channels() != 3 && canvas.channels() != 4))
+    if (!is_drawable_canvas(canvas))
+        throw std::invalid_argument("Drawing canvas must be a non-empty 2D image with 1, 3, or 4 channels.");
+    if (target != TrackingTarget::STRAIGHT && target != TrackingTarget::TURNING &&
+        target != TrackingTarget::TRACKING2)
     {
-        return;
+        throw std::invalid_argument("Unsupported tracking target.");
     }
 
     if (canvas.channels() == 1)
@@ -2082,21 +1609,25 @@ void ImageProcess::draw_line(cv::Mat &canvas, float fps, std::string state)
     }
 
     // 绘制追踪目标点
-    int target_idx = this->config_.left_target_p_index;
-    if (state == "TRACKING2")
+    int target_idx = 0;
+    switch (target)
     {
-        target_idx = this->config_.tracking2_target_p_index;
-    }
-    else if (state == "STRAIGHT_TRACKING" || state == "CROSS" || state == "TURNING")
-    {
+    case TrackingTarget::STRAIGHT:
         target_idx = this->config_.straight_target_p_index;
+        break;
+    case TrackingTarget::TURNING:
+        target_idx = this->config_.left_target_p_index;
+        break;
+    case TrackingTarget::TRACKING2:
+        target_idx = this->config_.tracking2_target_p_index;
+        break;
     }
 
     // std::cout << "Drawing target point at index: " << target_idx << std::endl;
 
     // 处理负索引
-    const int line_size = static_cast<int>(this->fit_mid_line_.size());
-    int target_index = target_idx;
+    const std::int64_t line_size = static_cast<std::int64_t>(this->fit_mid_line_.size());
+    std::int64_t target_index = target_idx;
     if (target_index < 0)
     {
         target_index = line_size + target_index; // 转换为正索引
@@ -2104,7 +1635,8 @@ void ImageProcess::draw_line(cv::Mat &canvas, float fps, std::string state)
 
     if (target_index >= 0 && target_index < line_size)
     {
-        cv::circle(canvas, this->fit_mid_line_[static_cast<std::size_t>(target_index)], 4, cv::Scalar(255, 0, 255), -1);
+        cv::circle(canvas, this->fit_mid_line_[static_cast<std::size_t>(target_index)],
+                   4, cv::Scalar(255, 0, 255), -1);
     }
 }
 
@@ -2122,21 +1654,9 @@ void ImageProcess::clear_lines()
 }
 
 /** 返回当前保存的帧图像。 */
-cv::Mat ImageProcess::return_frame()
+cv::Mat ImageProcess::return_frame() const
 {
     if (this->frame_.empty())
-    {
-        throw std::runtime_error("Frame is empty.");
-    }
+        throw std::runtime_error("No processed frame is available.");
     return this->frame_;
-}
-
-/** 保存输入帧的独立副本，供后续调试绘制使用。 */
-void ImageProcess::set_frame(const cv::Mat &frame)
-{
-    if (frame.empty())
-    {
-        throw std::runtime_error("Input frame is empty.");
-    }
-    this->frame_ = frame.clone();
 }
