@@ -7,6 +7,15 @@
 
 #include "ppocr_system.h"
 
+struct PPOCRInferenceResult
+{
+    cv::Mat image;
+    ppocr_text_recog_array_result_t ocr_results;
+    ppocr_inference_timing_t timing;
+
+    PPOCRInferenceResult();
+};
+
 class PPOCRModel
 {
 public:
@@ -17,7 +26,7 @@ public:
              bool unused_share_weight,
              int worker_id);
     rknn_context *get_pctx();
-    cv::Mat infer(const cv::Mat &bgr_frame);
+    PPOCRInferenceResult infer(const cv::Mat &bgr_frame);
 
     ~PPOCRModel();
 

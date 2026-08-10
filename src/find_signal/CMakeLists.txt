@@ -8,7 +8,9 @@ add_compile_options(-std=c++11)
 # # if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 # # is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
+  roscpp
   rospy
+  roslib
   sensor_msgs
   cv_bridge
   geometry_msgs
@@ -118,7 +120,7 @@ catkin_package(
 
   # INCLUDE_DIRS include
   # LIBRARIES find_signal
-  CATKIN_DEPENDS rospy sensor_msgs cv_bridge geometry_msgs std_msgs
+  CATKIN_DEPENDS roscpp rospy roslib sensor_msgs cv_bridge geometry_msgs std_msgs
 
   # DEPENDS system_lib
 )
@@ -245,6 +247,30 @@ target_link_libraries(find_signal_demo
 )
 
 target_compile_definitions(find_signal_demo PRIVATE DISABLE_RGA)
+
+add_executable(find_signal_rknn_ros
+  src/rknn_ros.cpp
+  src/ppocr_model.cc
+  src/ppocr_visualization.cc
+  src/ppocr_system.cc
+  src/postprocess.cc
+  src/clipper.cc
+  ${RKNN_UTILS_ROOT}/image_utils.c
+  ${RKNN_UTILS_ROOT}/file_utils.c
+)
+set_target_properties(find_signal_rknn_ros PROPERTIES OUTPUT_NAME rknn_ros)
+target_link_libraries(find_signal_rknn_ros
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBS}
+  ${RKNN_LIBRARY}
+  ${RGA_LIBRARY}
+  pthread
+  dl
+  m
+)
+target_compile_definitions(find_signal_rknn_ros PRIVATE DISABLE_RGA)
+add_dependencies(find_signal_rknn_ros ${catkin_EXPORTED_TARGETS})
+
 add_compile_definitions(DISABLE_LIBJPEG)
 
 if(CATKIN_ENABLE_TESTING)

@@ -4,6 +4,7 @@
 #include <math.h>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <vector>
 
 #include "opencv2/opencv.hpp"
@@ -11,6 +12,18 @@
 #include "common.h"
 #include "file_utils.h"
 #include "image_utils.h"
+
+namespace
+{
+using TimingClock = std::chrono::steady_clock;
+
+double ElapsedMilliseconds(const TimingClock::time_point& start)
+{
+    return std::chrono::duration<double, std::milli>(
+               TimingClock::now() - start)
+        .count();
+}
+} // namespace
 
 bool CompareBox(const std::array<int, 8>& result1, const std::array<int, 8>& result2)
 {
@@ -278,7 +291,7 @@ int release_ppocr_model(rknn_app_context_t* app_ctx)
     return 0;
 }
 
-int inference_ppocr_det_model(rknn_app_context_t* app_ctx, image_buffer_t* src_img, ppocr_det_postprocess_params* params, ppocr_det_result* out_result)
+int inference_ppocr_det_model(rknn_app_context_t* app_ctx, image_buffer_t* src_img, ppocr_det_postprocess_params* params, ppocr_det_result* out_result, ppocr_inference_timing_t* timing)
 {
     if (app_ctx == NULL || src_img == NULL || params == NULL || out_result == NULL ||
         app_ctx->rknn_ctx == 0 || src_img->virt_addr == NULL ||
@@ -294,6 +307,7 @@ int inference_ppocr_det_model(rknn_app_context_t* app_ctx, image_buffer_t* src_i
     bool outputs_acquired = false;
     float scale_w = 0.0f;
     float scale_h = 0.0f;
+    TimingClock::time_point stage_start = TimingClock::now();
 
     memset(&img, 0, sizeof(image_buffer_t));
     memset(inputs, 0, sizeof(inputs));
@@ -326,7 +340,10 @@ int inference_ppocr_det_model(rknn_app_context_t* app_ctx, image_buffer_t* src_i
 
     scale_w = (float)src_img->width / (float)img.width;
     scale_h = (float)src_img->height / (float)img.height;
+    if (timing != NULL)
+        timing->preprocess_ms += ElapsedMilliseconds(stage_start);
 
+    stage_start = TimingClock::now();
     ret = rknn_inputs_set(app_ctx->rknn_ctx, 1, inputs);
     if (ret < 0) {
         printf("rknn_input_set fail! ret=%d\n", ret);
@@ -349,12 +366,17 @@ int inference_ppocr_det_model(rknn_app_context_t* app_ctx, image_buffer_t* src_i
         goto out;
     }
     outputs_acquired = true;
+    if (timing != NULL)
+        timing->inference_ms += ElapsedMilliseconds(stage_start);
 
     // Post Process
+    stage_start = TimingClock::now();
     ret = dbnet_postprocess((float*)outputs[0].buf, app_ctx->model_width, app_ctx->model_height,
                                                 params->threshold, params->box_threshold, params->use_dilate, params->db_score_mode,
                                                 params->db_unclip_ratio, params->db_box_type,
                                                 scale_w, scale_h, out_result);
+    if (timing != NULL)
+        timing->postprocess_ms += ElapsedMilliseconds(stage_start);
 
 out:
     if (outputs_acquired)
@@ -370,7 +392,7 @@ out:
     return ret;
 }
 
-int inference_ppocr_rec_model(rknn_app_context_t* app_ctx, image_buffer_t* src_img, ppocr_rec_result* out_result)
+int inference_ppocr_rec_model(rknn_app_context_t* app_ctx, image_buffer_t* src_img, ppocr_rec_result* out_result, ppocr_inference_timing_t* timing)
 {
     if (app_ctx == NULL || src_img == NULL || out_result == NULL ||
         app_ctx->rknn_ctx == 0 || src_img->virt_addr == NULL ||
@@ -387,6 +409,7 @@ int inference_ppocr_rec_model(rknn_app_context_t* app_ctx, image_buffer_t* src_i
     int out_len_seq = 0;
     const int imgW = app_ctx->model_width;
     const int imgH = app_ctx->model_height;
+    TimingClock::time_point stage_start = TimingClock::now();
 
     memset(inputs, 0, sizeof(inputs));
     memset(outputs, 0, sizeof(outputs));
@@ -425,7 +448,10 @@ int inference_ppocr_rec_model(rknn_app_context_t* app_ctx, image_buffer_t* src_i
         goto out;
     }
     memcpy(inputs[0].buf, img_M.data, inputs[0].size);
+    if (timing != NULL)
+        timing->preprocess_ms += ElapsedMilliseconds(stage_start);
 
+    stage_start = TimingClock::now();
     ret = rknn_inputs_set(app_ctx->rknn_ctx, 1, inputs);
     if (ret < 0) {
         printf("rknn_input_set fail! ret=%d\n", ret);
@@ -449,9 +475,14 @@ int inference_ppocr_rec_model(rknn_app_context_t* app_ctx, image_buffer_t* src_i
         goto out;
     }
     outputs_acquired = true;
+    if (timing != NULL)
+        timing->inference_ms += ElapsedMilliseconds(stage_start);
 
     // Post Process
+    stage_start = TimingClock::now();
     ret = rec_postprocess((float*)outputs[0].buf, MODEL_OUT_CHANNEL, out_len_seq, out_result);
+    if (timing != NULL)
+        timing->postprocess_ms += ElapsedMilliseconds(stage_start);
 
 out:
     if (outputs_acquired)
@@ -467,7 +498,7 @@ out:
     return ret;
 }
 
-int inference_ppocr_system_model(ppocr_system_app_context* sys_app_ctx, image_buffer_t* src_img, ppocr_det_postprocess_params* params, ppocr_text_recog_array_result_t* out_result)
+int inference_ppocr_system_model(ppocr_system_app_context* sys_app_ctx, image_buffer_t* src_img, ppocr_det_postprocess_params* params, ppocr_text_recog_array_result_t* out_result, ppocr_inference_timing_t* timing)
 {
     if (sys_app_ctx == NULL || src_img == NULL || params == NULL || out_result == NULL)
         return -1;
@@ -478,7 +509,7 @@ int inference_ppocr_system_model(ppocr_system_app_context* sys_app_ctx, image_bu
     // Detect Text
     ppocr_det_result det_results;
     memset(&det_results, 0, sizeof(det_results));
-    ret = inference_ppocr_det_model(&sys_app_ctx->det_context, src_img, params, &det_results);
+    ret = inference_ppocr_det_model(&sys_app_ctx->det_context, src_img, params, &det_results, timing);
     if (ret != 0) {
         printf("inference_ppocr_det_model fail! ret=%d\n", ret);
         return -1;
@@ -490,6 +521,7 @@ int inference_ppocr_system_model(ppocr_system_app_context* sys_app_ctx, image_bu
     }
 
     // boxes to boxes_result
+    TimingClock::time_point stage_start = TimingClock::now();
     std::vector<std::array<int, 8>> boxes_result;
     for (int i=0; i < det_results.count; i++) {
         std::array<int, 8> new_box;
@@ -506,13 +538,18 @@ int inference_ppocr_system_model(ppocr_system_app_context* sys_app_ctx, image_bu
 
     // Sort text boxes in order from top to bottom, left to right for speeding up
     SortBoxes(&boxes_result);
+    if (timing != NULL)
+        timing->postprocess_ms += ElapsedMilliseconds(stage_start);
 
     // text recognize
     for (size_t i = 0; i < boxes_result.size(); i++) {
+        stage_start = TimingClock::now();
         cv::Mat in_image = cv::Mat(src_img->height, src_img->width, CV_8UC3,(uint8_t*)src_img->virt_addr);
         cv::Mat crop_image = GetRotateCropImage(in_image, boxes_result[i]);
         if (crop_image.empty())
         {
+            if (timing != NULL)
+                timing->preprocess_ms += ElapsedMilliseconds(stage_start);
             continue;
         }
 
@@ -528,10 +565,12 @@ int inference_ppocr_system_model(ppocr_system_app_context* sys_app_ctx, image_bu
             return -1;
         }
         memcpy((void *)text_img.virt_addr, crop_image.data, text_img.size);
+        if (timing != NULL)
+            timing->preprocess_ms += ElapsedMilliseconds(stage_start);
 
         ppocr_rec_result text_result;
         text_result.score = 1.0;
-        ret = inference_ppocr_rec_model(&sys_app_ctx->rec_context, &text_img, &text_result);
+        ret = inference_ppocr_rec_model(&sys_app_ctx->rec_context, &text_img, &text_result, timing);
         if (ret != 0) {
             printf("inference_ppocr_rec_model fail! ret=%d\n", ret);
             free(text_img.virt_addr);
@@ -541,7 +580,10 @@ int inference_ppocr_system_model(ppocr_system_app_context* sys_app_ctx, image_bu
             free(text_img.virt_addr);
         }
 
+        stage_start = TimingClock::now();
         if (text_result.score < TEXT_SCORE) {
+            if (timing != NULL)
+                timing->postprocess_ms += ElapsedMilliseconds(stage_start);
             continue;
         }
         if (out_result->count >= 1000)
@@ -557,6 +599,8 @@ int inference_ppocr_system_model(ppocr_system_app_context* sys_app_ctx, image_bu
         out_result->text_result[out_result->count].box.left_bottom.y = boxes_result[i][7];
         out_result->text_result[out_result->count].text = text_result;
         out_result->count ++;
+        if (timing != NULL)
+            timing->postprocess_ms += ElapsedMilliseconds(stage_start);
     }
 
     return ret;

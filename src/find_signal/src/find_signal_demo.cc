@@ -136,7 +136,7 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    rknnPool<PPOCRModel, cv::Mat, cv::Mat> pool(
+    rknnPool<PPOCRModel, cv::Mat, PPOCRInferenceResult> pool(
         config.det_model_path, config.rec_model_path, config.thread_count);
     if (pool.init() != 0)
     {
@@ -175,14 +175,14 @@ int main(int argc, char **argv)
 
             if (pending_count >= config.thread_count)
             {
-                cv::Mat result;
+                PPOCRInferenceResult result;
                 if (pool.get(result) != 0)
                 {
                     std::cerr << "get PPOCR result failed" << std::endl;
                     break;
                 }
                 --pending_count;
-                stop = show_result(result, &fps_counter);
+                stop = show_result(result.image, &fps_counter);
             }
             else if ((cv::waitKey(1) & 0xff) == 'q')
             {
@@ -192,14 +192,14 @@ int main(int argc, char **argv)
 
         while (pending_count > 0)
         {
-            cv::Mat result;
+            PPOCRInferenceResult result;
             if (pool.get(result) != 0)
             {
                 std::cerr << "get pending PPOCR result failed" << std::endl;
                 break;
             }
             --pending_count;
-            show_result(result, &fps_counter);
+            show_result(result.image, &fps_counter);
         }
     }
     catch (const std::exception &e)

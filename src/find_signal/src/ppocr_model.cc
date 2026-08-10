@@ -1,7 +1,26 @@
 #include "ppocr_model.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+
+namespace
+{
+using TimingClock = std::chrono::steady_clock;
+
+double elapsed_ms(const TimingClock::time_point &start)
+{
+    return std::chrono::duration<double, std::milli>(
+               TimingClock::now() - start)
+        .count();
+}
+} // namespace
+
+PPOCRInferenceResult::PPOCRInferenceResult()
+{
+    std::memset(&ocr_results, 0, sizeof(ocr_results));
+    std::memset(&timing, 0, sizeof(timing));
+}
 
 PPOCRModel::PPOCRModel(const std::string &det_model_path,
                        const std::string &rec_model_path)
@@ -64,21 +83,27 @@ rknn_context *PPOCRModel::get_pctx()
     return NULL;
 }
 
-cv::Mat PPOCRModel::infer(const cv::Mat &bgr_frame)
+PPOCRInferenceResult PPOCRModel::infer(const cv::Mat &bgr_frame)
 {
-    cv::Mat output = bgr_frame.clone();
-    if (output.empty() || !det_initialized_ || !rec_initialized_)
-        return output;
+    PPOCRInferenceResult result;
+    const TimingClock::time_point preprocess_start = TimingClock::now();
+    result.image = bgr_frame.clone();
+    if (result.image.empty() || !det_initialized_ || !rec_initialized_)
+    {
+        result.timing.preprocess_ms += elapsed_ms(preprocess_start);
+        return result;
+    }
 
-    if (output.type() != CV_8UC3)
+    if (result.image.type() != CV_8UC3)
     {
         std::fprintf(stderr, "worker %d received unsupported frame type=%d\n",
-                     worker_id_, output.type());
-        return output;
+                     worker_id_, result.image.type());
+        result.timing.preprocess_ms += elapsed_ms(preprocess_start);
+        return result;
     }
 
     cv::Mat rgb_frame;
-    cv::cvtColor(output, rgb_frame, cv::COLOR_BGR2RGB);
+    cv::cvtColor(result.image, rgb_frame, cv::COLOR_BGR2RGB);
     if (!rgb_frame.isContinuous())
         rgb_frame = rgb_frame.clone();
 
@@ -97,27 +122,31 @@ cv::Mat PPOCRModel::infer(const cv::Mat &bgr_frame)
     params.db_score_mode = "slow";
     params.db_box_type = "poly";
     params.db_unclip_ratio = 1.5f;
+    result.timing.preprocess_ms += elapsed_ms(preprocess_start);
 
-    ppocr_text_recog_array_result_t results;
-    std::memset(&results, 0, sizeof(results));
     const int ret = inference_ppocr_system_model(&app_ctx_, &src_image,
-                                                 &params, &results);
+                                                 &params,
+                                                 &result.ocr_results,
+                                                 &result.timing);
     if (ret != 0)
     {
         std::fprintf(stderr,
                      "worker %d inference_ppocr_system_model failed ret=%d\n",
                      worker_id_, ret);
-        return output;
+        return result;
     }
 
-    for (int i = 0; i < results.count && i < 1000; ++i)
+    for (int i = 0; i < result.ocr_results.count && i < 1000; ++i)
     {
         std::printf("worker %d result[%d] text=%s score=%.3f\n",
-                    worker_id_, i, results.text_result[i].text.str,
-                    results.text_result[i].text.score);
+                    worker_id_, i,
+                    result.ocr_results.text_result[i].text.str,
+                    result.ocr_results.text_result[i].text.score);
     }
-    draw_ppocr_results(output, results);
-    return output;
+    const TimingClock::time_point postprocess_start = TimingClock::now();
+    draw_ppocr_results(result.image, result.ocr_results);
+    result.timing.postprocess_ms += elapsed_ms(postprocess_start);
+    return result;
 }
 
 PPOCRModel::~PPOCRModel()

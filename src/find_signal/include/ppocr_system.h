@@ -71,6 +71,13 @@ typedef struct ppocr_text_recog_array_result_t
     int count;
 } ppocr_text_recog_array_result_t;
 
+typedef struct ppocr_inference_timing_t
+{
+    double preprocess_ms;
+    double inference_ms;
+    double postprocess_ms;
+} ppocr_inference_timing_t;
+
 int init_ppocr_model(const char* model_path, rknn_app_context_t* app_ctx);
 
 int init_ppocr_model_on_core(const char* model_path, rknn_app_context_t* app_ctx,
@@ -93,11 +100,11 @@ inline rknn_core_mask ppocr_core_mask_for_worker(int worker_id)
 
 int release_ppocr_model(rknn_app_context_t* app_ctx);
 
-int inference_ppocr_det_model(rknn_app_context_t* app_ctx, image_buffer_t* src_img, ppocr_det_postprocess_params* params, ppocr_det_result* out_result);
+int inference_ppocr_det_model(rknn_app_context_t* app_ctx, image_buffer_t* src_img, ppocr_det_postprocess_params* params, ppocr_det_result* out_result, ppocr_inference_timing_t* timing);
 
-int inference_ppocr_rec_model(rknn_app_context_t* app_ctx, image_buffer_t* src_img, ppocr_rec_result* out_result);
+int inference_ppocr_rec_model(rknn_app_context_t* app_ctx, image_buffer_t* src_img, ppocr_rec_result* out_result, ppocr_inference_timing_t* timing);
 
-int inference_ppocr_system_model(ppocr_system_app_context* sys_app_ctx, image_buffer_t* img, ppocr_det_postprocess_params* params, ppocr_text_recog_array_result_t* out_result);
+int inference_ppocr_system_model(ppocr_system_app_context* sys_app_ctx, image_buffer_t* img, ppocr_det_postprocess_params* params, ppocr_text_recog_array_result_t* out_result, ppocr_inference_timing_t* timing);
 
 int dbnet_postprocess(float* output, int det_out_w, int det_out_h, float db_threshold, float db_box_threshold, bool use_dilation,
                                                 const std::string &db_score_mode, const float &db_unclip_ratio, const std::string &db_box_type,
