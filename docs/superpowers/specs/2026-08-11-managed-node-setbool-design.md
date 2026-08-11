@@ -83,7 +83,7 @@ traffic_light=ok; image_process=ok; vision_line_node=unavailable
 
 ## 公共状态语义
 
-三个节点各自维护线程安全的 `enabled` 状态。交通灯和 `find_way_ros` 固定以 disabled 启动，并由管理节点根据同一个 `/start_traffic_light_det` 参数分别调用各自的 `SetBool` 服务；运动控制节点的初始值从私有参数 `~initially_enabled` 读取，默认 `true`。
+三个节点各自维护线程安全的 `enabled` 状态，均固定以 disabled 启动，并由管理节点根据同一个 `/start_traffic_light_det` 参数分别调用各自的 `SetBool` 服务。
 
 服务回调只负责快速完成状态切换和必要的状态清理，不在回调中执行耗时业务逻辑。主循环每轮仍处理 ROS 回调，然后判断 `enabled`：
 
@@ -116,8 +116,10 @@ ROS 回调处理
 ```text
 start_traffic_light_det=1 -> /traffic_light/set_enabled(data=true)
                               /image_process/set_enabled(data=true)
+                              /vision_line_node/set_enabled(data=true)
 start_traffic_light_det=0 -> /traffic_light/set_enabled(data=false)
                               /image_process/set_enabled(data=false)
+                              /vision_line_node/set_enabled(data=false)
 ```
 
 交通灯业务节点只判断服务维护的 `enabled` 状态。管理节点不修改该参数，避免形成参数和服务之间的反馈循环。
@@ -188,7 +190,7 @@ src/startup_scripts/scripts/managed_nodes_client.py
 - `package.xml` 增加 `rospy` 和 `std_srvs` 运行依赖。
 - `CMakeLists.txt` 使用 `catkin_install_python` 安装管理脚本。
 - `start_all.launch` 在三个业务节点之后启动 `managed_nodes_client.py`。
-- 交通灯和 `find_way_ros` 固定以 disabled 启动，并等待管理节点根据 `/start_traffic_light_det` 同步调用两个服务；运动控制节点显式设置 `~initially_enabled=true`。
+- 三个业务节点均固定以 disabled 启动，并等待管理节点根据 `/start_traffic_light_det` 同步调用三个服务。
 
 ### `traffic_light`
 
@@ -255,7 +257,7 @@ rosservice call /managed_nodes/set_enabled "data: true"
 
 ### 回归检查
 
-- 交通灯和 `find_way_ros` 启动后保持 disabled，直到管理节点处理 `/start_traffic_light_det`；运动控制节点保持 `initially_enabled=true` 的既有启动行为。
+- 三个业务节点启动后均保持 disabled，直到管理节点处理 `/start_traffic_light_det`。
 - 交通灯发布方向后不再退出，服务仍在线，且业务自动进入 disabled 等待状态。
 - 多次启停后不存在旧图像、旧方向、PID 积分或未完成机动动作被继续使用的现象。
 

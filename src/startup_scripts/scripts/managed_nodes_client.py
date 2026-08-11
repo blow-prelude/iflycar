@@ -41,7 +41,7 @@ class ManagedNodesClient:
         self._parameter_targets = {
             rospy.get_param(
                 "~traffic_light_enable_param", "/start_traffic_light_det"
-            ): ("traffic_light", "image_process"),
+            ): ("traffic_light", "image_process", "vision_line_node"),
             rospy.get_param(
                 "~find_signal_enable_param", "/task1_all_done"
             ): ("find_signal",),
