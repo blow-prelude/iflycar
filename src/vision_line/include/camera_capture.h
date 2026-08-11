@@ -13,6 +13,9 @@ public:
     ~CameraCapture();
 
     void closeCamera();
+    // 打印 V4L2 驱动报告的分辨率、帧率和图像/镜头控制能力。
+    // 该方法只查询能力和当前值，不会修改相机参数。
+    void printCameraPropertySupport(std::ostream &out = std::cout) const;
     cv::Mat captureFrame();
     cv::Mat correctFrame(const cv::Mat &frame);
     static cv::Mat perspectiveFrame(const cv::Mat &frame);

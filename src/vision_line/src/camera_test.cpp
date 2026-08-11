@@ -11,6 +11,7 @@ int main()
     try
     {
         CameraCapture camera(0, 640, 480); // Initialize camera with index 0 and resolution 640x480
+        camera.printCameraPropertySupport();
 
         cv::Mat frame;
         cv::Mat mask;
