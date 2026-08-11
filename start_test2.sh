@@ -8,6 +8,16 @@ xfce4-terminal --tab --title="roscore" --command "bash -c 'sudo pkill roscore; s
 sleep 5
 
 
+# 为 managed_nodes_client.py 设置参数，使其与 launch 文件中一致
+rosparam set /managed_nodes/traffic_light_enable_param "/start_traffic_light_det"
+rosparam set /managed_nodes/find_signal_enable_param "/task1_all_done"
+
+# 启动 managed_nodes_client.py，命名为 managed_nodes（与 launch 保持一致）
+xfce4-terminal --title="managed_nodes" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; rosrun startup_scripts managed_nodes_client.py __name:=managed_nodes; exec bash'" &
+sleep 2
+
+
+
 # 启动 ourgoal.launch
 echo "正在启动 ourgoal ourgoal.launch..."
 xfce4-terminal --tab --title="ourgoal" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; roslaunch ourgoal ourgoal.launch; exec bash'"
@@ -16,7 +26,7 @@ sleep 2
 # 启动 ucar_camera
 echo "正在启动 ucar_camera..."
 xfce4-terminal --tab --title="ucar_camera" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; rosrun ucar_camera ucar_camera.py; exec bash'"
-sleep 3
+sleep 1
 
 # 启动相机雷达重投影，发布 /vision_points
 echo "正在启动 camera_lidar reprojection..."
@@ -31,7 +41,7 @@ sleep 2
 # 启动 find_signal OCR/RKNN 视觉识别
 echo "正在启动 find_signal rknn_ros.py..."
 xfce4-terminal --tab --title="find_signal" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; cd /home/ucar/ucar_ws/src/find_signal/scripts; source ~/venv3.9/bin/activate; python3 rknn_ros.py; exec bash'"
-sleep 3
+sleep 1
 
 # 启动 switch_test2
 echo "正在启动 ourgoal switch_test2..."
@@ -77,5 +87,3 @@ xfce4-terminal --title="vision_line_node" --command "bash -c 'source ~/ucar_ws/d
 
 echo "所有 ROS 服务已在新终端窗口中启动"
 echo "每个程序运行在单独的标签页中，标题已设置为相应的程序名"
-
-
