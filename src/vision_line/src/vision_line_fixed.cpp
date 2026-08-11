@@ -2,9 +2,11 @@
 #include "geometry_msgs/Twist.h"
 #include "std_msgs/Float32MultiArray.h"
 #include "std_msgs/String.h"
+#include "std_srvs/SetBool.h"
 #include <vector>
 #include <cmath>
 #include <mutex>
+#include <stdexcept>
 
 class VisionErrorController
 {
@@ -59,6 +61,10 @@ private:
     // 类成员变量
     ros::NodeHandle nh_; // ROS节点句柄
     ros::Publisher cmd_vel_pub_;
+    ros::NodeHandle nh_private_{"~"};
+    ros::ServiceServer enable_service_;
+    bool enabled_ = true;
+    double disabled_rate_ = 10.0;
     ros::Subscriber vision_sub_;
     PIDController angular_pid_; // 角速度PID控制器（按方向切换参数）
     PIDController linear_pid_;  // 线速度PID控制器
@@ -158,6 +164,8 @@ private:
     // 方向指令回调函数
     void directionCallback(const std_msgs::String::ConstPtr &msg)
     {
+        if (!enabled_)
+            return;
         std::string dir = msg->data;
 
         // stop 优先级最高：任何机动状态(IDLE/FORWARD/ROTATE/DONE)都立即停车
@@ -215,6 +223,8 @@ private:
     // 视觉数据回调函数
     void visionCallback(const std_msgs::Float32MultiArray::ConstPtr &msg)
     {
+        if (!enabled_)
+            return;
         std::lock_guard<std::mutex> lock(data_mutex_);
 
         // 检查数据格式
@@ -252,6 +262,12 @@ public:
         vision_sub_ = nh_.subscribe("/vision_line", 10, &VisionErrorController::visionCallback, this);
         direction_sub_ = nh_.subscribe("/vision_line_direction", 10, &VisionErrorController::directionCallback, this);
         direction_pub_ = nh_.advertise<std_msgs::String>("/vision_line_direction_out", 10);
+        nh_private_.param("initially_enabled", enabled_, true);
+        nh_private_.param("disabled_rate", disabled_rate_, 10.0);
+        if (disabled_rate_ <= 0.0)
+            throw std::invalid_argument("~disabled_rate must be > 0");
+        enable_service_ = nh_private_.advertiseService(
+            "set_enabled", &VisionErrorController::setEnabledCallback, this);
 
         // 读取参数服务器配置
         turning_angular_vel_ = nh_.param("/turning_angular_vel", 0.5);
@@ -266,6 +282,41 @@ public:
         ROS_INFO("Max linear vel: %.2fm/s | Max angular vel: %.2frad/s",
                  MAX_LINEAR_VEL, MAX_ANGULAR_VEL);
         ROS_INFO("Turning cmd angular: %.2frad/s", turning_angular_vel_);
+    }
+
+    bool setEnabledCallback(std_srvs::SetBool::Request &request,
+                            std_srvs::SetBool::Response &response)
+    {
+        if (enabled_ == request.data)
+        {
+            response.success = true;
+            response.message = enabled_ ? "already enabled" : "already disabled";
+            return true;
+        }
+
+        enabled_ = request.data;
+        maneuver_state_ = ManeuverState::IDLE;
+        turning_mode_ = false;
+        is_stopped_ = false;
+        stable_count_ = 0;
+        current_error_ = 0.0;
+        prev_start_vision_line2_ = 0;
+        initPID();
+        {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            vision_data_ = {0.0f, 0.0f, false, false};
+        }
+
+        if (!enabled_)
+        {
+            geometry_msgs::Twist stop;
+            cmd_vel_pub_.publish(stop);
+        }
+
+        response.success = true;
+        response.message = enabled_ ? "enabled" : "disabled";
+        ROS_INFO("Vision controller %s", response.message.c_str());
+        return true;
     }
 
     // 数据处理函数
@@ -450,9 +501,16 @@ public:
         ros::Rate rate(LOOP_RATE);
         while (ros::ok())
         {
-            processVisionData();
             ros::spinOnce();
-            rate.sleep();
+            if (enabled_)
+            {
+                processVisionData();
+                rate.sleep();
+            }
+            else
+            {
+                ros::WallDuration(1.0 / disabled_rate_).sleep();
+            }
         }
     }
 };
@@ -464,4 +522,3 @@ int main(int argc, char **argv)
     controller.run();
     return 0;
 }
-

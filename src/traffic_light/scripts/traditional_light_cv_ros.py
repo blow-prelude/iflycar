@@ -15,12 +15,12 @@ import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
+from std_srvs.srv import SetBool, SetBoolResponse
 
 
 
 IMAGE_TOPIC = "/ucar_camera/image_raw"
 DIRECTION_TOPIC = "/vision_line_direction"
-START_DETECTION_PARAM = "start_traffic_light_det"
 WINDOW_NAME = "traditional_light_cv_ros"
 DISPLAY_RATE_HZ = 30.0
 PUBLISH_SETTLE_SECONDS = 1.0
@@ -37,20 +37,17 @@ class FpsMeter:
         self._smoothing = smoothing
         self._previous_time: float | None = None
         self._fps = 0.0
+        self._count = 0
+        self._elapsed = 0.0
 
     def update(self, now: float | None = None) -> float:
         timestamp = time.perf_counter() if now is None else float(now)
         if self._previous_time is not None:
-            elapsed = timestamp - self._previous_time
-            if elapsed > 0.0:
-                instantaneous = 1.0 / elapsed
-                if self._fps == 0.0:
-                    self._fps = instantaneous
-                else:
-                    self._fps = (
-                        self._smoothing * instantaneous
-                        + (1.0 - self._smoothing) * self._fps
-                    )
+            self._count += 1
+            self._elapsed += timestamp - self._previous_time
+            if self._count > 10 and self._elapsed > 0.0:
+                self._fps = 1.0 / self._elapsed
+
         self._previous_time = timestamp
         return self._fps
 
@@ -156,7 +153,8 @@ class TrafficLightRosNode:
             )
 
         self._bridge = CvBridge()
-        self._detection_enabled = False
+        self._service_enabled = False
+        self._state_lock = threading.Lock()
         self._frame_lock = threading.Lock()
         self._latest_frame: np.ndarray | None = None
         self._fps_meter = FpsMeter()
@@ -173,11 +171,16 @@ class TrafficLightRosNode:
             queue_size=1,
             buff_size=2**24,
         )
+        self._enable_service = rospy.Service(
+            "~set_enabled", SetBool, self._set_enabled_callback
+        )
         rospy.loginfo("Subscribed to %s", IMAGE_TOPIC)
         rospy.loginfo("Publishing traffic-light decisions to %s", DIRECTION_TOPIC)
 
     def _image_callback(self, message: Image) -> None:
-        if not self._detection_enabled:
+        with self._state_lock:
+            enabled = self._service_enabled
+        if not enabled:
             return
 
         try:
@@ -193,13 +196,35 @@ class TrafficLightRosNode:
         with self._frame_lock:
             return None if self._latest_frame is None else self._latest_frame.copy()
 
-    def _enable_detection_if_requested(self) -> bool:
-        """Latch detection on after the parameter server flag becomes 1."""
-        if not self._detection_enabled:
-            self._detection_enabled = (
-                rospy.get_param(START_DETECTION_PARAM, 0) == 1
-            )
-        return self._detection_enabled
+    def _is_enabled(self) -> bool:
+        """Return the state controlled exclusively by the SetBool service."""
+        with self._state_lock:
+            return self._service_enabled
+
+    def _set_enabled_callback(self, request: SetBool.Request) -> SetBoolResponse:
+        requested = bool(request.data)
+        with self._state_lock:
+            if requested == self._service_enabled:
+                state = "enabled" if requested else "disabled"
+                return SetBoolResponse(success=True, message=f"already {state}")
+            self._service_enabled = requested
+
+        with self._frame_lock:
+            self._latest_frame = None
+        self._fps_meter = FpsMeter()
+        self._log_tracker = DetectionLogTracker()
+        state = "enabled" if requested else "disabled"
+        rospy.loginfo("Traffic-light processing %s", state)
+        return SetBoolResponse(success=True, message=state)
+
+    def _disable_after_detection(self) -> None:
+        with self._state_lock:
+            self._service_enabled = False
+        with self._frame_lock:
+            self._latest_frame = None
+        self._fps_meter = FpsMeter()
+        self._log_tracker = DetectionLogTracker()
+        rospy.loginfo("Traffic-light processing disabled after direction decision")
 
     def _publish_detection(self, detection: Detection) -> bool:
         """Publish known labels and report whether the node should exit."""
@@ -215,17 +240,17 @@ class TrafficLightRosNode:
         window_created = False
         try:
             while not rospy.is_shutdown():
-                if not self._enable_detection_if_requested():
+                if not self._is_enabled():
+                    if window_created:
+                        cv2.destroyWindow(WINDOW_NAME)
+                        window_created = False
                     rate.sleep()
                     continue
 
                 if not window_created:
                     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
                     window_created = True
-                    rospy.loginfo(
-                        "%s=1; traffic-light detection started",
-                        START_DETECTION_PARAM,
-                    )
+                    rospy.loginfo("Traffic-light detection started")
 
                 frame = self._latest()
                 if frame is None:
@@ -241,16 +266,12 @@ class TrafficLightRosNode:
 
                 if self._publish_detection(detection):
                     rospy.sleep(PUBLISH_SETTLE_SECONDS)
-                    rospy.signal_shutdown(
-                        f"traffic-light direction detected: {detection.label}"
-                    )
-                    break
+                    self._disable_after_detection()
+                    continue
 
                 cv2.imshow(WINDOW_NAME, canvas)
-                key = cv2.waitKey(1) & 0xFF
-                if key in (27, ord("q")):
-                    rospy.signal_shutdown("display window closed")
-                rate.sleep()
+                cv2.waitKey(1) 
+
         finally:
             if window_created:
                 cv2.destroyWindow(WINDOW_NAME)

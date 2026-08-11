@@ -13,10 +13,12 @@
   <exec_depend>find_signal</exec_depend>
   <exec_depend>ourgoal</exec_depend>
   <exec_depend>pcl_work</exec_depend>
+  <depend>rospy</depend>
   <exec_depend>speech_command</exec_depend>
   <exec_depend>traffic_light</exec_depend>
   <exec_depend>ucar_camera</exec_depend>
   <exec_depend>vision_line</exec_depend>
+  <depend>std_srvs</depend>
 
   <export/>
 </package>
