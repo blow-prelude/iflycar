@@ -14,6 +14,7 @@
 #include <sensor_msgs/image_encodings.h>
 #include <std_msgs/Float32MultiArray.h>
 #include <std_msgs/Int32.h>
+#include <std_srvs/SetBool.h>
 
 #include "ppocr_model.hpp"
 #include "rknn_pool.hpp"
@@ -130,6 +131,7 @@ namespace
               thread_count_(config.thread_count),
               pending_count_(0),
               visualize_(config.visualize),
+              enabled_(false),
               processed_frame_count_(0)
         {
         }
@@ -153,9 +155,11 @@ namespace
             class_pub_ = node_.advertise<std_msgs::Int32>(kClassTopic, 10);
             image_sub_ = node_.subscribe(kImageTopic, 1,
                                          &SignalDetectionNode::image_callback, this);
+            enable_service_ = private_node_.advertiseService(
+                "set_enabled", &SignalDetectionNode::set_enabled_callback, this);
             if (visualize_)
                 cv::namedWindow(kWindowName, cv::WINDOW_AUTOSIZE);
-            ROS_INFO("find_signal ready: subscribe %s, publish %s and %s",
+            ROS_INFO("find_signal ready (OCR disabled): subscribe %s, publish %s and %s",
                      kImageTopic, kDetectionTopic, kClassTopic);
             return true;
         }
@@ -163,6 +167,9 @@ namespace
     private:
         void image_callback(const sensor_msgs::ImageConstPtr &message)
         {
+            if (!enabled_)
+                return;
+
             const std::chrono::steady_clock::time_point preprocess_start =
                 std::chrono::steady_clock::now();
             cv_bridge::CvImageConstPtr cv_image;
@@ -244,6 +251,23 @@ namespace
                      total_ms);
         }
 
+        bool set_enabled_callback(std_srvs::SetBool::Request &request,
+                                  std_srvs::SetBool::Response &response)
+        {
+            if (enabled_ == request.data)
+            {
+                response.success = true;
+                response.message = enabled_ ? "already enabled" : "already disabled";
+                return true;
+            }
+
+            enabled_ = request.data;
+            response.success = true;
+            response.message = enabled_ ? "enabled" : "disabled";
+            ROS_INFO("OCR processing %s", response.message.c_str());
+            return true;
+        }
+
         void show_result(const cv::Mat &image)
         {
             if (!visualize_ || image.empty())
@@ -289,7 +313,9 @@ namespace
         }
 
         ros::NodeHandle node_;
+        ros::NodeHandle private_node_{"~"};
         ros::Subscriber image_sub_;
+        ros::ServiceServer enable_service_;
         ros::Publisher detection_pub_;
         ros::Publisher class_pub_;
         rknnPool<PPOCRModel, cv::Mat, PPOCRInferenceResult> pool_;
@@ -297,6 +323,7 @@ namespace
         int thread_count_;
         int pending_count_;
         bool visualize_;
+        bool enabled_;
         unsigned long long processed_frame_count_;
     };
 } // namespace

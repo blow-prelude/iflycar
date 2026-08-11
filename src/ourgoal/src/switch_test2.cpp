@@ -34,19 +34,19 @@ OURSWITCH::OURSWITCH()
     sub_signal_detection_ = nh_.subscribe("/signal_detection", 10, &OURSWITCH::SignalDetectionCallback, this);
 
     // 默认数据初始化
-    distance_qian_x = 1.13; 
-    distance_zuo_y = 0.25; 
-    distance_hou_x = 0.36; 
-    distance_you_y = 0.25; 
+    distance_qian_x = 1.13;
+    distance_zuo_y = 0.25;
+    distance_hou_x = 0.36;
+    distance_you_y = 0.25;
     yaw = 0.0;
-    
-    safe_F = 0.15; 
-    safe_B = 0.35; 
-    safe_L = 0.20; 
-    safe_R = 0.20; 
-    Kp_dist = 1.0; 
-    Kp_yaw = 2.0; 
-    max_vel = 0.5; 
+
+    safe_F = 0.15;
+    safe_B = 0.35;
+    safe_L = 0.20;
+    safe_R = 0.20;
+    Kp_dist = 1.0;
+    Kp_yaw = 2.0;
+    max_vel = 0.5;
     safe_R2 = 0.25;
 
     ROS_WARN("Initialization complete!");
@@ -56,52 +56,54 @@ OURSWITCH::OURSWITCH()
     // 异步协同：等待 AI.py 录音结束的 awake2 信号
     // =======================================================
     ROS_INFO("Waiting for AI.py to finish recording audio...");
-    while (!nh_.param("awake2", 0) && ros::ok()) 
+    while (!nh_.param("awake2", 0) && ros::ok())
     {
         ros::Duration(0.1).sleep();
     }
     ROS_WARN("Awake2 received! System started, rushing out of the maze!");
 }
 
-OURSWITCH::~OURSWITCH() 
-{ 
-    ROS_WARN("switch node terminated"); 
+OURSWITCH::~OURSWITCH()
+{
+    ROS_WARN("switch node terminated");
 }
 
 // =========================================================================
 // 基础回调与数学库函数 (完全展开版)
 // =========================================================================
-void OURSWITCH::OdomCallback(const nav_msgs::Odometry::ConstPtr &msg) 
-{ 
+void OURSWITCH::OdomCallback(const nav_msgs::Odometry::ConstPtr &msg)
+{
     tf2::Quaternion q(
-        msg->pose.pose.orientation.x, 
-        msg->pose.pose.orientation.y, 
-        msg->pose.pose.orientation.z, 
-        msg->pose.pose.orientation.w
-    ); 
-    tf2::Matrix3x3 m(q); 
-    m.getRPY(roll, pitch, yaw); 
+        msg->pose.pose.orientation.x,
+        msg->pose.pose.orientation.y,
+        msg->pose.pose.orientation.z,
+        msg->pose.pose.orientation.w);
+    tf2::Matrix3x3 m(q);
+    m.getRPY(roll, pitch, yaw);
 }
 
-void OURSWITCH::UltrasoundCallback(const pcl_work::ultrasoundConstPtr &msg) 
-{ 
-    distance_qian_x = msg->distance_qian_x; 
-    distance_zuo_y = msg->distance_zuo_y; 
-    distance_hou_x = -msg->distance_hou_x; 
-    distance_you_y = -msg->distance_you_y; 
+void OURSWITCH::UltrasoundCallback(const pcl_work::ultrasoundConstPtr &msg)
+{
+    distance_qian_x = msg->distance_qian_x;
+    distance_zuo_y = msg->distance_zuo_y;
+    distance_hou_x = -msg->distance_hou_x;
+    distance_you_y = -msg->distance_you_y;
 }
 
 void OURSWITCH::SignalClassCallback(const std_msgs::Int32::ConstPtr &msg)
 {
-    if (target_locked_) return;
+    if (target_locked_)
+        return;
     current_signal_class_ = msg->data;
     last_signal_class_time_ = ros::Time::now();
 }
 
 void OURSWITCH::SignalDetectionCallback(const std_msgs::Float32MultiArray::ConstPtr &msg)
 {
-    if (target_locked_) return;
-    if (msg->data.size() < 4) return;
+    if (target_locked_)
+        return;
+    if (msg->data.size() < 4)
+        return;
 
     signal_center_x_ = msg->data[0];
     signal_center_y_ = msg->data[1];
@@ -111,157 +113,159 @@ void OURSWITCH::SignalDetectionCallback(const std_msgs::Float32MultiArray::Const
     nh_.setParam("center_x", signal_center_x_);
 }
 
-void OURSWITCH::delayedFunction(int delayInSeconds) 
-{ 
-    std::this_thread::sleep_for(std::chrono::seconds(delayInSeconds)); 
+void OURSWITCH::delayedFunction(int delayInSeconds)
+{
+    std::this_thread::sleep_for(std::chrono::seconds(delayInSeconds));
 }
 
-void OURSWITCH::PrintfArray(float arr[], int size) 
-{ 
-    for (int i = 0; i < size; i++) 
+void OURSWITCH::PrintfArray(float arr[], int size)
+{
+    for (int i = 0; i < size; i++)
     {
-        printf("Element %d: %f\n", i, arr[i]); 
+        printf("Element %d: %f\n", i, arr[i]);
     }
 }
 
-double OURSWITCH::Limit_Value(double INPUT, double MAX, double MIN) 
-{ 
-    if (INPUT > MAX) return MAX; 
-    else if (INPUT < MIN) return MIN; 
-    return INPUT; 
+double OURSWITCH::Limit_Value(double INPUT, double MAX, double MIN)
+{
+    if (INPUT > MAX)
+        return MAX;
+    else if (INPUT < MIN)
+        return MIN;
+    return INPUT;
 }
 
-double OURSWITCH::PID_Realize(PID *pid, double err, double MAX, double MIN) 
-{ 
-    pid->err = err; 
-    pid->integral += pid->err; 
-    double output = pid->kp * pid->err + pid->ki * pid->integral + pid->kd * (pid->err - pid->err_last); 
-    pid->err_last = pid->err; 
-    pid->output = output; 
-    return Limit_Value(pid->output, MAX, MIN); 
+double OURSWITCH::PID_Realize(PID *pid, double err, double MAX, double MIN)
+{
+    pid->err = err;
+    pid->integral += pid->err;
+    double output = pid->kp * pid->err + pid->ki * pid->integral + pid->kd * (pid->err - pid->err_last);
+    pid->err_last = pid->err;
+    pid->output = output;
+    return Limit_Value(pid->output, MAX, MIN);
 }
 
-double OURSWITCH::PID_Realize2(PID *pid, double err, double MAX, double MIN, double integral_limit) 
-{ 
-    pid->err = err; 
-    pid->integral += pid->err; 
-    
-    if (fabs(pid->integral) > integral_limit) 
+double OURSWITCH::PID_Realize2(PID *pid, double err, double MAX, double MIN, double integral_limit)
+{
+    pid->err = err;
+    pid->integral += pid->err;
+
+    if (fabs(pid->integral) > integral_limit)
     {
-        pid->integral = (pid->integral > 0) ? integral_limit : -integral_limit; 
+        pid->integral = (pid->integral > 0) ? integral_limit : -integral_limit;
     }
-    
-    double output = pid->kp * pid->err + pid->ki * pid->integral + pid->kd * (pid->err - pid->err_last); 
-    pid->err_last = pid->err; 
-    pid->output = output; 
-    return Limit_Value(pid->output, MAX, MIN); 
+
+    double output = pid->kp * pid->err + pid->ki * pid->integral + pid->kd * (pid->err - pid->err_last);
+    pid->err_last = pid->err;
+    pid->output = output;
+    return Limit_Value(pid->output, MAX, MIN);
 }
 
-void OURSWITCH::InitPID() 
-{ 
-    Aid_X.err = 0; 
-    Aid_X.err_last = 0; 
-    Aid_X.integral = 0; 
-    Aid_X.output = 0; 
-    
-    nh_.param("Aid_X_kp", Aid_X.kp, 1.0); 
-    nh_.param("Aid_X_ki", Aid_X.ki, 0.0); 
-    nh_.param("Aid_X_kd", Aid_X.kd, 0.0); 
+void OURSWITCH::InitPID()
+{
+    Aid_X.err = 0;
+    Aid_X.err_last = 0;
+    Aid_X.integral = 0;
+    Aid_X.output = 0;
+
+    nh_.param("Aid_X_kp", Aid_X.kp, 1.0);
+    nh_.param("Aid_X_ki", Aid_X.ki, 0.0);
+    nh_.param("Aid_X_kd", Aid_X.kd, 0.0);
 }
 
-bool OURSWITCH::getCenterXFromParam() 
-{ 
-    if (nh_.getParam("center_x", current_center_x_)) 
-    { 
-        if (current_center_x_ < 0 || current_center_x_ > 640) 
+bool OURSWITCH::getCenterXFromParam()
+{
+    if (nh_.getParam("center_x", current_center_x_))
+    {
+        if (current_center_x_ < 0 || current_center_x_ > 640)
         {
-            return false; 
+            return false;
         }
-        return true; 
-    } 
-    return false; 
+        return true;
+    }
+    return false;
 }
 
-double OURSWITCH::calculateYVelocity() 
-{ 
-    double error = target_center_x_ - current_center_x_; 
-    pid_center_x_.integral += error; 
-    
-    if (pid_center_x_.integral > 200.0) 
-        pid_center_x_.integral = 200.0; 
-    else if (pid_center_x_.integral < -200.0) 
-        pid_center_x_.integral = -200.0; 
-        
-    double derivative = error - pid_center_x_.err_last; 
-    double output = pid_center_x_.kp * error + pid_center_x_.ki * pid_center_x_.integral + pid_center_x_.kd * derivative; 
-    pid_center_x_.err_last = error; 
-    
-    return Limit_Value(output, 0.1, -0.1); 
+double OURSWITCH::calculateYVelocity()
+{
+    double error = target_center_x_ - current_center_x_;
+    pid_center_x_.integral += error;
+
+    if (pid_center_x_.integral > 200.0)
+        pid_center_x_.integral = 200.0;
+    else if (pid_center_x_.integral < -200.0)
+        pid_center_x_.integral = -200.0;
+
+    double derivative = error - pid_center_x_.err_last;
+    double output = pid_center_x_.kp * error + pid_center_x_.ki * pid_center_x_.integral + pid_center_x_.kd * derivative;
+    pid_center_x_.err_last = error;
+
+    return Limit_Value(output, 0.1, -0.1);
 }
 
-void OURSWITCH::getPoint(Point *P) 
-{ 
-    getPosition_client.call(position_srv); 
-    fusion_size = position_srv.response.fusion_size; 
-    
-    if (fusion_size != 0) 
-    { 
-        P->px = position_srv.response.px; 
-        P->py = position_srv.response.py; 
-        P->ow = position_srv.response.ow; 
-        P->oz = position_srv.response.oz; 
-    } 
+void OURSWITCH::getPoint(Point *P)
+{
+    getPosition_client.call(position_srv);
+    fusion_size = position_srv.response.fusion_size;
+
+    if (fusion_size != 0)
+    {
+        P->px = position_srv.response.px;
+        P->py = position_srv.response.py;
+        P->ow = position_srv.response.ow;
+        P->oz = position_srv.response.oz;
+    }
 }
 
-point_2d OURSWITCH::translate(point_2d p, double dx, double dy) 
-{ 
-    p.x += dx; 
-    p.y += dy; 
-    return p; 
+point_2d OURSWITCH::translate(point_2d p, double dx, double dy)
+{
+    p.x += dx;
+    p.y += dy;
+    return p;
 }
 
-point_2d OURSWITCH::rotate(point_2d p, double CarYaw) 
-{ 
-    double NewPointX = p.x * cos(CarYaw) - p.y * sin(CarYaw); 
-    double NewPointY = p.x * sin(CarYaw) + p.y * cos(CarYaw); 
-    p.x = NewPointX; 
-    p.y = NewPointY; 
-    return p; 
+point_2d OURSWITCH::rotate(point_2d p, double CarYaw)
+{
+    double NewPointX = p.x * cos(CarYaw) - p.y * sin(CarYaw);
+    double NewPointY = p.x * sin(CarYaw) + p.y * cos(CarYaw);
+    p.x = NewPointX;
+    p.y = NewPointY;
+    return p;
 }
 
-Quaternion OURSWITCH::eulerToQuaternion(double roll, double pitch, double yaw) 
-{ 
-    double cy = cos(yaw * 0.5); 
-    double sy = sin(yaw * 0.5); 
-    double cp = cos(pitch * 0.5); 
-    double sp = sin(pitch * 0.5); 
-    double cr = cos(roll * 0.5); 
-    double sr = sin(roll * 0.5); 
-    
-    Quaternion q; 
-    q.w = cr * cp * cy + sr * sp * sy; 
-    q.x = sr * cp * cy - cr * sp * sy; 
-    q.y = cr * sp * cy + sr * cp * sy; 
-    q.z = cr * cp * sy - sr * sp * cy; 
-    return q; 
+Quaternion OURSWITCH::eulerToQuaternion(double roll, double pitch, double yaw)
+{
+    double cy = cos(yaw * 0.5);
+    double sy = sin(yaw * 0.5);
+    double cp = cos(pitch * 0.5);
+    double sp = sin(pitch * 0.5);
+    double cr = cos(roll * 0.5);
+    double sr = sin(roll * 0.5);
+
+    Quaternion q;
+    q.w = cr * cp * cy + sr * sp * sy;
+    q.x = sr * cp * cy - cr * sp * sy;
+    q.y = cr * sp * cy + sr * cp * sy;
+    q.z = cr * cp * sy - sr * sp * cy;
+    return q;
 }
 
-void OURSWITCH::sendPos(double x, double y, double yaw) 
-{ 
-    move_base_msgs::MoveBaseGoal goal; 
-    goal.target_pose.header.stamp = ros::Time::now(); 
-    goal.target_pose.header.frame_id = "map"; 
-    
-    goal.target_pose.pose.position.x = x; 
-    goal.target_pose.pose.position.y = y; 
-    goal.target_pose.pose.position.z = 0; 
-    
-    tf2::Quaternion q; 
-    q.setRPY(0, 0, yaw); 
-    goal.target_pose.pose.orientation = tf2::toMsg(q); 
-    
-    ac_.sendGoal(goal); 
-    ROS_INFO("Sent goal: x=%f, y=%f, yaw=%f", x, y, yaw); 
+void OURSWITCH::sendPos(double x, double y, double yaw)
+{
+    move_base_msgs::MoveBaseGoal goal;
+    goal.target_pose.header.stamp = ros::Time::now();
+    goal.target_pose.header.frame_id = "map";
+
+    goal.target_pose.pose.position.x = x;
+    goal.target_pose.pose.position.y = y;
+    goal.target_pose.pose.position.z = 0;
+
+    tf2::Quaternion q;
+    q.setRPY(0, 0, yaw);
+    goal.target_pose.pose.orientation = tf2::toMsg(q);
+
+    ac_.sendGoal(goal);
+    ROS_INFO("Sent goal: x=%f, y=%f, yaw=%f", x, y, yaw);
 }
 
 // =========================================================================
@@ -270,110 +274,120 @@ void OURSWITCH::sendPos(double x, double y, double yaw)
 void OURSWITCH::GotoA()
 {
     ROS_INFO("Entering GotoA state: Escaping Maze. (AI is processing LLM in parallel!)");
-    
+
     ros::Rate rate(20);
     int escape_state = 1;
     bool task_finished = false;
-    int rotate_count = 0; 
+    int rotate_count = 0;
 
     while (ros::ok() && !task_finished)
     {
         ros::spinOnce();
         geometry_msgs::Twist cmd;
-        
+
         // 锁死 yaw 角，防止车体倾斜
         cmd.angular.z = Kp_yaw * (0.0 - yaw);
         double error = 0;
 
         switch (escape_state)
         {
-            case 1: 
-                error = distance_qian_x - safe_F; 
-                cmd.linear.x = Limit_Value(Kp_dist * error, max_vel, -max_vel); 
-                cmd.linear.y = 0; 
-                if (std::abs(error) < 0.05) escape_state = 2; 
-                break;
-                
-            case 2: 
-                error = distance_you_y - safe_R; 
-                cmd.linear.y = -Limit_Value(Kp_dist * error, max_vel, -max_vel); 
-                cmd.linear.x = 0; 
-                if (std::abs(error) < 0.05) escape_state = 3; 
-                break;
-                
-            case 3: 
-                error = distance_qian_x - safe_F; 
-                cmd.linear.x = Limit_Value(Kp_dist * error, max_vel, -max_vel); 
-                cmd.linear.y = 0; 
-                if (std::abs(error) < 0.05) escape_state = 4; 
-                break;
-                
-            case 4: 
-                error = distance_zuo_y - safe_L; 
-                cmd.linear.y = Limit_Value(Kp_dist * error, max_vel, -max_vel); 
-                cmd.linear.x = 0; 
-                if (std::abs(error) < 0.05) escape_state = 5; 
-                break;
-                
-            case 5: 
-                error = distance_qian_x - safe_F; 
-                cmd.linear.x = Limit_Value(Kp_dist * error, max_vel, -max_vel); 
-                cmd.linear.y = 0; 
-                if (std::abs(error) < 0.05) escape_state = 6; 
-                break;
-                
-            case 6: 
-                error = distance_you_y - safe_R; 
-                cmd.linear.y = -Limit_Value(Kp_dist * error, max_vel, -max_vel); 
-                cmd.linear.x = 0; 
-                if (std::abs(error) < 0.05) escape_state = 7; 
-                break;
-                
-            case 7: 
-                error = distance_hou_x - safe_B; 
-                cmd.linear.x = -Limit_Value(Kp_dist * error, max_vel, -max_vel); 
-                cmd.linear.y = 0; 
-                if (std::abs(error) < 0.05) escape_state = 8; 
-                break;
-                
-            case 8: 
-                error = distance_zuo_y - safe_L; 
-                cmd.linear.y = Limit_Value(Kp_dist * error, max_vel, -max_vel); 
-                cmd.linear.x = 0; 
-                if (std::abs(error) < 0.05) escape_state = 9; 
-                break;
-                
-            case 9: 
-                error = distance_hou_x - safe_B; 
-                cmd.linear.x = -Limit_Value(Kp_dist * error, max_vel, -max_vel); 
-                cmd.linear.y = 0; 
-                if (std::abs(error) < 0.05) escape_state = 10; 
-                break;
-                
-            case 10: 
-                error = distance_you_y - safe_R2; 
-                cmd.linear.y = -Limit_Value(Kp_dist * error, max_vel, -max_vel); 
-                cmd.linear.x = 0; 
-                if (std::abs(error) < 0.05) escape_state = 11; 
-                break;
-                
-            case 11: 
-                // 解除锁头，强行旋转 180 度调头
-                cmd.angular.z = 1.57; 
-                cmd.linear.x = 0; 
-                cmd.linear.y = 0;
-                rotate_count++;
-                if (rotate_count >= 45) 
-                {
-                    task_finished = true;
-                }
-                break;
+        case 1:
+            error = distance_qian_x - safe_F;
+            cmd.linear.x = Limit_Value(Kp_dist * error, max_vel, -max_vel);
+            cmd.linear.y = 0;
+            if (std::abs(error) < 0.05)
+                escape_state = 2;
+            break;
+
+        case 2:
+            error = distance_you_y - safe_R;
+            cmd.linear.y = -Limit_Value(Kp_dist * error, max_vel, -max_vel);
+            cmd.linear.x = 0;
+            if (std::abs(error) < 0.05)
+                escape_state = 3;
+            break;
+
+        case 3:
+            error = distance_qian_x - safe_F;
+            cmd.linear.x = Limit_Value(Kp_dist * error, max_vel, -max_vel);
+            cmd.linear.y = 0;
+            if (std::abs(error) < 0.05)
+                escape_state = 4;
+            break;
+
+        case 4:
+            error = distance_zuo_y - safe_L;
+            cmd.linear.y = Limit_Value(Kp_dist * error, max_vel, -max_vel);
+            cmd.linear.x = 0;
+            if (std::abs(error) < 0.05)
+                escape_state = 5;
+            break;
+
+        case 5:
+            error = distance_qian_x - safe_F;
+            cmd.linear.x = Limit_Value(Kp_dist * error, max_vel, -max_vel);
+            cmd.linear.y = 0;
+            if (std::abs(error) < 0.05)
+                escape_state = 6;
+            break;
+
+        case 6:
+            error = distance_you_y - safe_R;
+            cmd.linear.y = -Limit_Value(Kp_dist * error, max_vel, -max_vel);
+            cmd.linear.x = 0;
+            if (std::abs(error) < 0.05)
+                escape_state = 7;
+            break;
+
+        case 7:
+            error = distance_hou_x - safe_B;
+            cmd.linear.x = -Limit_Value(Kp_dist * error, max_vel, -max_vel);
+            cmd.linear.y = 0;
+            if (std::abs(error) < 0.05)
+                escape_state = 8;
+            break;
+
+        case 8:
+            error = distance_zuo_y - safe_L;
+            cmd.linear.y = Limit_Value(Kp_dist * error, max_vel, -max_vel);
+            cmd.linear.x = 0;
+            if (std::abs(error) < 0.05)
+                escape_state = 9;
+            break;
+
+        case 9:
+            error = distance_hou_x - safe_B;
+            cmd.linear.x = -Limit_Value(Kp_dist * error, max_vel, -max_vel);
+            cmd.linear.y = 0;
+            if (std::abs(error) < 0.05)
+                escape_state = 10;
+            break;
+
+        case 10:
+            error = distance_you_y - safe_R2;
+            cmd.linear.y = -Limit_Value(Kp_dist * error, max_vel, -max_vel);
+            cmd.linear.x = 0;
+            if (std::abs(error) < 0.05)
+                escape_state = 11;
+            break;
+
+        case 11:
+            // 解除锁头，强行旋转 180 度调头
+            cmd.angular.z = 1.57;
+            cmd.linear.x = 0;
+            cmd.linear.y = 0;
+            rotate_count++;
+            if (rotate_count >= 45)
+            {
+                task_finished = true;
+            }
+            break;
         }
-        
+
         cmd_vel_pub__.publish(cmd);
         rate.sleep();
     }
-    
+
     // 强制刹车停车
     geometry_msgs::Twist stop;
     cmd_vel_pub__.publish(stop);
@@ -397,8 +411,7 @@ void OURSWITCH::GotoB()
     std::vector<Pose> qr_points = {
         {-1.56, -0.50, 3.14},
         {-1.56, -0.70, 3.14},
-        {-1.56, -0.30, 3.14}
-    };
+        {-1.56, -0.30, 3.14}};
 
     int scan_done = 0;
     bool start_qr_scan_sent = false;
@@ -561,34 +574,34 @@ void OURSWITCH::GotoB()
 //     int scan_done = 0;
 //     nh_.getParam("qr_scan_done", scan_done);
 
-//     if (scan_done == 1) 
+//     if (scan_done == 1)
 //     {
 //         ROS_INFO("🏆 PERFECT! All 3 QR codes were already scanned during GotoA!");
-//     } 
-//     else 
+//     }
+//     else
 //     {
 //         ROS_WARN("⚠️ Not all QR codes found yet. Starting [Stop-and-Go] search...");
-        
+
 //         geometry_msgs::Twist spin_cmd;
 //         int tick = 0;
 //         ros::Rate r(10); // 10Hz，每周期 0.1 秒
-        
+
 //         // 走走停停策略寻找剩余的二维码
 //         while (scan_done == 0 && ros::ok())
 //         {
 //             tick++;
 //             // 周期为4秒
-//             if (tick % 40 < 20) 
+//             if (tick % 40 < 20)
 //             {
 //                 spin_cmd.angular.z = 0.5; // 转动
-//             } 
-//             else 
+//             }
+//             else
 //             {
 //                 spin_cmd.angular.z = 0.0; // 刹车，给摄像头留出清晰拍照时间
 //             }
 
 //             cmd_vel_pub__.publish(spin_cmd);
-            
+
 //             nh_.getParam("qr_scan_done", scan_done);
 //             ros::spinOnce();
 //             r.sleep();
@@ -626,19 +639,19 @@ void OURSWITCH::XingHuoAI()
     std::string sim_item = "UNKNOWN", sim_class = "UNKNOWN", sim_room = "UNKNOWN";
 
     nh_.getParam("real_item", real_item);
-    nh_.getParam("real_class", real_class);       
+    nh_.getParam("real_class", real_class);
     nh_.getParam("real_room", real_room);
 
     nh_.getParam("sim_item", sim_item);
-    nh_.getParam("sim_class", sim_class);         
-    nh_.getParam("sim_room", sim_room);       
+    nh_.getParam("sim_class", sim_class);
+    nh_.getParam("sim_room", sim_room);
 
     ROS_INFO("=== Standardized Task Params ===");
     ROS_INFO("Real Car: [%s] -> [%s] -> [%s]", real_item.c_str(), real_class.c_str(), real_room.c_str());
     ROS_INFO("Sim  Car: [%s] -> [%s] -> [%s]", sim_item.c_str(), sim_class.c_str(), sim_room.c_str());
     ROS_INFO("================================");
-    
-    current_state = GOTOC1_; 
+
+    current_state = GOTOC1_;
 }
 
 // =========================================================================
@@ -687,8 +700,7 @@ void OURSWITCH::GotoC(int target_num)
     std::vector<Pose> search_points = {
         {-1.3, -2.4, 1.57},
         {0.6, -2.3, 1.57},
-        {2.0, -2.3, 1.57}
-    };
+        {2.0, -2.3, 1.57}};
 
     bool target_found = false;
     double target_dx = 0.0;
@@ -698,7 +710,7 @@ void OURSWITCH::GotoC(int target_num)
     // 遍历每个观测点
     for (int i = 0; i < (int)search_points.size() && ros::ok(); ++i)
     {
-        ROS_INFO("Navigating to observation point %d", i + 1);
+        ROS_DEBUG("Navigating to observation point %d", i + 1);
 
         current_signal_class_ = -1;
         last_signal_class_time_ = ros::Time(0);
@@ -706,7 +718,7 @@ void OURSWITCH::GotoC(int target_num)
 
         sendPos(search_points[i].x, search_points[i].y, search_points[i].yaw);
 
-        bool arrived = ac_.waitForResult(ros::Duration(20.0));       //  一个坐标点最多等20s
+        bool arrived = ac_.waitForResult(ros::Duration(20.0)); //  一个坐标点最多等20s
         if (!arrived)
         {
             ROS_WARN("Point %d timeout, skip", i + 1);
@@ -720,10 +732,10 @@ void OURSWITCH::GotoC(int target_num)
             continue;
         }
 
-        ROS_INFO("Arrived point %d, rotating slowly to search signal", i + 1);
+        ROS_DEBUG("Arrived point %d, rotating slowly to search signal", i + 1);
 
         geometry_msgs::Twist spin_cmd;
-        spin_cmd.angular.z = 0.25;        //  旋转速度
+        spin_cmd.angular.z = 0.25; //  旋转速度
 
         ros::Time spin_start = ros::Time::now();
         ros::Rate rate(20);
@@ -744,8 +756,8 @@ void OURSWITCH::GotoC(int target_num)
 
             if (class_recent && detection_recent && current_signal_class_ == target_class)
             {
-                ROS_WARN("Target class matched. class=%d center_x=%.1f",
-                        current_signal_class_, signal_center_x_);
+                ROS_DEBUG("Target class matched. class=%d center_x=%.1f",
+                          current_signal_class_, signal_center_x_);
 
                 geometry_msgs::Twist stop_cmd;
                 cmd_vel_pub__.publish(stop_cmd);
@@ -777,9 +789,9 @@ void OURSWITCH::GotoC(int target_num)
                         target_locked_ = true;
                         frozen = true;
 
-                        ROS_WARN("Target locked after stop. class=%d center=%.1f left=%.1f right=%.1f",
-                                locked_signal_class_, locked_center_x_,
-                                locked_box_x_l_, locked_box_x_r_);
+                        ROS_DEBUG("Target locked after stop. class=%d center=%.1f left=%.1f right=%.1f",
+                                  locked_signal_class_, locked_center_x_,
+                                  locked_box_x_l_, locked_box_x_r_);
                         break;
                     }
 
@@ -805,7 +817,7 @@ void OURSWITCH::GotoC(int target_num)
                     target_line_a = srv.response.line_a;
 
                     ROS_INFO("Signal metric center: dx=%.3f dy=%.3f line_a=%.3f",
-                            target_dx, target_dy, target_line_a);
+                             target_dx, target_dy, target_line_a);
 
                     nh_.setParam("signal_target_dx", target_dx);
                     nh_.setParam("signal_target_dy", target_dy);
@@ -839,7 +851,7 @@ void OURSWITCH::GotoC(int target_num)
                     double target_yaw = kk + car_yaw;
 
                     ROS_INFO("Parking goal in map: x=%.3f y=%.3f yaw=%.3f",
-                            map_target.x, map_target.y, target_yaw);
+                             map_target.x, map_target.y, target_yaw);
 
                     sendPos(map_target.x, map_target.y, target_yaw);
 
@@ -895,7 +907,7 @@ void OURSWITCH::GotoC(int target_num)
 
         char tts_cmd[512];
         sprintf(tts_cmd, "espeak -v zh+f2 \"已将%s放入%s\" -s 130", item.c_str(), room.c_str());
-        system(tts_cmd);    //语音播报
+        system(tts_cmd); // 语音播报
     }
 
     if (!target_found)
@@ -916,7 +928,7 @@ void OURSWITCH::Gazebo()
 
     // nh_.setParam("start_gazebo_sim", 1);
     // nh_.setParam("gazebo_sim_done", 0);
-    
+
     // int sim_done = 0;
     // while (sim_done == 0 && ros::ok())
     // {
@@ -924,7 +936,7 @@ void OURSWITCH::Gazebo()
     //     ros::Duration(0.1).sleep();
     //     ros::spinOnce();
     // }
-    
+
     // ROS_INFO("Gazebo simulation task reported as COMPLETE!");
     // nh_.setParam("start_gazebo_sim", 0);
 
@@ -933,13 +945,13 @@ void OURSWITCH::Gazebo()
     // nh_.getParam("sim_item", sim_item);
     // nh_.getParam("sim_room", sim_room);
     // char tts_cmd[512];
-    
+
     // // 拼接发音指令：仿真任务已完成，已将毛巾放入电子产品生产车间
     // sprintf(tts_cmd, "espeak -v zh+f2 \"仿真任务已完成，已将%s放入%s\" -s 130", sim_item.c_str(), sim_room.c_str());
     // ROS_INFO("Broadcasting Gazebo task completion...");
     // system(tts_cmd);
 
-    current_state = GOTOD_; 
+    current_state = GOTOD_;
 }
 
 // =========================================================================
@@ -948,17 +960,17 @@ void OURSWITCH::Gazebo()
 void OURSWITCH::GotoD()
 {
     ROS_INFO("Entering GotoD state: Traffic Light Detection");
-    
-    goto_D; 
+
+    goto_D;
     bool finished_before_timeout = ac_.waitForResult(ros::Duration(20.0));
 
     if (finished_before_timeout && ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED)
     {
         ROS_INFO("Arrived at the stop line successfully.");
     }
-    else 
+    else
     {
-        if (!finished_before_timeout) 
+        if (!finished_before_timeout)
         {
             ac_.cancelGoal();
         }
@@ -983,19 +995,19 @@ void OURSWITCH::vision_line()
         ros::Duration(0.1).sleep();
         ros::spinOnce();
     }
-    
+
     ROS_INFO("Line tracking completed! Car Stopped.");
-    nh_.setParam("start_vision_line", 0); 
-    
+    nh_.setParam("start_vision_line", 0);
+
     // ========== 语音播报 4：任务完成 ==========
     ros::Duration(2.0).sleep(); // 停稳后缓冲2秒，满足“停后须在10秒内开始播报”规则
     ROS_INFO("Broadcasting Final Mission Complete...");
-    
+
     // 直接调用 espeak 播报
     system("espeak -v zh+f2 \"任务完成\" -s 130");
 
     ROS_INFO("ALL TASKS COMPLETED SUCCESSFULLY! SHUTTING DOWN.");
-    ros::shutdown(); 
+    ros::shutdown();
 }
 
 // =========================================================================
@@ -1005,9 +1017,9 @@ int main(int argc, char **argv)
 {
     ros::init(argc, argv, "switch_node");
     ros::NodeHandle nh;
-    
+
     OURSWITCH ucar;
-    ros::AsyncSpinner spinner(1);     
+    ros::AsyncSpinner spinner(1);
     spinner.start();
 
     ros::Rate loop_rate(10);
@@ -1015,37 +1027,37 @@ int main(int argc, char **argv)
     {
         switch (ucar.current_state)
         {
-            case TEST_:      
-                break;
-            case GOTOA_:     
-                ucar.GotoA(); 
-                ucar.current_state = GOTOB_; 
-                break;
-            case GOTOB_:     
-                ucar.GotoB(); 
-                break;
-            case XingHuoAI_: 
-                ucar.XingHuoAI(); 
-                break;
-            case GOTOC1_:    
-                ucar.GotoC(1); 
-                break;
-            case GOTOC2_:    
-                ucar.GotoC(2); 
-                break;
-            case Gazebo_:    
-                ucar.Gazebo(); 
-                break;
-            case GOTOD_:     
-                ucar.GotoD(); 
-                break;
-            case VISION_LINE_: 
-                ucar.vision_line(); 
-                break;
+        case TEST_:
+            break;
+        case GOTOA_:
+            ucar.GotoA();
+            ucar.current_state = GOTOB_;
+            break;
+        case GOTOB_:
+            ucar.GotoB();
+            break;
+        case XingHuoAI_:
+            ucar.XingHuoAI();
+            break;
+        case GOTOC1_:
+            ucar.GotoC(1);
+            break;
+        case GOTOC2_:
+            ucar.GotoC(2);
+            break;
+        case Gazebo_:
+            ucar.Gazebo();
+            break;
+        case GOTOD_:
+            ucar.GotoD();
+            break;
+        case VISION_LINE_:
+            ucar.vision_line();
+            break;
         }
         loop_rate.sleep();
     }
-    
+
     spinner.stop();
     return 0;
 }

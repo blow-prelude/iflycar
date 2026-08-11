@@ -5,6 +5,7 @@
 #include <sensor_msgs/Image.h>
 #include <std_msgs/Float32MultiArray.h>
 #include <std_msgs/String.h>
+#include <std_srvs/SetBool.h>
 #include <opencv2/opencv.hpp>
 #include <algorithm>
 #include <cctype>
@@ -22,7 +23,7 @@
 
 namespace
 {
-const std::chrono::seconds kStopExitDelay(5);
+    const std::chrono::seconds kStopExitDelay(5);
 }
 
 enum State
@@ -71,6 +72,7 @@ public:
         target_y_ = loadStaticParameter<double>("vision_target_y", 400.0);
         turning_target_y_ = loadStaticParameter<double>("turning_target_y", 360.0);
         loop_rate_ = loadStaticParameter<int>("loop_rate", 120);
+        disabled_rate_ = loadStaticParameter<double>("disabled_rate", 10.0);
         left_tracking_left_weight_ = loadStaticParameter<double>("left_tracking_left_weight", 0.65);
         right_tracking_left_weight_ = loadStaticParameter<double>("right_tracking_left_weight", 0.40);
 
@@ -102,6 +104,8 @@ public:
 
         // 初始化转弯标志
         ros::param::set(turning_flag_param_, 0);
+        enable_service_ = nh_private_.advertiseService(
+            "set_enabled", &FindWayROS::setEnabledCallback, this);
 
         // 由 straight_track_side_ 一次性派生出搜索侧与中线模式（运行前算一次，避免每帧 switch）
         switch (straight_track_side_)
@@ -135,6 +139,12 @@ public:
         while (ros::ok())
         {
             ros::spinOnce();
+
+            if (!enabled_)
+            {
+                ros::WallDuration(1.0 / disabled_rate_).sleep();
+                continue;
+            }
 
             if (stopExitDelayElapsed())
             {
@@ -172,7 +182,7 @@ public:
                 {
                     state_ = IDLE;
                     // t0_set = false;
-                    miss_line_ = NO_MISS;
+                    // miss_line_ = NO_MISS;
                     processor_.set_mid_line_mode(MID_AVG);
                     reset_requested_ = false;
                     resetStopLineState();
@@ -327,15 +337,6 @@ public:
                     ROS_ERROR_THROTTLE(2.0, "Error while processing frame: %s", e.what());
                 }
             }
-
-            int key = cv::waitKey(1) & 0xFF;
-            if (key == 'q')
-            {
-                ROS_INFO("User quit");
-                break;
-            }
-
-            rate.sleep();
         }
 
         ros::param::set(turning_flag_param_, 0);
@@ -372,11 +373,14 @@ private:
     double target_y_ = 400.0;
     double turning_target_y_ = 360.0;
     int loop_rate_ = 120;
+    double disabled_rate_ = 10.0;
+    bool enabled_ = false;
+    ros::ServiceServer enable_service_;
     double left_tracking_left_weight_ = 0.65;
     double right_tracking_left_weight_ = 0.40;
 
     // ---- 停止线检测 / STOP 状态 ----
-    bool in_stop_ = false;    // STOP 抑制标志：为 true 时巡线照跑但不发布
+    bool in_stop_ = false; // STOP 抑制标志：为 true 时巡线照跑但不发布
     bool stop_exit_timer_active_ = false;
     std::chrono::steady_clock::time_point stop_entered_at_;
     int stop_line_count_ = 0; // 已确认经过的停止线条数
@@ -465,6 +469,8 @@ private:
         require(std::isfinite(turning_target_y_) && turning_target_y_ >= 0.0,
                 "~turning_target_y must be finite and >= 0");
         require(loop_rate_ > 0, "~loop_rate must be > 0");
+        require(std::isfinite(disabled_rate_) && disabled_rate_ > 0.0,
+                "~disabled_rate must be finite and > 0");
         require(valid_weight(left_tracking_left_weight_),
                 "~left_tracking_left_weight must be in [0, 1]");
         require(valid_weight(right_tracking_left_weight_),
@@ -498,6 +504,8 @@ private:
 
     void imageCallback(const sensor_msgs::ImageConstPtr &msg)
     {
+        if (!enabled_)
+            return;
         try
         {
             cv::Mat frame = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8)->image;
@@ -512,6 +520,8 @@ private:
 
     void directionCallback(const std_msgs::String::ConstPtr &msg)
     {
+        if (!enabled_)
+            return;
         std::string dir = msg->data;
         // 去除首尾空白
         size_t start = dir.find_first_not_of(" \t\n\r");
@@ -538,6 +548,38 @@ private:
         }
         reset_requested_ = true;
         ROS_INFO("Direction set to: %s", dir.c_str());
+    }
+
+    bool setEnabledCallback(std_srvs::SetBool::Request &request,
+                            std_srvs::SetBool::Response &response)
+    {
+        if (enabled_ == request.data)
+        {
+            response.success = true;
+            response.message = enabled_ ? "already enabled" : "already disabled";
+            return true;
+        }
+
+        enabled_ = request.data;
+        {
+            std::lock_guard<std::mutex> lock(frame_mutex_);
+            latest_frame_.release();
+        }
+        {
+            std::lock_guard<std::mutex> lock(direction_mutex_);
+            state_ = IDLE;
+            miss_line_ = NO_MISS;
+            reset_requested_ = false;
+        }
+        processor_.set_mid_line_mode(MID_AVG);
+        resetStopLineState();
+        has_last_valid_msg_ = false;
+        ros::param::set(turning_flag_param_, 0);
+
+        response.success = true;
+        response.message = enabled_ ? "enabled" : "disabled";
+        ROS_INFO("Image processing %s", response.message.c_str());
+        return true;
     }
 
     std_msgs::Float32MultiArray buildVisionLineMsg(
