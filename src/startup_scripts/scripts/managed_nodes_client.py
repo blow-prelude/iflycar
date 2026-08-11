@@ -27,6 +27,9 @@ class ManagedNodesClient:
             "vision_line_node": rospy.get_param(
                 "~vision_line_service", "/vision_line_node/set_enabled"
             ),
+            "find_signal": rospy.get_param(
+                "~find_signal_service", "/find_signal/set_enabled"
+            ),
         }
         self._proxies = {
             name: rospy.ServiceProxy(service_name, SetBool)
@@ -35,13 +38,20 @@ class ManagedNodesClient:
         self._service = rospy.Service(
             "~set_enabled", SetBool, self._set_enabled_callback
         )
-        self._traffic_light_enable_param = rospy.get_param(
-            "~traffic_light_enable_param", "/start_traffic_light_det"
-        )
+        self._parameter_targets = {
+            rospy.get_param(
+                "~traffic_light_enable_param", "/start_traffic_light_det"
+            ): ("traffic_light", "image_process"),
+            rospy.get_param(
+                "~find_signal_enable_param", "/task1_all_done"
+            ): ("find_signal",),
+        }
         poll_rate = float(rospy.get_param("~parameter_poll_rate", 10.0))
         if poll_rate <= 0.0:
             raise ValueError("~parameter_poll_rate must be > 0")
-        self._last_traffic_light_enabled = None
+        self._last_parameter_states = {
+            parameter_name: None for parameter_name in self._parameter_targets
+        }
         self._parameter_timer = rospy.Timer(
             rospy.Duration(1.0 / poll_rate), self._parameter_timer_callback
         )
@@ -59,20 +69,28 @@ class ManagedNodesClient:
         return None
 
     def _parameter_timer_callback(self, _event: rospy.timer.TimerEvent) -> None:
-        enabled = self._read_bool_parameter(self._traffic_light_enable_param)
-        if enabled is None or enabled == self._last_traffic_light_enabled:
-            return
+        for parameter_name, target_names in self._parameter_targets.items():
+            enabled = self._read_bool_parameter(parameter_name)
+            if enabled is None or enabled == self._last_parameter_states[parameter_name]:
+                continue
 
-        with self._call_lock:
-            succeeded, message = self._call_target("traffic_light", enabled)
-        if succeeded:
-            self._last_traffic_light_enabled = enabled
-            rospy.loginfo(
-                "%s=%s -> traffic_light %s",
-                self._traffic_light_enable_param,
-                int(enabled),
-                message,
-            )
+            all_succeeded = True
+            details = []
+            with self._call_lock:
+                for target_name in target_names:
+                    succeeded, message = self._call_target(target_name, enabled)
+                    all_succeeded = all_succeeded and succeeded
+                    details.append(
+                        f"{target_name}={'ok' if succeeded else message}"
+                    )
+            if all_succeeded:
+                self._last_parameter_states[parameter_name] = enabled
+                rospy.loginfo(
+                    "%s=%s -> %s",
+                    parameter_name,
+                    int(enabled),
+                    "; ".join(details),
+                )
 
     def _call_target(self, name: str, enabled: bool) -> tuple[bool, str]:
         service_name = self._services[name]
@@ -104,9 +122,10 @@ class ManagedNodesClient:
         summary = "; ".join(details)
         rospy.loginfo("Managed nodes enabled=%s: %s", request.data, summary)
         if all_succeeded:
-            self._last_traffic_light_enabled = self._read_bool_parameter(
-                self._traffic_light_enable_param
-            )
+            for parameter_name in self._last_parameter_states:
+                self._last_parameter_states[parameter_name] = (
+                    self._read_bool_parameter(parameter_name)
+                )
         return SetBoolResponse(success=all_succeeded, message=summary)
 
 

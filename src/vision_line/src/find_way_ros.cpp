@@ -73,7 +73,6 @@ public:
         turning_target_y_ = loadStaticParameter<double>("turning_target_y", 360.0);
         loop_rate_ = loadStaticParameter<int>("loop_rate", 120);
         disabled_rate_ = loadStaticParameter<double>("disabled_rate", 10.0);
-        enabled_ = loadStaticParameter<bool>("initially_enabled", true);
         left_tracking_left_weight_ = loadStaticParameter<double>("left_tracking_left_weight", 0.65);
         right_tracking_left_weight_ = loadStaticParameter<double>("right_tracking_left_weight", 0.40);
 
@@ -375,7 +374,7 @@ private:
     double turning_target_y_ = 360.0;
     int loop_rate_ = 120;
     double disabled_rate_ = 10.0;
-    bool enabled_ = true;
+    bool enabled_ = false;
     ros::ServiceServer enable_service_;
     double left_tracking_left_weight_ = 0.65;
     double right_tracking_left_weight_ = 0.40;
