@@ -63,7 +63,7 @@ private:
     ros::Publisher cmd_vel_pub_;
     ros::NodeHandle nh_private_{"~"};
     ros::ServiceServer enable_service_;
-    bool enabled_ = true;
+    bool enabled_ = false;
     double disabled_rate_ = 10.0;
     ros::Subscriber vision_sub_;
     PIDController angular_pid_; // 角速度PID控制器（按方向切换参数）
@@ -262,7 +262,6 @@ public:
         vision_sub_ = nh_.subscribe("/vision_line", 10, &VisionErrorController::visionCallback, this);
         direction_sub_ = nh_.subscribe("/vision_line_direction", 10, &VisionErrorController::directionCallback, this);
         direction_pub_ = nh_.advertise<std_msgs::String>("/vision_line_direction_out", 10);
-        nh_private_.param("initially_enabled", enabled_, true);
         nh_private_.param("disabled_rate", disabled_rate_, 10.0);
         if (disabled_rate_ <= 0.0)
             throw std::invalid_argument("~disabled_rate must be > 0");
