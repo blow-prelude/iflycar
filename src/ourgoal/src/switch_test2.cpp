@@ -732,160 +732,200 @@ void OURSWITCH::GotoC(int target_num)
             continue;
         }
 
-        ROS_DEBUG("Arrived point %d, rotating slowly to search signal", i + 1);
+        ROS_DEBUG("Arrived point %d, starting stop-and-look signal search", i + 1);
 
-        geometry_msgs::Twist spin_cmd;
-        spin_cmd.angular.z = 0.25; //  旋转速度
-
-        ros::Time spin_start = ros::Time::now();
+        const int view_count = 6;
+        const double turn_speed = 1.0;
+        const double turn_duration = (2.0 * M_PI / view_count) / turn_speed;
+        const double settle_duration = 0.4;
+        const double recognition_duration = 1.0;
+        bool leave_observation_point = false;
         ros::Rate rate(20);
-        double spin_duration = 2.0 * M_PI / 0.25;
 
-        while (ros::ok() && (ros::Time::now() - spin_start).toSec() < spin_duration)
+        for (int view = 0; view < view_count && ros::ok(); ++view)
         {
-            cmd_vel_pub__.publish(spin_cmd);
-            ros::spinOnce();
-
-            bool class_recent =
-                !last_signal_class_time_.isZero() &&
-                (ros::Time::now() - last_signal_class_time_).toSec() < 1.0;
-
-            bool detection_recent =
-                !last_signal_detection_time_.isZero() &&
-                (ros::Time::now() - last_signal_detection_time_).toSec() < 1.0;
-
-            if (class_recent && detection_recent && current_signal_class_ == target_class)
+            if (view > 0)
             {
-                ROS_DEBUG("Target class matched. class=%d center_x=%.1f",
-                          current_signal_class_, signal_center_x_);
+                target_locked_ = true; // 忽略转动过程中的模糊识别结果
 
-                geometry_msgs::Twist stop_cmd;
-                cmd_vel_pub__.publish(stop_cmd);
+                geometry_msgs::Twist turn_cmd;
+                turn_cmd.angular.z = turn_speed;
+                ros::Time turn_start = ros::Time::now();
 
-                ros::Duration(0.3).sleep();
-
-                // 停车后重新取一帧最新识别结果，并锁定
-                bool frozen = false;
-                ros::Time freeze_start = ros::Time::now();
-
-                while (ros::ok() && (ros::Time::now() - freeze_start).toSec() < 1.0)
+                while (ros::ok() && (ros::Time::now() - turn_start).toSec() < turn_duration)
                 {
+                    cmd_vel_pub__.publish(turn_cmd);
                     ros::spinOnce();
-
-                    bool class_ok =
-                        !last_signal_class_time_.isZero() &&
-                        (ros::Time::now() - last_signal_class_time_).toSec() < 1.0;
-
-                    bool det_ok =
-                        !last_signal_detection_time_.isZero() &&
-                        (ros::Time::now() - last_signal_detection_time_).toSec() < 1.0;
-
-                    if (class_ok && det_ok && current_signal_class_ == target_class)
-                    {
-                        locked_signal_class_ = current_signal_class_;
-                        locked_center_x_ = signal_center_x_;
-                        locked_box_x_l_ = signal_box_x_l_;
-                        locked_box_x_r_ = signal_box_x_r_;
-                        target_locked_ = true;
-                        frozen = true;
-
-                        ROS_DEBUG("Target locked after stop. class=%d center=%.1f left=%.1f right=%.1f",
-                                  locked_signal_class_, locked_center_x_,
-                                  locked_box_x_l_, locked_box_x_r_);
-                        break;
-                    }
-
-                    ros::Duration(0.05).sleep();
-                }
-
-                if (!frozen)
-                {
-                    ROS_WARN("Target matched, but no stable post-stop detection found");
-                    continue;
-                }
-
-                ourgoal::getLaserPoint srv;
-                srv.request.center_x = std::max(0, std::min(639, (int)std::round(locked_center_x_)));
-                srv.request.left_x = std::max(0, std::min(639, (int)std::round(locked_box_x_l_)));
-                srv.request.right_x = std::max(0, std::min(639, (int)std::round(locked_box_x_r_)));
-                srv.request.mode = false;
-
-                if (srv.request.left_x < srv.request.right_x && vision_gettool_client_.call(srv))
-                {
-                    target_dx = (srv.response.dx_left + srv.response.dx_right) / 2.0;
-                    target_dy = (srv.response.dy_left + srv.response.dy_right) / 2.0;
-                    target_line_a = srv.response.line_a;
-
-                    ROS_INFO("Signal metric center: dx=%.3f dy=%.3f line_a=%.3f",
-                             target_dx, target_dy, target_line_a);
-
-                    nh_.setParam("signal_target_dx", target_dx);
-                    nh_.setParam("signal_target_dy", target_dy);
-                    nh_.setParam("signal_target_line_a", target_line_a);
-
-                    point_2d target_point;
-                    target_point.x = target_dx;
-                    target_point.y = target_dy;
-
-                    double k = target_line_a;
-                    double kk = (k == 255) ? M_PI / 2.0 : std::atan(k);
-
-                    if (kk < 0)
-                    {
-                        kk += M_PI;
-                    }
-
-                    kk -= M_PI / 2.0;
-
-                    double stop_distance = 0.3;
-                    target_point.x -= stop_distance * std::cos(kk);
-                    target_point.y -= stop_distance * std::sin(kk);
-
-                    double car_x = nh_.param("CarX", 0.0);
-                    double car_y = nh_.param("CarY", 0.0);
-                    double car_yaw = nh_.param("CarYaw", 0.0);
-
-                    point_2d map_target = rotate(target_point, car_yaw);
-                    map_target = translate(map_target, car_x, car_y);
-
-                    double target_yaw = kk + car_yaw;
-
-                    ROS_INFO("Parking goal in map: x=%.3f y=%.3f yaw=%.3f",
-                             map_target.x, map_target.y, target_yaw);
-
-                    sendPos(map_target.x, map_target.y, target_yaw);
-
-                    bool park_arrived = ac_.waitForResult(ros::Duration(15.0));
-
-                    if (park_arrived && ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED)
-                    {
-                        ROS_WARN("Arrived at target warehouse parking pose");
-                        target_found = true;
-                        nh_.setParam("auto_park_status", "DONE");
-                        break;
-                    }
-                    else
-                    {
-                        ROS_WARN("Failed to reach parking pose, continue searching next observation point");
-
-                        if (!park_arrived)
-                        {
-                            ac_.cancelGoal();
-                        }
-
-                        nh_.setParam("auto_park_status", "FAILED");
-                        target_locked_ = false;
-                        break;
-                    }
-                }
-                else
-                {
-                    ROS_WARN("Target class matched, but /srv_getLaserPoint failed");
-                    target_locked_ = false;
+                    rate.sleep();
                 }
             }
 
-            rate.sleep();
+            geometry_msgs::Twist stop_cmd;
+            cmd_vel_pub__.publish(stop_cmd);
+            ros::Duration(settle_duration).sleep();
+
+            // 只接受小车完全停稳后的新识别结果
+            current_signal_class_ = -1;
+            last_signal_class_time_ = ros::Time(0);
+            last_signal_detection_time_ = ros::Time(0);
+            target_locked_ = false;
+
+            ROS_DEBUG("Observation point %d, static view %d/%d",
+                      i + 1, view + 1, view_count);
+
+            ros::Time recognition_start = ros::Time::now();
+            while (ros::ok() &&
+                   (ros::Time::now() - recognition_start).toSec() < recognition_duration)
+            {
+                ros::spinOnce();
+
+                bool class_recent =
+                    !last_signal_class_time_.isZero() &&
+                    (ros::Time::now() - last_signal_class_time_).toSec() < 1.0;
+
+                bool detection_recent =
+                    !last_signal_detection_time_.isZero() &&
+                    (ros::Time::now() - last_signal_detection_time_).toSec() < 1.0;
+
+                if (class_recent && detection_recent && current_signal_class_ == target_class)
+                {
+                    ROS_DEBUG("Target class matched. class=%d center_x=%.1f",
+                              current_signal_class_, signal_center_x_);
+
+                    geometry_msgs::Twist stop_cmd;
+                    cmd_vel_pub__.publish(stop_cmd);
+
+                    ros::Duration(0.3).sleep();
+
+                    // 停车后重新取一帧最新识别结果，并锁定
+                    bool frozen = false;
+                    ros::Time freeze_start = ros::Time::now();
+
+                    while (ros::ok() && (ros::Time::now() - freeze_start).toSec() < 1.0)
+                    {
+                        ros::spinOnce();
+
+                        bool class_ok =
+                            !last_signal_class_time_.isZero() &&
+                            (ros::Time::now() - last_signal_class_time_).toSec() < 1.0;
+
+                        bool det_ok =
+                            !last_signal_detection_time_.isZero() &&
+                            (ros::Time::now() - last_signal_detection_time_).toSec() < 1.0;
+
+                        if (class_ok && det_ok && current_signal_class_ == target_class)
+                        {
+                            locked_signal_class_ = current_signal_class_;
+                            locked_center_x_ = signal_center_x_;
+                            locked_box_x_l_ = signal_box_x_l_;
+                            locked_box_x_r_ = signal_box_x_r_;
+                            target_locked_ = true;
+                            frozen = true;
+
+                            ROS_DEBUG("Target locked after stop. class=%d center=%.1f left=%.1f right=%.1f",
+                                      locked_signal_class_, locked_center_x_,
+                                      locked_box_x_l_, locked_box_x_r_);
+                            break;
+                        }
+
+                        ros::Duration(0.05).sleep();
+                    }
+
+                    if (!frozen)
+                    {
+                        ROS_WARN("Target matched, but no stable post-stop detection found");
+                        continue;
+                    }
+
+                    ourgoal::getLaserPoint srv;
+                    srv.request.center_x = std::max(0, std::min(639, (int)std::round(locked_center_x_)));
+                    srv.request.left_x = std::max(0, std::min(639, (int)std::round(locked_box_x_l_)));
+                    srv.request.right_x = std::max(0, std::min(639, (int)std::round(locked_box_x_r_)));
+                    srv.request.mode = false;
+
+                    if (srv.request.left_x < srv.request.right_x && vision_gettool_client_.call(srv))
+                    {
+                        target_dx = (srv.response.dx_left + srv.response.dx_right) / 2.0;
+                        target_dy = (srv.response.dy_left + srv.response.dy_right) / 2.0;
+                        target_line_a = srv.response.line_a;
+
+                        ROS_INFO("Signal metric center: dx=%.3f dy=%.3f line_a=%.3f",
+                                 target_dx, target_dy, target_line_a);
+
+                        nh_.setParam("signal_target_dx", target_dx);
+                        nh_.setParam("signal_target_dy", target_dy);
+                        nh_.setParam("signal_target_line_a", target_line_a);
+
+                        point_2d target_point;
+                        target_point.x = target_dx;
+                        target_point.y = target_dy;
+
+                        double k = target_line_a;
+                        double kk = (k == 255) ? M_PI / 2.0 : std::atan(k);
+
+                        if (kk < 0)
+                        {
+                            kk += M_PI;
+                        }
+
+                        kk -= M_PI / 2.0;
+
+                        double stop_distance = 0.3;
+                        target_point.x -= stop_distance * std::cos(kk);
+                        target_point.y -= stop_distance * std::sin(kk);
+
+                        double car_x = nh_.param("CarX", 0.0);
+                        double car_y = nh_.param("CarY", 0.0);
+                        double car_yaw = nh_.param("CarYaw", 0.0);
+
+                        point_2d map_target = rotate(target_point, car_yaw);
+                        map_target = translate(map_target, car_x, car_y);
+
+                        double target_yaw = kk + car_yaw;
+
+                        ROS_INFO("Parking goal in map: x=%.3f y=%.3f yaw=%.3f",
+                                 map_target.x, map_target.y, target_yaw);
+
+                        sendPos(map_target.x, map_target.y, target_yaw);
+
+                        bool park_arrived = ac_.waitForResult(ros::Duration(15.0));
+
+                        if (park_arrived && ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED)
+                        {
+                            ROS_WARN("Arrived at target warehouse parking pose");
+                            target_found = true;
+                            nh_.setParam("auto_park_status", "DONE");
+                            break;
+                        }
+                        else
+                        {
+                            ROS_WARN("Failed to reach parking pose, continue searching next observation point");
+
+                            if (!park_arrived)
+                            {
+                                ac_.cancelGoal();
+                            }
+
+                            nh_.setParam("auto_park_status", "FAILED");
+                            target_locked_ = false;
+                            leave_observation_point = true;
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        ROS_WARN("Target class matched, but /srv_getLaserPoint failed");
+                        target_locked_ = false;
+                    }
+                }
+
+                rate.sleep();
+            }
+
+            if (target_found || leave_observation_point)
+            {
+                break;
+            }
         }
 
         geometry_msgs::Twist stop_cmd;
@@ -1065,3 +1105,4 @@ int main(int argc, char **argv)
     spinner.stop();
     return 0;
 }
+
