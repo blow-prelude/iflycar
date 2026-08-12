@@ -177,7 +177,7 @@ def logic_worker():
             return
 
         # 2. 录音
-        record_audio(10)
+        record_audio(30)
 
         # 3. 录音结束立刻放行底盘走迷宫 (C++ 看到 awake2 就开始跑)
         rospy.set_param("awake2", 1)

@@ -477,11 +477,6 @@ void uart_rec(const unsigned char *msg, unsigned int msglen)
 	}
 }
 
-void exit_sighandler(int sig)
-{
-	run_flag = 1;
-}
-
 void AIUITester::bind(TEST_CALLBACK callback)
 {
 	testCallback = callback;
@@ -497,11 +492,9 @@ void AIUITester::test()
 	printf(">>>>> 请喊出唤醒词：小飞小飞\n");
 	printf("============================================\n");
 
-	signal(2, exit_sighandler);
-
 	int i = set_awake_word(awake_words);
 
-	while (1)
+	while (ros::ok())
 	{
 		static unsigned char buff[1024];
 		memset(buff, '\0', 1024);
@@ -514,12 +507,8 @@ void AIUITester::test()
 
 		usleep(20000); // 休眠20ms，释放系统性能，防止占用过高
 
-		if (run_flag)
-		{
-			printf("收到退出信号，停止监听。\n");
-			break;
-		}
 	}
+	printf("收到 ROS 退出请求，停止监听。\n");
 	_serial.close();
 	AIUITester::stop();
 	AIUITester::destory();

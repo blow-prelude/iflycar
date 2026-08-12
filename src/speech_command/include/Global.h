@@ -46,7 +46,6 @@ bool sign_angle = false;                                                 // 麦�
 
 int read_flag = 0;
 int wakeupflag = 0;
-int run_flag =0;
 int i;
 int err;
 snd_pcm_t *capture_handle;// 一个指向PCM设备的句柄

@@ -1,0 +1,13 @@
+<launch>
+  <!--
+    Reset one-shot inter-node handshake flags before starting any nodes.
+    ROS parameters survive node restarts while roscore is still running, so
+    stale values from the previous run must not release a waiting node.
+  -->
+  <param name="/awake" value="0" type="int"/>
+  <param name="/awake2" value="0" type="int"/>
+  <param name="/start_qr_scan" value="0" type="int"/>
+  <param name="/qr_scan_done" value="0" type="int"/>
+  <param name="/task1_all_done" value="0" type="int"/>
+  <param name="/start_traffic_light_det" value="0" type="int"/>
+</launch>

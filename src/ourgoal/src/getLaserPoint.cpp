@@ -16,10 +16,10 @@ void getLaserXYZ_from_vision(const camera_2d_lidar_calibration::vision_points::C
        LaserPoints_array[0][i] = LaserPoints_msg->dx[i];
        LaserPoints_array[1][i] = LaserPoints_msg->dy[i];
        LaserPoints_array[2][i] = LaserPoints_msg->dz[i];
-       if(LaserPoints_msg->dx[i]>0){
-            printf("i:%d\n",i);
-            printf("dx:%lf,dy:%lf\n\n",LaserPoints_msg->dx[i],LaserPoints_msg->dy[i]);
-       }
+       // if(LaserPoints_msg->dx[i]>0){
+       //      printf("i:%d\n",i);
+       //      printf("dx:%lf,dy:%lf\n\n",LaserPoints_msg->dx[i],LaserPoints_msg->dy[i]);
+       // }
     }
 }
 

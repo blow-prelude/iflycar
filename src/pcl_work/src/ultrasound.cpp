@@ -103,15 +103,15 @@ void pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr& msg)
     pub_msg.distance_zuo_y = left_dy;   // 左侧y距离
     
     // 打印发布的信息（保留两位小数）
-    ROS_INFO("\n发布超声波数据:\n"
-             "qian: x=%.2f, y=%.2f\n"
-             "you: x=%.2f, y=%.2f\n"
-             "hou: x=%.2f, y=%.2f\n"
-             "zuo: x=%.2f, y=%.2f",
-             pub_msg.distance_qian_x, pub_msg.distance_qian_y,
-             pub_msg.distance_you_x, pub_msg.distance_you_y,
-             pub_msg.distance_hou_x, pub_msg.distance_hou_y,
-             pub_msg.distance_zuo_x, pub_msg.distance_zuo_y);
+    // ROS_INFO("\n发布超声波数据:\n"
+    //          "qian: x=%.2f, y=%.2f\n"
+    //          "you: x=%.2f, y=%.2f\n"
+    //          "hou: x=%.2f, y=%.2f\n"
+    //          "zuo: x=%.2f, y=%.2f",
+    //          pub_msg.distance_qian_x, pub_msg.distance_qian_y,
+    //          pub_msg.distance_you_x, pub_msg.distance_you_y,
+    //          pub_msg.distance_hou_x, pub_msg.distance_hou_y,
+    //          pub_msg.distance_zuo_x, pub_msg.distance_zuo_y);
     
     // 发布消息
     pub_ultra.publish(pub_msg);
@@ -133,4 +133,3 @@ int main(int argc, char** argv)
     ros::spin();
     return 0;
 }
-

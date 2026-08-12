@@ -1,5 +1,8 @@
 <launch>
   <!-- roslaunch starts roscore automatically when one is not already running. -->
+  <!-- Clear stale inter-node handshake flags before any worker node starts. -->
+  <include file="$(find startup_scripts)/launch/init_params.launch"/>
+
   <include file="$(find ourgoal)/launch/ourgoal.launch"/>
 
   <node pkg="ucar_camera" type="ucar_camera.py" name="ucar_camera" output="screen"/>

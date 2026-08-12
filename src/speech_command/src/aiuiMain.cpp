@@ -132,9 +132,8 @@ void write_serial()
 	//_serial.read(buffer, 8);
 	//printf("123, =%d\n",buffer);
 }
-int data_send(int argc, char **argv)
+void data_send()
 {
-	ros::init(argc, argv, "publisher_Node");
 	ros::NodeHandle n;
 	ros::Publisher pub_question = n.advertise<std_msgs::String>("/question", 10);
 	ros::Publisher pub_answer = n.advertise<std_msgs::String>("/answer", 10);
@@ -297,7 +296,7 @@ int main(int argc, char **argv)
 	t.bind(test_callback);
 
 	std::thread t1(std::bind(&AIUITester::test,&t));
-    std::thread t2(data_send,argc, argv);
+	std::thread t2(data_send);
 
 
 

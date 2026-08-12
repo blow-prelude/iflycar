@@ -159,8 +159,8 @@ namespace
                 "set_enabled", &SignalDetectionNode::set_enabled_callback, this);
             if (visualize_)
                 cv::namedWindow(kWindowName, cv::WINDOW_AUTOSIZE);
-            ROS_INFO("find_signal ready (OCR disabled): subscribe %s, publish %s and %s",
-                     kImageTopic, kDetectionTopic, kClassTopic);
+            ROS_INFO_THROTTLE(1.0, "find_signal ready (OCR disabled): subscribe %s, publish %s and %s",
+                              kImageTopic, kDetectionTopic, kClassTopic);
             return true;
         }
 
@@ -242,13 +242,13 @@ namespace
             const double total_ms = inference_result.timing.preprocess_ms +
                                     inference_result.timing.inference_ms +
                                     inference_result.timing.postprocess_ms;
-            ROS_INFO("frame %llu timing: preprocess=%.3f ms, "
-                     "inference=%.3f ms, postprocess=%.3f ms, total=%.3f ms",
-                     processed_frame_count_,
-                     inference_result.timing.preprocess_ms,
-                     inference_result.timing.inference_ms,
-                     inference_result.timing.postprocess_ms,
-                     total_ms);
+            ROS_DEBUG("frame %llu timing: preprocess=%.3f ms, "
+                      "inference=%.3f ms, postprocess=%.3f ms, total=%.3f ms",
+                      processed_frame_count_,
+                      inference_result.timing.preprocess_ms,
+                      inference_result.timing.inference_ms,
+                      inference_result.timing.postprocess_ms,
+                      total_ms);
         }
 
         bool set_enabled_callback(std_srvs::SetBool::Request &request,

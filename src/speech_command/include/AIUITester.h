@@ -22,7 +22,6 @@
 #include "stdio.h"
 #include "stdlib.h"
 #include <numeric>
-#include "signal.h"
 #include <ros/ros.h>
 #include <std_srvs/Trigger.h>
 
