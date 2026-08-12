@@ -4,7 +4,7 @@
 
 // 导航点宏定义
 // #define goto_B sendPos(-1.56, -0.5, 3.14)
-#define goto_D sendPos(0.2, -3.2, -1.57)
+#define goto_D sendPos(0.1, -3.2, -1.57)
 
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseAction;
 
@@ -1105,4 +1105,3 @@ int main(int argc, char **argv)
     spinner.stop();
     return 0;
 }
-

@@ -396,8 +396,8 @@ private:
     int miss_run_ = 0; // 连续丢检测帧数
     // 停止线检测参数（由 ROS 参数注入）
     int stop_line_target_ = 2;            // 进入 STOP 所需停止线条数
-    double stop_y_cross_ = 0.85;          // LEFT/RIGHT 远/近端归一化 y 阈值
-    double straight_stop_y_cross_ = 0.85; // STRAIGHT 远/近端归一化 y 阈值
+    double stop_y_cross_ = 0.80;          // LEFT/RIGHT 远/近端归一化 y 阈值
+    double straight_stop_y_cross_ = 0.90; // STRAIGHT 远/近端归一化 y 阈值
     int stop_far_min_frames_ = 3;         // 远端连续确认帧数
     int stop_near_min_frames_ = 3;        // 近端连续确认帧数
     int stop_miss_min_frames_ = 3;        // 持续丢线多少帧才放弃当前 phase

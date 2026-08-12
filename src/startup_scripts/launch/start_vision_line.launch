@@ -1,5 +1,7 @@
 <launch>
+  <include file="$(find startup_scripts)/launch/init_params.launch"/>
   <node pkg="ucar_camera" type="ucar_camera.py" name="ucar_camera" output="screen"/>
+  <include file="$(find ourgoal)/launch/ourgoal.launch"/>
   <node pkg="traffic_light" type="traditional_light_cv_ros.py" name="traffic_light" output="screen"/>
   <node pkg="vision_line" type="find_way_ros" name="image_process" output="screen"/>
   <node pkg="vision_line" type="vision_line_node_fixed" name="vision_line_node" output="screen"/>

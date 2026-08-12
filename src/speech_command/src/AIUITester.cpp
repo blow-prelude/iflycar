@@ -493,6 +493,7 @@ void AIUITester::test()
 	printf("============================================\n");
 
 	int i = set_awake_word(awake_words);
+	printf("唤醒词设置结果：%d\n", i);
 
 	while (ros::ok())
 	{

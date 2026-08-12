@@ -71,6 +71,36 @@ class MaskAndValidationTests(unittest.TestCase):
 
 
 class CandidateDetectionTests(unittest.TestCase):
+    def test_sparse_bright_component_is_rejected_by_fill_density(self):
+        bright = np.zeros((480, 640), dtype=np.uint8)
+        cv2.rectangle(bright, (200, 200), (289, 244), 255, thickness=1)
+        green = np.zeros_like(bright)
+        green[190:255, 190:300] = 255
+        masks = detector.Masks(
+            roi=np.full_like(bright, 255),
+            green=green,
+            red=np.zeros_like(bright),
+            bright=bright,
+            roi_rect=(0, 0, 640, 480),
+            scale=1.0,
+        )
+
+        candidate, diagnostics = detector._find_candidate_with_diagnostics(
+            masks
+        )
+
+        self.assertIsNone(candidate)
+        self.assertEqual(1, diagnostics.rejected_component_fill)
+
+    def test_arrow_like_component_has_fill_density_margin(self):
+        mask = make_arrow_mask("right")
+        area = cv2.countNonZero(mask)
+        fill_density = area / mask.size
+
+        self.assertGreater(
+            fill_density, detector.DEFAULT_CONFIG.min_component_fill_density
+        )
+
     def test_blank_image_returns_unknown(self):
         image = np.zeros((480, 640, 3), dtype=np.uint8)
 
@@ -221,6 +251,58 @@ class ArrowClassificationTests(unittest.TestCase):
 
 
 class DrawingAndFixedDemoTests(unittest.TestCase):
+    def test_tuning_log_contains_masks_filters_and_selected_candidate_scores(self):
+        image = cv2.imread(str(PICTURES_DIR / "004_0001.jpg"))
+        detection, diagnostics = detector.analyze_traffic_light(image)
+
+        message = detector.format_detection_log(
+            12, detection, diagnostics, fps=29.5, detection_ms=3.2
+        )
+
+        for field_name in (
+            "label=stop",
+            "green_score=",
+            "red_score=",
+            "color_density=",
+            "component_fill=",
+            "mask_pixels=",
+            "components=",
+            "rejected=",
+        ):
+            self.assertIn(field_name, message)
+
+    def test_realtime_log_tracker_throttles_noisy_state_changes(self):
+        tracker = detector.RealtimeLogTracker(interval_seconds=1.0)
+        unknown = Detection(label="unknown")
+        stop = Detection(label="stop", color="red")
+
+        self.assertEqual(("initial", 0), tracker.update(unknown, now=0.0))
+        self.assertIsNone(tracker.update(stop, now=0.1))
+        self.assertIsNone(tracker.update(unknown, now=0.2))
+        self.assertEqual(("periodic", 2), tracker.update(unknown, now=1.0))
+
+    def test_camera_stream_always_corrects_each_frame(self):
+        image = cv2.imread(str(PICTURES_DIR / "004_0001.jpg"))
+        camera = mock.Mock()
+        camera.get_picture.return_value = image
+        camera.correct_img.return_value = image
+
+        with mock.patch(
+            "camera_capture.CameraCapture", return_value=camera
+        ), mock.patch.object(detector.cv2, "namedWindow"), mock.patch.object(
+            detector.cv2, "imshow"
+        ), mock.patch.object(
+            detector.cv2, "waitKey", return_value=ord("q")
+        ), mock.patch.object(
+            detector.cv2, "destroyAllWindows"
+        ):
+            status = detector.run_camera()
+
+        self.assertEqual(0, status)
+        camera.get_picture.assert_called_once_with()
+        camera.correct_img.assert_called_once()
+        camera.close.assert_called_once_with()
+
     def test_draw_detection_only_draws_candidate_box_and_final_label(self):
         image = cv2.imread(str(PICTURES_DIR / "02051.jpg"))
         original = image.copy()
@@ -285,13 +367,16 @@ class DrawingAndFixedDemoTests(unittest.TestCase):
                 (Path(output_dir) / "004_0001_traditional.jpg").is_file()
             )
 
-    def test_main_uses_code_defined_paths_without_parameters(self):
-        with mock.patch.object(detector, "process_images", return_value=0) as batch:
-            status = detector.main()
+    def test_main_uses_camera_stream_by_default(self):
+        with mock.patch.object(detector, "run_camera", return_value=0) as camera:
+            status = detector.main([])
 
         self.assertEqual(0, status)
-        batch.assert_called_once_with(
-            detector.SAMPLE_IMAGE_PATHS, detector.OUTPUT_DIR
+        camera.assert_called_once_with(
+            camera_index=0,
+            width=640,
+            height=480,
+            log_interval=1.0,
         )
 
 
