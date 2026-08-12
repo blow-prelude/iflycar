@@ -924,32 +924,36 @@ void OURSWITCH::GotoC(int target_num)
 // =========================================================================
 void OURSWITCH::Gazebo()
 {
-    // ROS_INFO("Entering Gazebo state: Simulation Task Collaboration");
+    ROS_INFO("Entering Gazebo state: remote PC simulation");
 
-    // nh_.setParam("start_gazebo_sim", 1);
-    // nh_.setParam("gazebo_sim_done", 0);
+    nh_.setParam("gazebo_sim_done", 0);
+    nh_.setParam("start_gazebo_sim", 1);
 
-    // int sim_done = 0;
-    // while (sim_done == 0 && ros::ok())
-    // {
-    //     nh_.getParam("gazebo_sim_done", sim_done);
-    //     ros::Duration(0.1).sleep();
-    //     ros::spinOnce();
-    // }
+    int sim_done = 0;
+    ros::Rate rate(10);
 
-    // ROS_INFO("Gazebo simulation task reported as COMPLETE!");
-    // nh_.setParam("start_gazebo_sim", 0);
+    ROS_INFO("Waiting for remote PC gazebo_success...");
 
-    // // ========== 语音播报 3：仿真任务完成 ==========
-    // std::string sim_item, sim_room;
-    // nh_.getParam("sim_item", sim_item);
-    // nh_.getParam("sim_room", sim_room);
-    // char tts_cmd[512];
+    while (sim_done == 0 && ros::ok())
+    {
+        nh_.getParam("gazebo_sim_done", sim_done);
+        ros::spinOnce();
+        rate.sleep();
+    }
 
-    // // 拼接发音指令：仿真任务已完成，已将毛巾放入电子产品生产车间
-    // sprintf(tts_cmd, "espeak -v zh+f2 \"仿真任务已完成，已将%s放入%s\" -s 130", sim_item.c_str(), sim_room.c_str());
-    // ROS_INFO("Broadcasting Gazebo task completion...");
-    // system(tts_cmd);
+    nh_.setParam("start_gazebo_sim", 0);
+
+    ROS_INFO("Remote PC simulation finished.");
+
+    std::string sim_item = "UNKNOWN";
+    std::string sim_room = "UNKNOWN";
+    nh_.getParam("sim_item", sim_item);
+    nh_.getParam("sim_room", sim_room);
+
+    char tts_cmd[512];
+    sprintf(tts_cmd, "espeak -v zh+f2 \"仿真任务已完成，已将%s放入%s\" -s 130",
+            sim_item.c_str(), sim_room.c_str());
+    system(tts_cmd);
 
     current_state = GOTOD_;
 }

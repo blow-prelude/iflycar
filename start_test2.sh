@@ -40,7 +40,7 @@ sleep 2
 
 # 启动 find_signal OCR/RKNN 视觉识别
 echo "正在启动 find_signal rknn_ros.py..."
-xfce4-terminal --tab --title="find_signal" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; cd /home/ucar/ucar_ws/src/find_signal/scripts; source ~/venv3.9/bin/activate; python3 rknn_ros.py; exec bash'"
+xfce4-terminal --tab --title="find_signal" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; rosrun find_signal rknn_ros; exec bash'"
 sleep 1
 
 # 启动 switch_test2
@@ -76,6 +76,11 @@ sleep 3
 # 启动 ultrasound
 echo "正在启动 ultrasound..."
 xfce4-terminal --tab --title="ultrasound" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; rosrun pcl_work ultrasound; exec bash'"
+sleep 3
+
+# 启动 car_sr
+echo "正在启动 car_sr..."
+xfce4-terminal --tab --title="car_sr" --command "bash -c 'source ~/ucar_ws/devel/setup.bash;cd /home/ucar/ucar_ws/src/car_sr/scripts; source ~/venv3.9/bin/activate; python sim_bridge_car.py; exec bash'"
 sleep 3
 
 xfce4-terminal --title="traffic_light" --command "bash -c 'source ~/ucar_ws/devel/setup.bash; rosrun traffic_light traditional_light_cv_ros.py; exec bash'" &
