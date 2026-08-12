@@ -11,7 +11,7 @@
 
 
 
-    <node pkg="ourgoal" type="param_reload.py" name="param_reload" />
+    <!-- <node pkg="ourgoal" type="param_reload.py" name="param_reload" /> -->
 
 
 

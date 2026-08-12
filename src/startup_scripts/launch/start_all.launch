@@ -22,6 +22,9 @@
 
   <node pkg="pcl_work" type="laser2plc" name="laser2plc" output="screen"/>
   <node pkg="pcl_work" type="ultrasound" name="ultrasound" output="screen"/>
+
+  <node pkg="car_sr" type="sim_bridge_car.py" name="sim_bridge_car" output="screen"/> 
+  
   <node pkg="traffic_light" type="traditional_light_cv_ros.py" name="traffic_light" output="screen"/>
   <node pkg="vision_line" type="find_way_ros" name="image_process" output="screen"/>
   <node pkg="vision_line" type="vision_line_node_fixed" name="vision_line_node" output="screen"/>
