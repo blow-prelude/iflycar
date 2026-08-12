@@ -374,7 +374,7 @@ void process_recv(const unsigned char *buf, int len)
 						angle = root["ivw"]["angle"].asFloat();
 
 						ros::NodeHandle nh;
-						int awake = 1;
+						int awake = 0;
 						nh.param("awake", awake, 0);
 						// ================== 核心修改区 ==================
 						if (awake == 0) // 继续使用 awake 变量
@@ -506,7 +506,6 @@ void AIUITester::test()
 		}
 
 		usleep(20000); // 休眠20ms，释放系统性能，防止占用过高
-
 	}
 	printf("收到 ROS 退出请求，停止监听。\n");
 	_serial.close();
