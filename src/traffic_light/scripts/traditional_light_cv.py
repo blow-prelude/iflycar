@@ -45,11 +45,12 @@ DEFAULT_CONFIG = Config()
 
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = PACKAGE_DIR.parents[1]
+PICTURES_DIR = PACKAGE_DIR / "pictures"
 SAMPLE_IMAGE_PATHS = (
-    PACKAGE_DIR / "pictures" / "02051.jpg",
-    PACKAGE_DIR / "pictures" / "02052.jpg",
-    PACKAGE_DIR / "pictures" / "003_0030.jpg",
-    PACKAGE_DIR / "pictures" / "004_0001.jpg",
+    PICTURES_DIR / "02051.jpg",
+    PICTURES_DIR / "02052.jpg",
+    PICTURES_DIR / "003_0030.jpg",
+    PICTURES_DIR / "004_0001.jpg",
 )
 OUTPUT_DIR = WORKSPACE_ROOT / "build" / "traditional_light_cv_results"
 
@@ -114,6 +115,13 @@ class Candidate:
 class CandidateSearchDiagnostics:
     """Counts showing at which filter stage bright components were rejected."""
 
+    min_width: int = 0
+    max_width: int = 0
+    min_height: int = 0
+    max_height: int = 0
+    min_area: int = 0
+    min_color_score: int = 0
+    max_padding: int = 0
     total_components: int = 0
     rejected_width: int = 0
     rejected_height: int = 0
@@ -217,13 +225,16 @@ def _find_candidate_with_diagnostics(
         masks.bright, connectivity=8
     )
     image_height, image_width = masks.bright.shape
-    min_width = _scaled_length(config.component_width[0], masks.scale)
+    # Minimum thresholds stay in absolute pixels so a higher capture
+    # resolution actually extends detection range. Maximum thresholds still
+    # scale to avoid rejecting a nearby light in a larger frame.
+    min_width = max(1, int(config.component_width[0]))
     max_width = _scaled_length(config.component_width[1], masks.scale)
-    min_height = _scaled_length(config.component_height[0], masks.scale)
+    min_height = max(1, int(config.component_height[0]))
     max_height = _scaled_length(config.component_height[1], masks.scale)
-    min_area = _scaled_area(config.min_component_area, masks.scale)
-    min_color_score = _scaled_area(config.min_color_score, masks.scale)
-    padding = _scaled_length(config.candidate_padding, masks.scale)
+    min_area = max(1, int(config.min_component_area))
+    min_color_score = max(1, int(config.min_color_score))
+    max_padding = _scaled_length(config.candidate_padding, masks.scale)
     candidates = []
     rejected_width = 0
     rejected_height = 0
@@ -249,6 +260,9 @@ def _find_candidate_with_diagnostics(
             rejected_component_fill += 1
             continue
 
+        # Avoid surrounding a small distant component with a disproportionately
+        # large search window, which would dilute its color density.
+        padding = min(max_padding, max(2, min(width, height) // 3))
         ex1 = max(0, x - padding)
         ey1 = max(0, y - padding)
         ex2 = min(image_width, x + width + padding)
@@ -289,6 +303,13 @@ def _find_candidate_with_diagnostics(
         )
 
     diagnostics = CandidateSearchDiagnostics(
+        min_width=min_width,
+        max_width=max_width,
+        min_height=min_height,
+        max_height=max_height,
+        min_area=min_area,
+        min_color_score=min_color_score,
+        max_padding=max_padding,
         total_components=count - 1,
         rejected_width=rejected_width,
         rejected_height=rejected_height,
@@ -471,6 +492,23 @@ def draw_stream_status(
     return image
 
 
+def save_camera_frame(
+    image: np.ndarray,
+    frame_id: int,
+    output_dir: Path = PICTURES_DIR,
+    timestamp_ns: int | None = None,
+) -> Path:
+    """Save one clean camera frame and return its absolute output path."""
+    _validate_image(image)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = time.time_ns() if timestamp_ns is None else int(timestamp_ns)
+    output_path = output_dir / f"capture_{timestamp}_{frame_id:06d}.jpg"
+    if not cv2.imwrite(str(output_path), image):
+        raise RuntimeError(f"failed to write image: {output_path}")
+    return output_path.resolve()
+
+
 def format_detection_log(
     frame_id: int,
     detection: Detection,
@@ -529,6 +567,10 @@ def format_detection_log(
         f"mask_pixels=(green:{frame_diagnostics.green_pixels},"
         f"red:{frame_diagnostics.red_pixels},"
         f"bright:{frame_diagnostics.bright_pixels}) "
+        f"limits=(w:{search.min_width}-{search.max_width},"
+        f"h:{search.min_height}-{search.max_height},"
+        f"area>={search.min_area},score>={search.min_color_score},"
+        f"padding<={search.max_padding}) "
         f"components=(total:{search.total_components},"
         f"accepted:{search.accepted_candidates},rejected={{{rejected}}})"
     )
@@ -659,6 +701,15 @@ def run_camera(
                 LOGGER.debug("per_frame %s", log_record)
 
             key = cv2.waitKey(1) & 0xFF
+            if key == ord(" "):
+                try:
+                    output_path = save_camera_frame(frame, frame_id)
+                except (OSError, RuntimeError, cv2.error) as error:
+                    LOGGER.error("capture_failed frame=%d error=%s", frame_id, error)
+                else:
+                    LOGGER.info(
+                        "capture_saved frame=%d path=%s", frame_id, output_path
+                    )
             if key in (27, ord("q")):
                 LOGGER.info("camera_stop reason=keyboard frame=%d", frame_id)
                 break

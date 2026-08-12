@@ -13,6 +13,7 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   roscpp
   rospy
+  sensor_msgs
   std_msgs
   tf
   tf2
@@ -118,7 +119,7 @@ generate_messages(
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES ourgoal
- CATKIN_DEPENDS actionlib actionlib_msgs geometry_msgs roscpp rospy std_msgs message_runtime pcl_work
+ CATKIN_DEPENDS actionlib actionlib_msgs geometry_msgs roscpp rospy sensor_msgs std_msgs message_runtime pcl_work
 #  DEPENDS system_lib
 )
 
@@ -258,3 +259,4 @@ target_link_libraries(vision_line2
 
 ## Add folders to be run by python nosetests
 # catkin_add_nosetests(test)
+

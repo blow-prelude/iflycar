@@ -1,10 +1,11 @@
 #include "switch2.h"
 #include <thread>
 #include <chrono>
+#include <limits>
 
 // 导航点宏定义
 // #define goto_B sendPos(-1.56, -0.5, 3.14)
-#define goto_D sendPos(0.1, -3.2, -1.57)
+#define goto_D sendPos(0.2, -3.0, -1.57)
 
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseAction;
 
@@ -29,6 +30,7 @@ OURSWITCH::OURSWITCH()
     getPosition_client = nh_.serviceClient<ourgoal::getPosition>("/srv_getPosition");
     sub_ultrasound = nh_.subscribe("/ultra", 10, &OURSWITCH::UltrasoundCallback, this);
     sub_odom_ = nh_.subscribe("/odom", 10, &OURSWITCH::OdomCallback, this);
+    sub_scan_ = nh_.subscribe("/scan", 10, &OURSWITCH::ScanCallback, this);
 
     sub_signal_class_ = nh_.subscribe("/signal_class", 10, &OURSWITCH::SignalClassCallback, this);
     sub_signal_detection_ = nh_.subscribe("/signal_detection", 10, &OURSWITCH::SignalDetectionCallback, this);
@@ -48,6 +50,28 @@ OURSWITCH::OURSWITCH()
     Kp_yaw = 2.0;
     max_vel = 0.5;
     safe_R2 = 0.25;
+
+    nh_.param("gap_min_width", gap_min_width_, 0.75);
+    nh_.param("gap_max_width", gap_max_width_, 1.10);
+    nh_.param("gap_near_max_range", gap_near_max_range_, 1.50);
+    nh_.param("gap_search_half_angle", gap_search_half_angle_, 2.35);
+    nh_.param("gap_detection_timeout", gap_detection_timeout_, 3.0);
+    nh_.param("gap_sample_max_spread", gap_sample_max_spread_, 0.15);
+    nh_.param("gap_stop_offset", gap_stop_offset_, 0.05);
+    nh_.param("gap_wall_min_length", gap_wall_min_length_, 0.20);
+    nh_.param("gap_wall_max_residual", gap_wall_max_residual_, 0.03);
+    nh_.param("gap_wall_max_line_offset", gap_wall_max_line_offset_, 0.08);
+    nh_.param("gap_max_lateral_offset", gap_max_lateral_offset_, 0.45);
+    nh_.param("gap_min_forward_offset", gap_min_forward_offset_, -0.20);
+    nh_.param("gap_max_forward_offset", gap_max_forward_offset_, 0.80);
+    nh_.param("gap_max_correction_distance", gap_max_correction_distance_, 0.90);
+    nh_.param("lidar_offset_x", lidar_offset_x_, 0.11);
+    nh_.param("lidar_offset_y", lidar_offset_y_, 0.0);
+    nh_.param("lidar_yaw", lidar_yaw_, -0.07);
+    nh_.param("gap_required_samples", gap_required_samples_, 5);
+    nh_.param("gap_wall_min_points", gap_wall_min_points_, 6);
+    gap_required_samples_ = std::max(3, gap_required_samples_);
+    gap_wall_min_points_ = std::max(3, gap_wall_min_points_);
 
     ROS_WARN("Initialization complete!");
     ac_.waitForServer(ros::Duration(5));
@@ -88,6 +112,218 @@ void OURSWITCH::UltrasoundCallback(const pcl_work::ultrasoundConstPtr &msg)
     distance_zuo_y = msg->distance_zuo_y;
     distance_hou_x = -msg->distance_hou_x;
     distance_you_y = -msg->distance_you_y;
+}
+
+bool OURSWITCH::detectGap(const sensor_msgs::LaserScan &scan,
+                          double &mid_x, double &mid_y, double &width) const
+{
+    if (scan.ranges.size() < 3 || scan.angle_increment <= 0.0)
+        return false;
+
+    const int first = std::max(
+        0, (int)std::ceil((-gap_search_half_angle_ - scan.angle_min) /
+                          scan.angle_increment));
+    const int last = std::min(
+        (int)scan.ranges.size() - 1,
+        (int)std::floor((gap_search_half_angle_ - scan.angle_min) /
+                        scan.angle_increment));
+
+    if (first >= last)
+        return false;
+
+    auto is_near_wall = [&](int index)
+    {
+        if (index < first || index > last)
+            return false;
+        const float range = scan.ranges[index];
+        return std::isfinite(range) &&
+               range >= scan.range_min &&
+               range <= scan.range_max &&
+               range <= gap_near_max_range_;
+    };
+
+    auto collect_wall_segment = [&](int edge, int direction,
+                                    std::vector<point_2d> &segment)
+    {
+        const int max_points = 80;
+        const double max_neighbor_gap = 0.10;
+
+        for (int offset = 0; offset < max_points; ++offset)
+        {
+            const int point_index = edge + direction * offset;
+            if (!is_near_wall(point_index))
+                break;
+
+            const double angle =
+                scan.angle_min + point_index * scan.angle_increment;
+            const double range = scan.ranges[point_index];
+            point_2d point;
+            point.x = range * std::cos(angle);
+            point.y = range * std::sin(angle);
+
+            if (!segment.empty() &&
+                std::hypot(point.x - segment.back().x,
+                           point.y - segment.back().y) > max_neighbor_gap)
+            {
+                break;
+            }
+            segment.push_back(point);
+        }
+    };
+
+    auto fit_wall = [&](const std::vector<point_2d> &segment,
+                        double &slope, double &intercept, double &residual)
+    {
+        if ((int)segment.size() < gap_wall_min_points_)
+            return false;
+
+        const double segment_length =
+            std::hypot(segment.front().x - segment.back().x,
+                       segment.front().y - segment.back().y);
+        if (segment_length < gap_wall_min_length_)
+            return false;
+
+        double sum_x = 0.0;
+        double sum_y = 0.0;
+        double sum_xy = 0.0;
+        double sum_y2 = 0.0;
+        for (const point_2d &point : segment)
+        {
+            sum_x += point.x;
+            sum_y += point.y;
+            sum_xy += point.x * point.y;
+            sum_y2 += point.y * point.y;
+        }
+
+        const double count = segment.size();
+        const double denominator = count * sum_y2 - sum_y * sum_y;
+        if (std::fabs(denominator) < 1e-6)
+            return false;
+
+        // 围墙横在车头前，因此用 x = slope * y + intercept 拟合。
+        slope = (count * sum_xy - sum_x * sum_y) / denominator;
+        intercept = (sum_x - slope * sum_y) / count;
+
+        double squared_error = 0.0;
+        for (const point_2d &point : segment)
+        {
+            const double error = point.x - (slope * point.y + intercept);
+            squared_error += error * error;
+        }
+        residual = std::sqrt(squared_error / count);
+
+        return residual <= gap_wall_max_residual_ &&
+               std::fabs(slope) <= 0.30;
+    };
+
+    bool found = false;
+    double best_score = std::numeric_limits<double>::infinity();
+    const double expected_width = (gap_min_width_ + gap_max_width_) / 2.0;
+
+    int index = first + 1;
+    while (index < last)
+    {
+        if (is_near_wall(index))
+        {
+            ++index;
+            continue;
+        }
+
+        const int right_edge = index - 1;
+        while (index <= last && !is_near_wall(index))
+            ++index;
+        const int left_edge = index;
+
+        if (right_edge < first || left_edge > last)
+            continue;
+
+        std::vector<point_2d> right_wall;
+        std::vector<point_2d> left_wall;
+        collect_wall_segment(right_edge, -1, right_wall);
+        collect_wall_segment(left_edge, 1, left_wall);
+
+        double right_slope = 0.0;
+        double right_intercept = 0.0;
+        double right_residual = 0.0;
+        double left_slope = 0.0;
+        double left_intercept = 0.0;
+        double left_residual = 0.0;
+        if (!fit_wall(right_wall, right_slope, right_intercept, right_residual) ||
+            !fit_wall(left_wall, left_slope, left_intercept, left_residual))
+            continue;
+
+        if (std::fabs(right_slope - left_slope) > 0.15 ||
+            std::fabs(right_intercept - left_intercept) > gap_wall_max_line_offset_)
+        {
+            continue;
+        }
+
+        // 用拟合墙面修正两个内侧端点的 x，y 保留边缘扫描点。
+        const double right_y = right_wall.front().y;
+        const double left_y = left_wall.front().y;
+        const double right_x = right_slope * right_y + right_intercept;
+        const double left_x = left_slope * left_y + left_intercept;
+        const double candidate_width =
+            std::hypot(left_x - right_x, left_y - right_y);
+        const double candidate_mid_x = (left_x + right_x) / 2.0;
+        const double candidate_mid_y = (left_y + right_y) / 2.0;
+
+        const double lidar_cos = std::cos(lidar_yaw_);
+        const double lidar_sin = std::sin(lidar_yaw_);
+        const double candidate_base_x =
+            lidar_offset_x_ + lidar_cos * candidate_mid_x - lidar_sin * candidate_mid_y;
+        const double candidate_base_y =
+            lidar_offset_y_ + lidar_sin * candidate_mid_x + lidar_cos * candidate_mid_y;
+
+        if (candidate_width < gap_min_width_ ||
+            candidate_width > gap_max_width_ ||
+            candidate_base_x < gap_min_forward_offset_ ||
+            candidate_base_x > gap_max_forward_offset_ ||
+            std::fabs(candidate_base_y) > gap_max_lateral_offset_)
+        {
+            continue;
+        }
+
+        const double score =
+            std::fabs(candidate_width - expected_width) +
+            0.4 * std::fabs(candidate_base_y) +
+            std::fabs(right_intercept - left_intercept) +
+            right_residual + left_residual;
+
+        if (score < best_score)
+        {
+            best_score = score;
+            mid_x = candidate_mid_x;
+            mid_y = candidate_mid_y;
+            width = candidate_width;
+            found = true;
+        }
+    }
+
+    return found;
+}
+
+void OURSWITCH::ScanCallback(const sensor_msgs::LaserScan::ConstPtr &msg)
+{
+    {
+        std::lock_guard<std::mutex> lock(gap_mutex_);
+        if (!collect_gap_samples_)
+            return;
+    }
+
+    double mid_x = 0.0;
+    double mid_y = 0.0;
+    double width = 0.0;
+    if (!detectGap(*msg, mid_x, mid_y, width))
+        return;
+
+    std::lock_guard<std::mutex> lock(gap_mutex_);
+    if (!collect_gap_samples_)
+        return;
+
+    gap_mid_x_samples_.push_back(mid_x);
+    gap_mid_y_samples_.push_back(mid_y);
+    gap_width_samples_.push_back(width);
 }
 
 void OURSWITCH::SignalClassCallback(const std_msgs::Int32::ConstPtr &msg)
@@ -1007,8 +1243,11 @@ void OURSWITCH::GotoD()
 
     goto_D;
     bool finished_before_timeout = ac_.waitForResult(ros::Duration(20.0));
+    bool reached_fixed_point =
+        finished_before_timeout &&
+        ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED;
 
-    if (finished_before_timeout && ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED)
+    if (reached_fixed_point)
     {
         ROS_INFO("Arrived at the stop line successfully.");
     }
@@ -1017,6 +1256,143 @@ void OURSWITCH::GotoD()
         if (!finished_before_timeout)
         {
             ac_.cancelGoal();
+        }
+    }
+
+    if (reached_fixed_point)
+    {
+        geometry_msgs::Twist stop_cmd;
+        cmd_vel_pub__.publish(stop_cmd);
+        ros::Duration(0.3).sleep();
+
+        {
+            std::lock_guard<std::mutex> lock(gap_mutex_);
+            gap_mid_x_samples_.clear();
+            gap_mid_y_samples_.clear();
+            gap_width_samples_.clear();
+            collect_gap_samples_ = true;
+        }
+
+        ROS_INFO("Collecting lidar scans to locate the wall gap...");
+        ros::Time detection_start = ros::Time::now();
+        while (ros::ok() &&
+               (ros::Time::now() - detection_start).toSec() < gap_detection_timeout_)
+        {
+            int sample_count = 0;
+            {
+                std::lock_guard<std::mutex> lock(gap_mutex_);
+                sample_count = gap_mid_x_samples_.size();
+            }
+            if (sample_count >= gap_required_samples_)
+                break;
+            ros::Duration(0.05).sleep();
+        }
+
+        std::vector<double> mid_x_samples;
+        std::vector<double> mid_y_samples;
+        std::vector<double> width_samples;
+        {
+            std::lock_guard<std::mutex> lock(gap_mutex_);
+            collect_gap_samples_ = false;
+            mid_x_samples = gap_mid_x_samples_;
+            mid_y_samples = gap_mid_y_samples_;
+            width_samples = gap_width_samples_;
+        }
+
+        auto median = [](std::vector<double> values)
+        {
+            std::sort(values.begin(), values.end());
+            const size_t middle = values.size() / 2;
+            if (values.size() % 2 == 0)
+                return (values[middle - 1] + values[middle]) / 2.0;
+            return values[middle];
+        };
+
+        auto spread = [](const std::vector<double> &values)
+        {
+            const std::pair<std::vector<double>::const_iterator,
+                            std::vector<double>::const_iterator>
+                bounds = std::minmax_element(values.begin(), values.end());
+            return *bounds.second - *bounds.first;
+        };
+
+        bool gap_is_stable =
+            (int)mid_x_samples.size() >= gap_required_samples_ &&
+            spread(mid_x_samples) <= gap_sample_max_spread_ &&
+            spread(mid_y_samples) <= gap_sample_max_spread_ &&
+            spread(width_samples) <= gap_sample_max_spread_;
+
+        if (gap_is_stable)
+        {
+            const double gap_laser_x = median(mid_x_samples);
+            const double gap_laser_y = median(mid_y_samples);
+            const double gap_width = median(width_samples);
+
+            // laser_frame -> base_link，默认外参来自 ucar_nav/launch/test1.launch。
+            const double lidar_cos = std::cos(lidar_yaw_);
+            const double lidar_sin = std::sin(lidar_yaw_);
+            const double gap_base_x =
+                lidar_offset_x_ + lidar_cos * gap_laser_x - lidar_sin * gap_laser_y;
+            const double gap_base_y =
+                lidar_offset_y_ + lidar_sin * gap_laser_x + lidar_cos * gap_laser_y;
+
+            double car_x = 0.0;
+            double car_y = 0.0;
+            double car_yaw = 0.0;
+            if (nh_.getParam("CarX", car_x) &&
+                nh_.getParam("CarY", car_y) &&
+                nh_.getParam("CarYaw", car_yaw))
+            {
+                const double car_cos = std::cos(car_yaw);
+                const double car_sin = std::sin(car_yaw);
+                const double gap_map_x =
+                    car_x + car_cos * gap_base_x - car_sin * gap_base_y;
+                const double gap_map_y =
+                    car_y + car_sin * gap_base_x + car_cos * gap_base_y;
+
+                const double target_yaw = -1.57;
+                const double corrected_x =
+                    gap_map_x - gap_stop_offset_ * std::cos(target_yaw);
+                const double corrected_y =
+                    gap_map_y - gap_stop_offset_ * std::sin(target_yaw);
+                const double correction_distance =
+                    std::hypot(corrected_x - car_x, corrected_y - car_y);
+
+                ROS_INFO("Gap detected: width=%.3f laser_mid=(%.3f, %.3f)",
+                         gap_width, gap_laser_x, gap_laser_y);
+                if (correction_distance <= gap_max_correction_distance_)
+                {
+                    ROS_INFO("Corrected GotoD goal: x=%.3f y=%.3f yaw=%.3f",
+                             corrected_x, corrected_y, target_yaw);
+
+                    sendPos(corrected_x, corrected_y, target_yaw);
+                    bool corrected_arrived = ac_.waitForResult(ros::Duration(10.0));
+                    if (corrected_arrived &&
+                        ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED)
+                    {
+                        ROS_INFO("Reached the lidar-corrected gap midpoint.");
+                    }
+                    else
+                    {
+                        if (!corrected_arrived)
+                            ac_.cancelGoal();
+                        ROS_WARN("Failed to reach the corrected gap goal; continue from current pose.");
+                    }
+                }
+                else
+                {
+                    ROS_WARN("Reject gap correction %.3f m beyond safety limit %.3f m.",
+                             correction_distance, gap_max_correction_distance_);
+                }
+            }
+            else
+            {
+                ROS_WARN("CarX/CarY/CarYaw unavailable; skip lidar gap correction.");
+            }
+        }
+        else
+        {
+            ROS_WARN("No stable 0.8-1.0 m wall gap found; continue from the fixed GotoD point.");
         }
     }
 
@@ -1105,3 +1481,4 @@ int main(int argc, char **argv)
     spinner.stop();
     return 0;
 }
+

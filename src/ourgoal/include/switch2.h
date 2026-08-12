@@ -21,6 +21,7 @@
 #include "std_msgs/String.h"
 #include "std_msgs/Int32.h"
 #include "std_msgs/Float32MultiArray.h"
+#include "sensor_msgs/LaserScan.h"
 #include "ourgoal/getLaserPoint.h"
 #include "pcl_work/ultrasound.h"
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>  // 用于四元数转换v
@@ -28,6 +29,7 @@
 #include <string>
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 
 
 // 坐标点结构体
@@ -118,6 +120,7 @@ class OURSWITCH
         void getZbarCallback(const std_msgs::String::ConstPtr &msg);
         void UltrasoundCallback(const pcl_work::ultrasoundConstPtr &msg);
         void OdomCallback(const nav_msgs::Odometry::ConstPtr &msg); // 用于提取高精度yaw
+        void ScanCallback(const sensor_msgs::LaserScan::ConstPtr &msg);
 
         void SignalClassCallback(const std_msgs::Int32::ConstPtr &msg);
         void SignalDetectionCallback(const std_msgs::Float32MultiArray::ConstPtr &msg);
@@ -127,6 +130,8 @@ class OURSWITCH
         bool getCenterXFromParam();
         // 计算y方向速度（用于center_x调节）
         double calculateYVelocity();
+        bool detectGap(const sensor_msgs::LaserScan &scan,
+                       double &mid_x, double &mid_y, double &width) const;
 
         ros::NodeHandle nh_;
         actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> ac_;
@@ -136,9 +141,10 @@ class OURSWITCH
         ros::Publisher cancel_pub;
         ros::Publisher cmd_vel_pub__;
         ros::Publisher Gazebo_Command;
-	    ros::Subscriber sub_ultrasound;
+        ros::Subscriber sub_ultrasound;
         ros::Subscriber vision_zbar_sub;
         ros::Subscriber sub_odom_; // 订阅底盘odom获取偏航角
+        ros::Subscriber sub_scan_;
         ros::ServiceClient teb_param_reloader;
         ros::ServiceClient getPosition_client;
         ros::ServiceClient play_flag_client;
@@ -183,6 +189,32 @@ class OURSWITCH
         double max_vel;
         double safe_F, safe_B, safe_L, safe_R, safe_R2;
 
+        // GotoD 缺口中点的雷达修正
+        std::mutex gap_mutex_;
+        bool collect_gap_samples_ = false;
+        std::vector<double> gap_mid_x_samples_;
+        std::vector<double> gap_mid_y_samples_;
+        std::vector<double> gap_width_samples_;
+        double gap_min_width_;
+        double gap_max_width_;
+        double gap_near_max_range_;
+        double gap_search_half_angle_;
+        double gap_detection_timeout_;
+        double gap_sample_max_spread_;
+        double gap_stop_offset_;
+        double gap_wall_min_length_;
+        double gap_wall_max_residual_;
+        double gap_wall_max_line_offset_;
+        double gap_max_lateral_offset_;
+        double gap_min_forward_offset_;
+        double gap_max_forward_offset_;
+        double gap_max_correction_distance_;
+        double lidar_offset_x_;
+        double lidar_offset_y_;
+        double lidar_yaw_;
+        int gap_required_samples_;
+        int gap_wall_min_points_;
+
         // 状态标志
         int fusion_size = 0;
 
@@ -196,3 +228,4 @@ class OURSWITCH
 };
 
 #endif
+

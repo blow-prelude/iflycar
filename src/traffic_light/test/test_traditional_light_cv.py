@@ -71,6 +71,33 @@ class MaskAndValidationTests(unittest.TestCase):
 
 
 class CandidateDetectionTests(unittest.TestCase):
+    def test_high_resolution_keeps_minimum_thresholds_for_distant_light(self):
+        bright = np.zeros((960, 1280), dtype=np.uint8)
+        bright[200:213, 200:216] = 255
+        green = np.zeros_like(bright)
+        green[190:223, 190:226] = 255
+        masks = detector.Masks(
+            roi=np.full_like(bright, 255),
+            green=green,
+            red=np.zeros_like(bright),
+            bright=bright,
+            roi_rect=(0, 0, 1280, 960),
+            scale=2.0,
+        )
+
+        candidate, diagnostics = detector._find_candidate_with_diagnostics(
+            masks
+        )
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual((200, 200, 16, 13), candidate.bbox)
+        self.assertEqual(15, diagnostics.min_width)
+        self.assertEqual(12, diagnostics.min_height)
+        self.assertEqual(80, diagnostics.min_area)
+        self.assertEqual(200, diagnostics.min_color_score)
+        self.assertEqual(180, diagnostics.max_width)
+        self.assertEqual(180, diagnostics.max_height)
+
     def test_sparse_bright_component_is_rejected_by_fill_density(self):
         bright = np.zeros((480, 640), dtype=np.uint8)
         cv2.rectangle(bright, (200, 200), (289, 244), 255, thickness=1)
@@ -251,6 +278,48 @@ class ArrowClassificationTests(unittest.TestCase):
 
 
 class DrawingAndFixedDemoTests(unittest.TestCase):
+    def test_save_camera_frame_writes_to_requested_pictures_directory(self):
+        image = cv2.imread(str(PICTURES_DIR / "004_0001.jpg"))
+        with tempfile.TemporaryDirectory() as output_dir:
+            output_path = detector.save_camera_frame(
+                image,
+                frame_id=7,
+                output_dir=Path(output_dir),
+                timestamp_ns=123456789,
+            )
+
+            self.assertEqual(
+                "capture_123456789_000007.jpg", output_path.name
+            )
+            self.assertEqual(Path(output_dir).resolve(), output_path.parent)
+            saved = cv2.imread(str(output_path))
+            self.assertIsNotNone(saved)
+            self.assertEqual(image.shape, saved.shape)
+
+    def test_space_key_saves_current_clean_camera_frame(self):
+        image = cv2.imread(str(PICTURES_DIR / "004_0001.jpg"))
+        camera = mock.Mock()
+        camera.get_picture.return_value = image
+        camera.correct_img.return_value = image
+
+        with mock.patch(
+            "camera_capture.CameraCapture", return_value=camera
+        ), mock.patch.object(detector.cv2, "namedWindow"), mock.patch.object(
+            detector.cv2, "imshow"
+        ), mock.patch.object(
+            detector.cv2, "waitKey", side_effect=(ord(" "), ord("q"))
+        ), mock.patch.object(
+            detector.cv2, "destroyAllWindows"
+        ), mock.patch.object(
+            detector, "save_camera_frame", return_value=Path("capture.jpg")
+        ) as save:
+            status = detector.run_camera()
+
+        self.assertEqual(0, status)
+        save.assert_called_once()
+        self.assertEqual(1, save.call_args.args[1])
+        camera.close.assert_called_once_with()
+
     def test_tuning_log_contains_masks_filters_and_selected_candidate_scores(self):
         image = cv2.imread(str(PICTURES_DIR / "004_0001.jpg"))
         detection, diagnostics = detector.analyze_traffic_light(image)
@@ -266,6 +335,7 @@ class DrawingAndFixedDemoTests(unittest.TestCase):
             "color_density=",
             "component_fill=",
             "mask_pixels=",
+            "limits=",
             "components=",
             "rejected=",
         ):
