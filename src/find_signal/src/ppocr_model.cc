@@ -136,13 +136,13 @@ PPOCRInferenceResult PPOCRModel::infer(const cv::Mat &bgr_frame)
         return result;
     }
 
-    for (int i = 0; i < result.ocr_results.count && i < 1000; ++i)
-    {
-        std::printf("worker %d result[%d] text=%s score=%.3f\n",
-                    worker_id_, i,
-                    result.ocr_results.text_result[i].text.str,
-                    result.ocr_results.text_result[i].text.score);
-    }
+    // for (int i = 0; i < result.ocr_results.count && i < 1000; ++i)
+    // {
+    //     std::printf("worker %d result[%d] text=%s score=%.3f\n",
+    //                 worker_id_, i,
+    //                 result.ocr_results.text_result[i].text.str,
+    //                 result.ocr_results.text_result[i].text.score);
+    // }
     const TimingClock::time_point postprocess_start = TimingClock::now();
     draw_ppocr_results(result.image, result.ocr_results);
     result.timing.postprocess_ms += elapsed_ms(postprocess_start);

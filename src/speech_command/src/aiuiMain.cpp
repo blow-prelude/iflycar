@@ -8,7 +8,6 @@
 #include <std_msgs/String.h>
 #include <std_srvs/Trigger.h>
 
-#include <cstring>
 #include <fstream>
 #include <string>
 #include <thread>
@@ -256,16 +255,12 @@ int main(int argc, char **argv)
 
 	string serialPort = DEV_ID;
 	int baudRate = BAUD_RATE;
-	string pcmDevice = pcm_name;
-	bool enableHidWakeup = false;
 	privateNode.param<string>("serial_port", serialPort, serialPort);
 	privateNode.param("baud_rate", baudRate, baudRate);
-	privateNode.param<string>("pcm_device", pcmDevice, pcmDevice);
-	privateNode.param("enable_hid_wakeup", enableHidWakeup, enableHidWakeup);
 
-	if (baudRate <= 0 || pcmDevice.empty())
+	if (baudRate <= 0)
 	{
-		ROS_ERROR("启动参数无效：baud_rate=%d, pcm_device='%s'", baudRate, pcmDevice.c_str());
+		ROS_ERROR("启动参数无效：baud_rate=%d", baudRate);
 		return 1;
 	}
 
@@ -284,13 +279,10 @@ int main(int argc, char **argv)
 	paths.apply();
 	LoadUserConfig(packagePath + USER_CONFIG_PATH);
 
-	ROS_INFO("PCM 录音设备：%s", pcmDevice.c_str());
-	ROS_INFO("HID 阵列唤醒：%s", enableHidWakeup ? "启用" : "关闭（使用串口唤醒）");
+	ROS_INFO("唤醒方式：纯串口（不初始化 USB HID 和 ALSA 录音）");
 
 	AIUITester tester;
 	tester.bind(test_callback);
-	tester.setPcmDevice(pcmDevice);
-	tester.setHidWakeupEnabled(enableHidWakeup);
 
 	thread publisherThread(data_send);
 	int exitCode = 0;

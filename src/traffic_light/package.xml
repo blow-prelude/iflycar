@@ -54,7 +54,7 @@
   <depend>cv_bridge</depend>
   <depend>roscpp</depend>
   <depend>roslib</depend>
-  <exec_depend>std_srvs</exec_depend>
+  <depend>std_srvs</depend>
   <build_depend>rospy</build_depend>
   <build_export_depend>rospy</build_export_depend>
   <exec_depend>rospy</exec_depend>

@@ -13,6 +13,8 @@ find_package(catkin REQUIRED COMPONENTS
   roslib
   rospy
   sensor_msgs
+  std_msgs
+  std_srvs
 )
 
 # # System dependencies are found with CMake's conventions
@@ -115,7 +117,7 @@ set(RGA_LIBRARY ${RGA_ROOT}/libs/librga.a)
 # # CATKIN_DEPENDS: catkin_packages dependent projects also need
 # # DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
-  CATKIN_DEPENDS cv_bridge roscpp roslib rospy sensor_msgs std_msgs
+  CATKIN_DEPENDS cv_bridge roscpp roslib rospy sensor_msgs std_msgs std_srvs
   # INCLUDE_DIRS include
   # LIBRARIES traffic_light
   # CATKIN_DEPENDS rospy
@@ -213,6 +215,9 @@ add_compile_definitions(DISABLE_LIBJPEG)
 # install(TARGETS ${PROJECT_NAME}_node
 # RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 # )
+install(TARGETS traffic_light_ros
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
 
 # # Mark libraries for installation
 # # See http://docs.ros.org/melodic/api/catkin/html/howto/format1/building_libraries.html

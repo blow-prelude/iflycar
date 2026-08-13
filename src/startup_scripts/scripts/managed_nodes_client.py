@@ -18,8 +18,8 @@ class ManagedNodesClient:
         self._call_lock = threading.Lock()
 
         self._services = {
-            "traffic_light": rospy.get_param(
-                "~traffic_light_service", "/traffic_light/set_enabled"
+            "traffic_light_ros": rospy.get_param(
+                "~traffic_light_service", "/traffic_light_ros/set_enabled"
             ),
             "image_process": rospy.get_param(
                 "~image_process_service", "/image_process/set_enabled"
@@ -41,7 +41,7 @@ class ManagedNodesClient:
         self._parameter_targets = {
             rospy.get_param(
                 "~traffic_light_enable_param", "/start_traffic_light_det"
-            ): ("traffic_light", "image_process", "vision_line_node"),
+            ): ("traffic_light_ros", "image_process", "vision_line_node"),
             rospy.get_param(
                 "~find_signal_enable_param", "/task1_all_done"
             ): ("find_signal",),
@@ -107,9 +107,9 @@ class ManagedNodesClient:
 
     def _set_enabled_callback(self, request: SetBool.Request) -> SetBoolResponse:
         if request.data:
-            order = ("traffic_light", "image_process", "vision_line_node")
+            order = ("traffic_light_ros", "image_process", "vision_line_node")
         else:
-            order = ("vision_line_node", "image_process", "traffic_light")
+            order = ("vision_line_node", "image_process", "traffic_light_ros")
 
         all_succeeded = True
         details = []

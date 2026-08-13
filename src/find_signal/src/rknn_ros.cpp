@@ -159,7 +159,7 @@ namespace
                 "set_enabled", &SignalDetectionNode::set_enabled_callback, this);
             if (visualize_)
                 cv::namedWindow(kWindowName, cv::WINDOW_AUTOSIZE);
-            ROS_INFO_THROTTLE(1.0, "find_signal ready (OCR disabled): subscribe %s, publish %s and %s",
+            ROS_INFO_THROTTLE(3.0, "find_signal ready (OCR disabled): subscribe %s, publish %s and %s",
                               kImageTopic, kDetectionTopic, kClassTopic);
             return true;
         }
@@ -303,7 +303,7 @@ namespace
 
             const std::string text(result->text.str);
             const int class_id = classfy(text);
-            ROS_INFO("OCR text: %s, class_id: %d", text.c_str(), class_id);
+            // ROS_INFO("OCR text: %s, class_id: %d", text.c_str(), class_id);
             if (class_id == -1)
                 return;
 

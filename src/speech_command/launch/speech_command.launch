@@ -1,14 +1,10 @@
 <launch>
     <arg name="serial_port" default="/dev/ttyS3"/>
     <arg name="baud_rate" default="115200"/>
-    <arg name="pcm_device" default="hw:XFMDPV0018"/>
-    <arg name="enable_hid_wakeup" default="false"/>
 
     <node pkg="speech_command" type="speech_command_node" name="speech_command_node" output="screen">
         <param name="serial_port" value="$(arg serial_port)"/>
         <param name="baud_rate" value="$(arg baud_rate)"/>
-        <param name="pcm_device" value="$(arg pcm_device)"/>
-        <param name="enable_hid_wakeup" value="$(arg enable_hid_wakeup)"/>
     </node>
     <!-- <node pkg="speech_command" type="speech_contrl" name="speech_contrl_node" output="screen"/> -->
 </launch>
