@@ -201,19 +201,24 @@ class OURSWITCH
         double gap_search_half_angle_;
         double gap_detection_timeout_;
         double gap_sample_max_spread_;
-        double gap_stop_offset_;
         double gap_wall_min_length_;
         double gap_wall_max_residual_;
         double gap_wall_max_line_offset_;
         double gap_max_lateral_offset_;
         double gap_min_forward_offset_;
         double gap_max_forward_offset_;
-        double gap_max_correction_distance_;
         double lidar_offset_x_;
         double lidar_offset_y_;
         double lidar_yaw_;
         int gap_required_samples_;
         int gap_wall_min_points_;
+
+        // GotoD 导航失败时返回最近一次 GotoC 停泊观察点。
+        bool last_parking_observation_valid_ = false;
+        double last_parking_observation_x_ = 0.0;
+        double last_parking_observation_y_ = 0.0;
+        double last_parking_observation_yaw_ = 0.0;
+        bool goto_d_recovery_pending_ = false;
 
         // 状态标志
         int fusion_size = 0;

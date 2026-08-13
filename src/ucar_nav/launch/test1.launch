@@ -31,7 +31,7 @@
   <!-- <include file="$(find lidar_undistortion_2d)/launch/lidar_undistortion_2d.launch" > </include> -->
 
   <!-- 启动地图服务器 -->
-  <node name="map_server" pkg="map_server" type="map_server" args="$(find ucar_nav)/maps/20260806.yaml" output="screen">
+  <node name="map_server" pkg="map_server" type="map_server" args="$(find ucar_nav)/maps/gazebo_ros_map.yaml" output="screen">
     <param name="frame_id" value="map" />
   </node> 
 

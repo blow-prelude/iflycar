@@ -303,7 +303,7 @@ namespace
 
             const std::string text(result->text.str);
             const int class_id = classfy(text);
-            // ROS_INFO("OCR text: %s, class_id: %d", text.c_str(), class_id);
+            ROS_INFO_THROTTLE(1.5, "OCR text: %s, class_id: %d", text.c_str(), class_id);
             if (class_id == -1)
                 return;
 

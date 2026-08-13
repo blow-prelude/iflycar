@@ -1,8 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""独立运行的语音任务分析脚本，不依赖 ROS、相机或二维码。"""
-
+#!/home/ucar/venv3.9/bin/python3
 import base64
 import hashlib
 import hmac
@@ -25,11 +21,11 @@ import websocket
 
 # ================= 配置区 =================
 MIC_DEVICE = "hw:XFMDPV0018"
-RECORD_SECONDS = 30
+RECORD_SECONDS = 12
 WAV_DIR = Path(__file__).resolve().parents[1] / "wav"
 
 APPID = os.environ.get("IFLYTEK_APPID", "f4ea634b")
-API_SECRET = os.environ.get("IFLYTEK_API_SECRET", "ZTA4YzI4NzNkNGE2NjVjODdiNWI5YjZm")
+API_SECRET = os.environ.get("IFLYTEK_API_SECRET", "ZTA4YzI4NzNkNGE0NjVjODdiNWI5YjZm")
 API_KEY = os.environ.get("IFLYTEK_API_KEY", "1c7f09de8fd38d0aebbc11059fcba203")
 
 ALLOWED_CATEGORIES = ("食品", "日用品", "电子产品")

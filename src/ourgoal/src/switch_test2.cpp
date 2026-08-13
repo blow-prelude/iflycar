@@ -5,8 +5,6 @@
 
 // 导航点宏定义
 // #define goto_B sendPos(-1.56, -0.5, 3.14)
-#define goto_D sendPos(0.2, -3.2, -1.57)
-
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseAction;
 
 // =========================================================================
@@ -57,14 +55,12 @@ OURSWITCH::OURSWITCH()
     nh_.param("gap_search_half_angle", gap_search_half_angle_, 2.35);
     nh_.param("gap_detection_timeout", gap_detection_timeout_, 3.0);
     nh_.param("gap_sample_max_spread", gap_sample_max_spread_, 0.15);
-    nh_.param("gap_stop_offset", gap_stop_offset_, 0.05);
     nh_.param("gap_wall_min_length", gap_wall_min_length_, 0.20);
     nh_.param("gap_wall_max_residual", gap_wall_max_residual_, 0.03);
     nh_.param("gap_wall_max_line_offset", gap_wall_max_line_offset_, 0.08);
     nh_.param("gap_max_lateral_offset", gap_max_lateral_offset_, 0.45);
     nh_.param("gap_min_forward_offset", gap_min_forward_offset_, -0.20);
     nh_.param("gap_max_forward_offset", gap_max_forward_offset_, 0.80);
-    nh_.param("gap_max_correction_distance", gap_max_correction_distance_, 0.90);
     nh_.param("lidar_offset_x", lidar_offset_x_, 0.11);
     nh_.param("lidar_offset_y", lidar_offset_y_, 0.0);
     nh_.param("lidar_yaw", lidar_yaw_, -0.07);
@@ -631,7 +627,7 @@ void OURSWITCH::GotoA()
 }
 
 /// =========================================================================
-// 版本二：物品领取区交接 (持续旋转极限测试版)
+// 物品领取区交接 (快速转动 + 静止扫码)
 // =========================================================================
 void OURSWITCH::GotoB()
 {
@@ -653,8 +649,11 @@ void OURSWITCH::GotoB()
     int scan_done = 0;
     bool start_qr_scan_sent = false;
 
-    const double spin_speed = 0.30;
-    const double spin_duration = 2.0 * M_PI / spin_speed + 1.0;
+    const int view_count = 6;
+    const double turn_speed = 1.0;
+    const double turn_duration = (2.0 * M_PI / view_count) / turn_speed;
+    const double settle_duration = 0.4;
+    const double scan_duration = 1.0;
     const double nav_timeout = 15.0;
 
     for (int i = 0; i < (int)qr_points.size() && ros::ok(); ++i)
@@ -701,34 +700,64 @@ void OURSWITCH::GotoB()
         nh_.getParam("qr_scan_done", scan_done);
         if (scan_done == 1)
         {
-            ROS_INFO("All 3 QR codes found before spinning at point %d", i + 1);
+            ROS_INFO("All 3 QR codes found before static scanning at point %d", i + 1);
             break;
         }
 
-        ROS_INFO("Rotating one circle at QR point %d", i + 1);
-
-        geometry_msgs::Twist spin_cmd;
-        spin_cmd.angular.z = spin_speed;
-
-        ros::Time spin_start = ros::Time::now();
         ros::Rate rate(20);
 
-        while (ros::ok() && (ros::Time::now() - spin_start).toSec() < spin_duration)
+        for (int view = 0; view < view_count && ros::ok(); ++view)
         {
             nh_.getParam("qr_scan_done", scan_done);
             if (scan_done == 1)
             {
-                ROS_INFO("All 3 QR codes found while spinning at point %d", i + 1);
+                ROS_INFO("All 3 QR codes found at point %d", i + 1);
                 break;
             }
 
-            cmd_vel_pub__.publish(spin_cmd);
-            ros::spinOnce();
-            rate.sleep();
+            if (view > 0)
+            {
+                geometry_msgs::Twist turn_cmd;
+                turn_cmd.angular.z = turn_speed;
+
+                ros::Time turn_start = ros::Time::now();
+                while (ros::ok() &&
+                       (ros::Time::now() - turn_start).toSec() < turn_duration)
+                {
+                    cmd_vel_pub__.publish(turn_cmd);
+                    ros::spinOnce();
+                    rate.sleep();
+                }
+            }
+
+            cmd_vel_pub__.publish(stop_cmd);
+            ros::Duration(settle_duration).sleep();
+
+            ROS_INFO("QR point %d, static view %d/%d",
+                     i + 1, view + 1, view_count);
+
+            ros::Time scan_start = ros::Time::now();
+            while (ros::ok() &&
+                   (ros::Time::now() - scan_start).toSec() < scan_duration)
+            {
+                nh_.getParam("qr_scan_done", scan_done);
+                if (scan_done == 1)
+                {
+                    ROS_INFO("All 3 QR codes found at static view %d", view + 1);
+                    break;
+                }
+
+                ros::spinOnce();
+                rate.sleep();
+            }
+
+            if (scan_done == 1)
+            {
+                break;
+            }
         }
 
         cmd_vel_pub__.publish(stop_cmd);
-        ros::Duration(0.3).sleep();
 
         nh_.getParam("qr_scan_done", scan_done);
         if (scan_done == 1)
@@ -737,7 +766,8 @@ void OURSWITCH::GotoB()
             break;
         }
 
-        ROS_WARN("QR codes not complete after one circle at point %d, go next point", i + 1);
+        ROS_WARN("QR codes not complete after %d static views at point %d, go next point",
+                 view_count, i + 1);
     }
 
     nh_.getParam("qr_scan_done", scan_done);
@@ -751,26 +781,53 @@ void OURSWITCH::GotoB()
 
     if (scan_done == 0)
     {
-        ROS_WARN("QR codes still incomplete after all observation points. Starting fallback continuous spin.");
+        ROS_WARN("QR codes still incomplete after all observation points. Starting fallback stop-and-look search.");
 
-        geometry_msgs::Twist spin_cmd;
-        spin_cmd.angular.z = 0.25;
+        geometry_msgs::Twist stop_cmd;
+        geometry_msgs::Twist turn_cmd;
+        turn_cmd.angular.z = turn_speed;
         ros::Rate rate(20);
 
         while (ros::ok())
         {
-            nh_.getParam("qr_scan_done", scan_done);
+            cmd_vel_pub__.publish(stop_cmd);
+            ros::Duration(settle_duration).sleep();
+
+            ros::Time scan_start = ros::Time::now();
+            while (ros::ok() &&
+                   (ros::Time::now() - scan_start).toSec() < scan_duration)
+            {
+                nh_.getParam("qr_scan_done", scan_done);
+                if (scan_done == 1)
+                {
+                    break;
+                }
+
+                ros::spinOnce();
+                rate.sleep();
+            }
+
             if (scan_done == 1)
             {
                 break;
             }
 
-            cmd_vel_pub__.publish(spin_cmd);
-            ros::spinOnce();
-            rate.sleep();
+            ros::Time turn_start = ros::Time::now();
+            while (ros::ok() &&
+                   (ros::Time::now() - turn_start).toSec() < turn_duration)
+            {
+                cmd_vel_pub__.publish(turn_cmd);
+                ros::spinOnce();
+                rate.sleep();
+            }
+
+            nh_.getParam("qr_scan_done", scan_done);
+            if (scan_done == 1)
+            {
+                break;
+            }
         }
 
-        geometry_msgs::Twist stop_cmd;
         cmd_vel_pub__.publish(stop_cmd);
     }
 
@@ -1652,6 +1709,229 @@ void OURSWITCH::GotoC(int target_num)
         }
     };
 
+    // 到达导航停车点后，根据 RKNN 识别框中心进行横向对正。
+    auto adjustLateralPosition =
+        [this, &publishStop](
+            bool require_heading_check,
+            double target_map_yaw,
+            int expected_class) -> bool
+    {
+        const double target_center_x =
+            nh_.param("warehouse_target_center_x", 320.0);
+        const double center_tolerance =
+            nh_.param("warehouse_center_tolerance_px", 15.0);
+        const double lateral_kp =
+            nh_.param("warehouse_lateral_kp", 0.0005);
+        const double maximum_lateral_speed =
+            nh_.param("warehouse_max_lateral_speed", 0.05);
+        const double adjustment_timeout =
+            nh_.param("warehouse_lateral_timeout", 5.0);
+        const double maximum_detection_age = 1.0;
+        const double maximum_angular_speed = 0.20;
+        const double maximum_heading_error =
+            20.0 * M_PI / 180.0;
+        const int required_stable_frames = 5;
+
+        if (expected_class < 0 ||
+            target_center_x < 0.0 ||
+            target_center_x > 640.0)
+        {
+            ROS_WARN(
+                "Cannot run RKNN lateral alignment: "
+                "class=%d target_center_x=%.1f",
+                expected_class,
+                target_center_x);
+
+            publishStop();
+            return false;
+        }
+
+        if (require_heading_check)
+        {
+            double current_map_yaw = 0.0;
+
+            if (!nh_.getParam("CarYaw", current_map_yaw) ||
+                !std::isfinite(current_map_yaw))
+            {
+                ROS_WARN(
+                    "Cannot run RKNN lateral alignment after "
+                    "navigation failure: CarYaw is unavailable");
+
+                publishStop();
+                return false;
+            }
+
+            const double map_heading_error =
+                std::atan2(
+                    std::sin(target_map_yaw - current_map_yaw),
+                    std::cos(target_map_yaw - current_map_yaw));
+
+            if (std::fabs(map_heading_error) >
+                maximum_heading_error)
+            {
+                ROS_WARN(
+                    "Cannot run RKNN lateral alignment safely: "
+                    "heading error %.1f deg exceeds %.1f deg",
+                    map_heading_error * 180.0 / M_PI,
+                    maximum_heading_error * 180.0 / M_PI);
+
+                publishStop();
+                return false;
+            }
+        }
+
+        publishStop();
+
+        // 丢弃导航过程中冻结的结果，只接受停车后的新识别数据。
+        current_signal_class_ = -1;
+        last_signal_class_time_ = ros::Time(0);
+        last_signal_detection_time_ = ros::Time(0);
+        target_locked_ = false;
+
+        const double hold_yaw = yaw;
+        int stable_frames = 0;
+        bool adjustment_succeeded = false;
+        ros::Time last_counted_detection_time(0);
+        const ros::WallTime adjustment_start =
+            ros::WallTime::now();
+        ros::WallRate lateral_rate(20.0);
+
+        ROS_INFO(
+            "Starting RKNN lateral alignment: "
+            "target_center=%.1f tolerance=%.1f "
+            "max_speed=%.3f timeout=%.1f",
+            target_center_x,
+            center_tolerance,
+            maximum_lateral_speed,
+            adjustment_timeout);
+
+        while (ros::ok() &&
+               (ros::WallTime::now() - adjustment_start).toSec() <
+                   adjustment_timeout)
+        {
+            geometry_msgs::Twist lateral_cmd;
+            const ros::Time now = ros::Time::now();
+
+            const bool class_recent =
+                !last_signal_class_time_.isZero() &&
+                (now - last_signal_class_time_).toSec() <
+                    maximum_detection_age;
+
+            const bool detection_recent =
+                !last_signal_detection_time_.isZero() &&
+                (now - last_signal_detection_time_).toSec() <
+                    maximum_detection_age;
+
+            const bool target_valid =
+                class_recent &&
+                detection_recent &&
+                current_signal_class_ == expected_class &&
+                std::isfinite(signal_center_x_) &&
+                signal_center_x_ >= 0.0 &&
+                signal_center_x_ <= 640.0;
+
+            if (!target_valid)
+            {
+                stable_frames = 0;
+                cmd_vel_pub__.publish(lateral_cmd);
+
+                ROS_WARN_THROTTLE(
+                    1.0,
+                    "Waiting for a fresh RKNN detection of "
+                    "target class %d during lateral alignment",
+                    expected_class);
+
+                lateral_rate.sleep();
+                continue;
+            }
+
+            const double center_error =
+                target_center_x - signal_center_x_;
+
+            const bool new_detection =
+                last_signal_detection_time_ !=
+                last_counted_detection_time;
+
+            if (new_detection)
+            {
+                last_counted_detection_time =
+                    last_signal_detection_time_;
+            }
+
+            if (std::fabs(center_error) <=
+                center_tolerance)
+            {
+                lateral_cmd.linear.y = 0.0;
+
+                if (new_detection)
+                {
+                    ++stable_frames;
+                }
+            }
+            else
+            {
+                stable_frames = 0;
+
+                // 图像 x 向右增大，车体 y 向左为正。
+                lateral_cmd.linear.y =
+                    Limit_Value(
+                        lateral_kp * center_error,
+                        maximum_lateral_speed,
+                        -maximum_lateral_speed);
+            }
+
+            const double yaw_error =
+                std::atan2(
+                    std::sin(hold_yaw - yaw),
+                    std::cos(hold_yaw - yaw));
+
+            lateral_cmd.angular.z =
+                Limit_Value(
+                    Kp_yaw * yaw_error,
+                    maximum_angular_speed,
+                    -maximum_angular_speed);
+
+            cmd_vel_pub__.publish(lateral_cmd);
+
+            ROS_INFO_THROTTLE(
+                0.5,
+                "RKNN lateral alignment: center=%.1f "
+                "error=%.1f linear_y=%.3f stable=%d/%d",
+                signal_center_x_,
+                center_error,
+                lateral_cmd.linear.y,
+                stable_frames,
+                required_stable_frames);
+
+            if (stable_frames >= required_stable_frames)
+            {
+                adjustment_succeeded = true;
+                break;
+            }
+
+            lateral_rate.sleep();
+        }
+
+        publishStop();
+        target_locked_ = true;
+
+        if (adjustment_succeeded)
+        {
+            ROS_INFO(
+                "RKNN lateral alignment completed: "
+                "target centered at %.1f px",
+                target_center_x);
+        }
+        else
+        {
+            ROS_WARN(
+                "RKNN lateral alignment failed or timed out; "
+                "vehicle stopped");
+        }
+
+        return adjustment_succeeded;
+    };
+
     // 使用现有成员变量 distance_qian_x，将前方距离调整到 0.20 m。
     //
     // require_heading_check:
@@ -2383,6 +2663,23 @@ void OURSWITCH::GotoC(int target_num)
                             target_yaw,
                             actual_stop_distance);
 
+                        // 记录本次发现停泊目标时所在的观察点，
+                        // 供后续 GotoD 导航失败时返回并重新规划。
+                        last_parking_observation_x_ =
+                            search_points[i].x;
+                        last_parking_observation_y_ =
+                            search_points[i].y;
+                        last_parking_observation_yaw_ =
+                            search_points[i].yaw;
+                        last_parking_observation_valid_ = true;
+
+                        ROS_INFO(
+                            "Saved last parking observation point: "
+                            "x=%.3f y=%.3f yaw=%.3f",
+                            last_parking_observation_x_,
+                            last_parking_observation_y_,
+                            last_parking_observation_yaw_);
+
                         // 目标已经找到，此后不再搜索其他观测点。
                         target_found = true;
 
@@ -2461,10 +2758,19 @@ void OURSWITCH::GotoC(int target_num)
                             publishStop();
                         }
 
+                        bool lateral_adjusted = false;
                         bool front_adjusted = false;
 
                         if (navigation_stopped)
                         {
+                            // 先根据停车后的新 RKNN 结果横向对正，
+                            // 再调整与目标之间的前后距离。
+                            lateral_adjusted =
+                                adjustLateralPosition(
+                                    !navigation_succeeded,
+                                    target_yaw,
+                                    target_class);
+
                             // 导航失败时要求检查当前 map 航向；
                             // 导航成功时直接执行距离 PID。
                             front_adjusted =
@@ -2473,7 +2779,8 @@ void OURSWITCH::GotoC(int target_num)
                                     target_yaw);
                         }
 
-                        if (front_adjusted)
+                        if (lateral_adjusted &&
+                            front_adjusted)
                         {
                             nh_.setParam(
                                 "auto_park_status",
@@ -2483,7 +2790,8 @@ void OURSWITCH::GotoC(int target_num)
 
                             ROS_INFO(
                                 "Warehouse parking completed "
-                                "using distance_qian_x PID");
+                                "using RKNN lateral alignment "
+                                "and distance_qian_x PID");
                         }
                         else
                         {
@@ -2493,25 +2801,32 @@ void OURSWITCH::GotoC(int target_num)
 
                             if (navigation_succeeded)
                             {
-                                // 导航成功但距离微调失败：
+                                // 导航成功但最终位置微调失败：
                                 // 停车，不播报。
                                 ready_to_announce = false;
 
                                 ROS_WARN(
                                     "Navigation succeeded, but "
-                                    "distance PID failed; "
-                                    "skip announcement");
+                                    "final position adjustment "
+                                    "failed (lateral=%s front=%s); "
+                                    "skip announcement",
+                                    lateral_adjusted
+                                        ? "true"
+                                        : "false",
+                                    front_adjusted
+                                        ? "true"
+                                        : "false");
                             }
                             else
                             {
                                 // 按照之前约定：
-                                // 已找到目标但导航/PID均失败，
+                                // 已找到目标但导航或最终位置微调失败，
                                 // 仍然播报并进入下一阶段。
                                 ready_to_announce = true;
 
                                 ROS_WARN(
                                     "Target was found, but navigation "
-                                    "and distance PID failed; "
+                                    "or final position adjustment failed; "
                                     "continue with announcement");
                             }
                         }
@@ -2638,29 +2953,184 @@ void OURSWITCH::GotoD()
 {
     ROS_INFO("Entering GotoD state: Traffic Light Detection");
 
-    goto_D;
-    bool finished_before_timeout = ac_.waitForResult(ros::Duration(20.0));
-    bool reached_fixed_point =
-        finished_before_timeout &&
-        ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED;
+    nh_.setParam("start_traffic_light_det", 0);
 
-    if (reached_fixed_point)
+    const int max_attempts =
+        std::max(1, nh_.param("gotod_nav_max_attempts", 3));
+    const double retry_delay =
+        std::max(0.0, nh_.param("gotod_nav_retry_delay", 1.0));
+
+    auto navigateWithRetry =
+        [this, max_attempts, retry_delay](
+            double goal_x,
+            double goal_y,
+            double goal_yaw,
+            double timeout,
+            const char *goal_name) -> bool
     {
-        ROS_INFO("Arrived at the stop line successfully.");
-    }
-    else
-    {
-        if (!finished_before_timeout)
+        for (int attempt = 1;
+             attempt <= max_attempts && ros::ok();
+             ++attempt)
         {
-            ac_.cancelGoal();
-        }
-    }
+            ROS_INFO(
+                "Navigating to %s, attempt %d/%d",
+                goal_name,
+                attempt,
+                max_attempts);
 
-    if (reached_fixed_point)
+            sendPos(goal_x, goal_y, goal_yaw);
+
+            const bool finished_before_timeout =
+                ac_.waitForResult(ros::Duration(timeout));
+            const actionlib::SimpleClientGoalState navigation_state =
+                ac_.getState();
+
+            if (finished_before_timeout &&
+                navigation_state ==
+                    actionlib::SimpleClientGoalState::SUCCEEDED)
+            {
+                ROS_INFO(
+                    "Reached %s on attempt %d/%d",
+                    goal_name,
+                    attempt,
+                    max_attempts);
+                return true;
+            }
+
+            if (!finished_before_timeout)
+            {
+                ac_.cancelGoal();
+                ac_.waitForResult(ros::Duration(1.0));
+            }
+
+            geometry_msgs::Twist stop_cmd;
+            cmd_vel_pub__.publish(stop_cmd);
+
+            ROS_WARN(
+                "Failed to reach %s on attempt %d/%d: "
+                "finished=%s state=%s",
+                goal_name,
+                attempt,
+                max_attempts,
+                finished_before_timeout ? "true" : "false",
+                navigation_state.toString().c_str());
+
+            if (attempt < max_attempts)
+            {
+                ros::WallDuration(retry_delay).sleep();
+            }
+        }
+
+        return false;
+    };
+
+    auto recoverToLastParkingObservation =
+        [this, &navigateWithRetry]() -> bool
     {
+        if (!last_parking_observation_valid_)
+        {
+            goto_d_recovery_pending_ = false;
+
+            ROS_ERROR(
+                "Cannot recover GotoD navigation: "
+                "no parking observation point was saved");
+            return false;
+        }
+
+        goto_d_recovery_pending_ = true;
+
+        ROS_WARN(
+            "Returning to last parking observation point "
+            "before retrying GotoD: x=%.3f y=%.3f yaw=%.3f",
+            last_parking_observation_x_,
+            last_parking_observation_y_,
+            last_parking_observation_yaw_);
+
+        const bool recovered =
+            navigateWithRetry(
+                last_parking_observation_x_,
+                last_parking_observation_y_,
+                last_parking_observation_yaw_,
+                20.0,
+                "last parking observation point");
+
+        if (recovered)
+        {
+            goto_d_recovery_pending_ = false;
+            ROS_INFO(
+                "Returned to the last parking observation point; "
+                "GotoD navigation can restart");
+        }
+        else
+        {
+            ROS_ERROR(
+                "Failed to return to the last parking observation "
+                "point; keep recovery pending");
+        }
+
+        return recovered;
+    };
+
+    auto alignGapInMapX = [this]() -> bool
+    {
+        const double target_yaw = -1.57;
+        const double lateral_tolerance =
+            std::max(
+                0.005,
+                nh_.param("gotod_lateral_tolerance", 0.02));
+        const double lateral_kp =
+            std::max(
+                0.0,
+                nh_.param("gotod_lateral_kp", 0.8));
+        const double maximum_lateral_speed =
+            std::max(
+                0.01,
+                nh_.param("gotod_lateral_max_speed", 0.05));
+        const double alignment_timeout =
+            std::max(
+                1.0,
+                nh_.param(
+                    "gotod_lateral_timeout",
+                    std::max(5.0, gap_detection_timeout_)));
+        const double measurement_timeout = 0.60;
+        const double heading_tolerance =
+            5.0 * M_PI / 180.0;
+        const double maximum_heading_error =
+            20.0 * M_PI / 180.0;
+        const double maximum_angular_speed = 0.20;
+        const int required_stable_samples = 5;
+
+        auto median = [](std::vector<double> values)
+        {
+            std::sort(values.begin(), values.end());
+            const size_t middle = values.size() / 2;
+
+            if (values.size() % 2 == 0)
+            {
+                return
+                    (values[middle - 1] + values[middle]) /
+                    2.0;
+            }
+
+            return values[middle];
+        };
+
+        auto spread = [](const std::vector<double> &values)
+        {
+            const std::pair<
+                std::vector<double>::const_iterator,
+                std::vector<double>::const_iterator>
+                bounds =
+                    std::minmax_element(
+                        values.begin(),
+                        values.end());
+
+            return *bounds.second - *bounds.first;
+        };
+
         geometry_msgs::Twist stop_cmd;
         cmd_vel_pub__.publish(stop_cmd);
-        ros::Duration(0.3).sleep();
+        ros::WallDuration(0.30).sleep();
 
         {
             std::lock_guard<std::mutex> lock(gap_mutex_);
@@ -2670,127 +3140,373 @@ void OURSWITCH::GotoD()
             collect_gap_samples_ = true;
         }
 
-        ROS_INFO("Collecting lidar scans to locate the wall gap...");
-        ros::Time detection_start = ros::Time::now();
+        size_t processed_sample_count = 0;
+        int stable_samples = 0;
+        double lateral_velocity = 0.0;
+        bool have_fresh_measurement = false;
+        bool alignment_succeeded = false;
+        bool safety_rejected = false;
+        ros::WallTime last_valid_measurement;
+        const ros::WallTime alignment_start =
+            ros::WallTime::now();
+        ros::WallRate control_rate(20.0);
+
+        ROS_INFO(
+            "Starting direct gap alignment in map x: "
+            "tolerance=%.3f max_speed=%.3f timeout=%.1f",
+            lateral_tolerance,
+            maximum_lateral_speed,
+            alignment_timeout);
+
         while (ros::ok() &&
-               (ros::Time::now() - detection_start).toSec() < gap_detection_timeout_)
+               (ros::WallTime::now() - alignment_start).toSec() <
+                   alignment_timeout)
         {
-            int sample_count = 0;
+            std::vector<double> mid_x_samples;
+            std::vector<double> mid_y_samples;
+            std::vector<double> width_samples;
+            bool received_new_window = false;
+
             {
                 std::lock_guard<std::mutex> lock(gap_mutex_);
-                sample_count = gap_mid_x_samples_.size();
-            }
-            if (sample_count >= gap_required_samples_)
-                break;
-            ros::Duration(0.05).sleep();
-        }
+                const size_t sample_count =
+                    gap_mid_x_samples_.size();
 
-        std::vector<double> mid_x_samples;
-        std::vector<double> mid_y_samples;
-        std::vector<double> width_samples;
-        {
-            std::lock_guard<std::mutex> lock(gap_mutex_);
-            collect_gap_samples_ = false;
-            mid_x_samples = gap_mid_x_samples_;
-            mid_y_samples = gap_mid_y_samples_;
-            width_samples = gap_width_samples_;
-        }
-
-        auto median = [](std::vector<double> values)
-        {
-            std::sort(values.begin(), values.end());
-            const size_t middle = values.size() / 2;
-            if (values.size() % 2 == 0)
-                return (values[middle - 1] + values[middle]) / 2.0;
-            return values[middle];
-        };
-
-        auto spread = [](const std::vector<double> &values)
-        {
-            const std::pair<std::vector<double>::const_iterator,
-                            std::vector<double>::const_iterator>
-                bounds = std::minmax_element(values.begin(), values.end());
-            return *bounds.second - *bounds.first;
-        };
-
-        bool gap_is_stable =
-            (int)mid_x_samples.size() >= gap_required_samples_ &&
-            spread(mid_x_samples) <= gap_sample_max_spread_ &&
-            spread(mid_y_samples) <= gap_sample_max_spread_ &&
-            spread(width_samples) <= gap_sample_max_spread_;
-
-        if (gap_is_stable)
-        {
-            const double gap_laser_x = median(mid_x_samples);
-            const double gap_laser_y = median(mid_y_samples);
-            const double gap_width = median(width_samples);
-
-            // laser_frame -> base_link，默认外参来自 ucar_nav/launch/test1.launch。
-            const double lidar_cos = std::cos(lidar_yaw_);
-            const double lidar_sin = std::sin(lidar_yaw_);
-            const double gap_base_x =
-                lidar_offset_x_ + lidar_cos * gap_laser_x - lidar_sin * gap_laser_y;
-            const double gap_base_y =
-                lidar_offset_y_ + lidar_sin * gap_laser_x + lidar_cos * gap_laser_y;
-
-            double car_x = 0.0;
-            double car_y = 0.0;
-            double car_yaw = 0.0;
-            if (nh_.getParam("CarX", car_x) &&
-                nh_.getParam("CarY", car_y) &&
-                nh_.getParam("CarYaw", car_yaw))
-            {
-                const double car_cos = std::cos(car_yaw);
-                const double car_sin = std::sin(car_yaw);
-                const double gap_map_x =
-                    car_x + car_cos * gap_base_x - car_sin * gap_base_y;
-                const double gap_map_y =
-                    car_y + car_sin * gap_base_x + car_cos * gap_base_y;
-
-                const double target_yaw = -1.57;
-                const double corrected_x =
-                    gap_map_x - gap_stop_offset_ * std::cos(target_yaw);
-                const double corrected_y =
-                    gap_map_y - gap_stop_offset_ * std::sin(target_yaw);
-                const double correction_distance =
-                    std::hypot(corrected_x - car_x, corrected_y - car_y);
-
-                ROS_INFO("Gap detected: width=%.3f laser_mid=(%.3f, %.3f)",
-                         gap_width, gap_laser_x, gap_laser_y);
-                if (correction_distance <= gap_max_correction_distance_)
+                if (sample_count > processed_sample_count)
                 {
-                    ROS_INFO("Corrected GotoD goal: x=%.3f y=%.3f yaw=%.3f",
-                             corrected_x, corrected_y, target_yaw);
+                    processed_sample_count = sample_count;
 
-                    sendPos(corrected_x, corrected_y, target_yaw);
-                    bool corrected_arrived = ac_.waitForResult(ros::Duration(10.0));
-                    if (corrected_arrived &&
-                        ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED)
+                    if (sample_count >=
+                        static_cast<size_t>(gap_required_samples_))
                     {
-                        ROS_INFO("Reached the lidar-corrected gap midpoint.");
+                        const size_t first_sample =
+                            sample_count -
+                            static_cast<size_t>(
+                                gap_required_samples_);
+
+                        mid_x_samples.assign(
+                            gap_mid_x_samples_.begin() +
+                                first_sample,
+                            gap_mid_x_samples_.end());
+                        mid_y_samples.assign(
+                            gap_mid_y_samples_.begin() +
+                                first_sample,
+                            gap_mid_y_samples_.end());
+                        width_samples.assign(
+                            gap_width_samples_.begin() +
+                                first_sample,
+                            gap_width_samples_.end());
+                        received_new_window = true;
                     }
-                    else
-                    {
-                        if (!corrected_arrived)
-                            ac_.cancelGoal();
-                        ROS_WARN("Failed to reach the corrected gap goal; continue from current pose.");
-                    }
+                }
+            }
+
+            if (received_new_window)
+            {
+                const bool gap_is_stable =
+                    spread(mid_x_samples) <=
+                        gap_sample_max_spread_ &&
+                    spread(mid_y_samples) <=
+                        gap_sample_max_spread_ &&
+                    spread(width_samples) <=
+                        gap_sample_max_spread_;
+
+                if (!gap_is_stable)
+                {
+                    have_fresh_measurement = false;
+                    lateral_velocity = 0.0;
+                    stable_samples = 0;
+
+                    ROS_WARN_THROTTLE(
+                        1.0,
+                        "Reject unstable wall-gap measurements "
+                        "during map-x alignment");
                 }
                 else
                 {
-                    ROS_WARN("Reject gap correction %.3f m beyond safety limit %.3f m.",
-                             correction_distance, gap_max_correction_distance_);
+                    const double gap_laser_x =
+                        median(mid_x_samples);
+                    const double gap_laser_y =
+                        median(mid_y_samples);
+                    const double gap_width =
+                        median(width_samples);
+
+                    const double lidar_cos =
+                        std::cos(lidar_yaw_);
+                    const double lidar_sin =
+                        std::sin(lidar_yaw_);
+                    const double gap_base_x =
+                        lidar_offset_x_ +
+                        lidar_cos * gap_laser_x -
+                        lidar_sin * gap_laser_y;
+                    const double gap_base_y =
+                        lidar_offset_y_ +
+                        lidar_sin * gap_laser_x +
+                        lidar_cos * gap_laser_y;
+
+                    double car_yaw = 0.0;
+
+                    if (!nh_.getParam("CarYaw", car_yaw) ||
+                        !std::isfinite(car_yaw))
+                    {
+                        have_fresh_measurement = false;
+                        lateral_velocity = 0.0;
+                        stable_samples = 0;
+
+                        ROS_WARN_THROTTLE(
+                            1.0,
+                            "CarYaw unavailable during "
+                            "map-x gap alignment");
+                    }
+                    else
+                    {
+                        const double heading_error =
+                            std::atan2(
+                                std::sin(target_yaw - car_yaw),
+                                std::cos(target_yaw - car_yaw));
+
+                        if (std::fabs(heading_error) >
+                            maximum_heading_error)
+                        {
+                            ROS_ERROR(
+                                "Reject direct gap alignment: "
+                                "heading error %.1f deg exceeds "
+                                "%.1f deg",
+                                heading_error * 180.0 / M_PI,
+                                maximum_heading_error *
+                                    180.0 / M_PI);
+
+                            safety_rejected = true;
+                            break;
+                        }
+
+                        // base_link 中的缺口中点向量转换到地图坐标系；
+                        // 只取地图 x 分量作为左右横移误差。
+                        const double map_x_error =
+                            std::cos(car_yaw) * gap_base_x -
+                            std::sin(car_yaw) * gap_base_y;
+
+                        const double positive_x_wall_distance =
+                            gap_width / 2.0 + map_x_error;
+                        const double negative_x_wall_distance =
+                            gap_width / 2.0 - map_x_error;
+
+                        if (positive_x_wall_distance <= 0.0 ||
+                            negative_x_wall_distance <= 0.0 ||
+                            std::fabs(map_x_error) >
+                                gap_max_lateral_offset_)
+                        {
+                            ROS_ERROR(
+                                "Reject unsafe map-x gap error: "
+                                "error=%.3f +x_dist=%.3f "
+                                "-x_dist=%.3f",
+                                map_x_error,
+                                positive_x_wall_distance,
+                                negative_x_wall_distance);
+
+                            safety_rejected = true;
+                            break;
+                        }
+
+                        const double lateral_axis_map_x =
+                            -std::sin(car_yaw);
+
+                        if (std::fabs(lateral_axis_map_x) < 0.80)
+                        {
+                            ROS_ERROR(
+                                "Reject direct gap alignment: "
+                                "vehicle lateral axis is not close "
+                                "to map x");
+
+                            safety_rejected = true;
+                            break;
+                        }
+
+                        have_fresh_measurement = true;
+                        last_valid_measurement =
+                            ros::WallTime::now();
+
+                        if (std::fabs(heading_error) >
+                            heading_tolerance)
+                        {
+                            lateral_velocity = 0.0;
+                            stable_samples = 0;
+                        }
+                        else if (std::fabs(map_x_error) <=
+                                 lateral_tolerance)
+                        {
+                            lateral_velocity = 0.0;
+                            ++stable_samples;
+                        }
+                        else
+                        {
+                            stable_samples = 0;
+                            lateral_velocity =
+                                Limit_Value(
+                                    lateral_kp * map_x_error /
+                                        lateral_axis_map_x,
+                                    maximum_lateral_speed,
+                                    -maximum_lateral_speed);
+                        }
+
+                        ROS_INFO_THROTTLE(
+                            0.5,
+                            "Gap map-x alignment: "
+                            "+x_dist=%.3f -x_dist=%.3f "
+                            "error=%.3f linear_y=%.3f "
+                            "stable=%d/%d",
+                            positive_x_wall_distance,
+                            negative_x_wall_distance,
+                            map_x_error,
+                            lateral_velocity,
+                            stable_samples,
+                            required_stable_samples);
+                    }
                 }
             }
-            else
+
+            if (have_fresh_measurement &&
+                (ros::WallTime::now() -
+                 last_valid_measurement)
+                        .toSec() >
+                    measurement_timeout)
             {
-                ROS_WARN("CarX/CarY/CarYaw unavailable; skip lidar gap correction.");
+                have_fresh_measurement = false;
+                lateral_velocity = 0.0;
+                stable_samples = 0;
             }
+
+            geometry_msgs::Twist lateral_cmd;
+            lateral_cmd.linear.y =
+                have_fresh_measurement
+                    ? lateral_velocity
+                    : 0.0;
+
+            double control_yaw = yaw;
+            nh_.getParam("CarYaw", control_yaw);
+
+            const double yaw_error =
+                std::atan2(
+                    std::sin(target_yaw - control_yaw),
+                    std::cos(target_yaw - control_yaw));
+
+            lateral_cmd.angular.z =
+                Limit_Value(
+                    Kp_yaw * yaw_error,
+                    maximum_angular_speed,
+                    -maximum_angular_speed);
+
+            cmd_vel_pub__.publish(lateral_cmd);
+
+            if (stable_samples >= required_stable_samples)
+            {
+                alignment_succeeded = true;
+                break;
+            }
+
+            if (!have_fresh_measurement)
+            {
+                ROS_WARN_THROTTLE(
+                    1.0,
+                    "Waiting for fresh left/right wall distances "
+                    "during map-x alignment");
+            }
+
+            control_rate.sleep();
         }
-        else
+
         {
-            ROS_WARN("No stable 0.8-1.0 m wall gap found; continue from the fixed GotoD point.");
+            std::lock_guard<std::mutex> lock(gap_mutex_);
+            collect_gap_samples_ = false;
         }
+
+        cmd_vel_pub__.publish(stop_cmd);
+
+        if (alignment_succeeded)
+        {
+            ROS_INFO(
+                "Direct map-x gap alignment completed");
+        }
+        else if (!safety_rejected)
+        {
+            ROS_WARN(
+                "Direct map-x gap alignment timed out or "
+                "lost wall measurements; vehicle stopped");
+        }
+
+        return alignment_succeeded;
+    };
+
+    // 上一轮如果连返回观察点也失败，本轮必须先完成返回动作。
+    if (goto_d_recovery_pending_ &&
+        !recoverToLastParkingObservation())
+    {
+        geometry_msgs::Twist stop_cmd;
+        cmd_vel_pub__.publish(stop_cmd);
+        current_state = GOTOD_;
+        ros::WallDuration(retry_delay).sleep();
+        return;
+    }
+
+    const bool reached_fixed_point =
+        navigateWithRetry(
+            0.05,
+            -3.2,
+            -1.57,
+            20.0,
+            "fixed GotoD point");
+
+    if (!reached_fixed_point)
+    {
+        geometry_msgs::Twist stop_cmd;
+        cmd_vel_pub__.publish(stop_cmd);
+
+        ROS_ERROR(
+            "Fixed GotoD point failed after %d attempts. "
+            "Return to the last parking observation point.",
+            max_attempts);
+
+        const bool recovered =
+            recoverToLastParkingObservation();
+
+        if (recovered)
+        {
+            ROS_WARN(
+                "Recovery completed; restart GotoD navigation "
+                "on the next state-machine cycle");
+        }
+
+        current_state = GOTOD_;
+        ros::WallDuration(retry_delay).sleep();
+        return;
+    }
+
+    ROS_INFO("Arrived at the stop line successfully.");
+
+    const bool gap_aligned = alignGapInMapX();
+
+    if (!gap_aligned)
+    {
+        geometry_msgs::Twist stop_cmd;
+        cmd_vel_pub__.publish(stop_cmd);
+
+        ROS_ERROR(
+            "Direct map-x gap alignment failed. "
+            "Return to the last parking observation point.");
+
+        const bool recovered =
+            recoverToLastParkingObservation();
+
+        if (recovered)
+        {
+            ROS_WARN(
+                "Recovery completed; restart GotoD navigation "
+                "on the next state-machine cycle");
+        }
+
+        current_state = GOTOD_;
+        ros::WallDuration(retry_delay).sleep();
+        return;
     }
 
     nh_.setParam("start_traffic_light_det", 1);
@@ -2878,3 +3594,4 @@ int main(int argc, char **argv)
     spinner.stop();
     return 0;
 }
+
