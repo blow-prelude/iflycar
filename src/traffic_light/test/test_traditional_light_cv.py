@@ -44,14 +44,21 @@ class MaskAndValidationTests(unittest.TestCase):
 
         image[200, 200] = green_bgr
         image[210, 210] = red_bgr
-        image[220, 220] = bright_bgr
+        image[202, 202] = bright_bgr
+        image[230, 230] = bright_bgr
         image[20, 20] = green_bgr
 
         masks = build_masks(image, Config())
 
         self.assertEqual(255, int(masks.green[200, 200]))
         self.assertEqual(255, int(masks.red[210, 210]))
-        self.assertEqual(255, int(masks.bright[220, 220]))
+        self.assertEqual(255, int(masks.bright_raw[202, 202]))
+        self.assertEqual(255, int(masks.bright[202, 202]))
+        self.assertEqual(255, int(masks.bright_raw[230, 230]))
+        self.assertEqual(0, int(masks.bright[230, 230]))
+        self.assertEqual(255, int(masks.color_support[200, 200]))
+        self.assertEqual(255, int(masks.color_support[210, 210]))
+        self.assertEqual(13, masks.support_kernel_size)
         self.assertEqual(0, int(masks.green[20, 20]))
         self.assertEqual((160, 134, 499, 374), masks.roi_rect)
         self.assertAlmostEqual(1.0, masks.scale)
@@ -71,6 +78,11 @@ class MaskAndValidationTests(unittest.TestCase):
 
 
 class CandidateDetectionTests(unittest.TestCase):
+    def test_color_support_kernel_scales_to_odd_sizes(self):
+        self.assertEqual(3, detector._scaled_odd_length(15, 0.1))
+        self.assertEqual(15, detector._scaled_odd_length(15, 1.0))
+        self.assertEqual(31, detector._scaled_odd_length(15, 2.0))
+
     def test_high_resolution_keeps_minimum_thresholds_for_distant_light(self):
         bright = np.zeros((960, 1280), dtype=np.uint8)
         bright[200:213, 200:216] = 255
@@ -118,6 +130,32 @@ class CandidateDetectionTests(unittest.TestCase):
 
         self.assertIsNone(candidate)
         self.assertEqual(1, diagnostics.rejected_component_fill)
+
+    def test_candidate_ranking_penalizes_sparse_component(self):
+        bright = np.zeros((200, 400), dtype=np.uint8)
+        cv2.rectangle(bright, (40, 50), (79, 79), 255, thickness=2)
+        cv2.rectangle(bright, (200, 50), (219, 69), 255, thickness=-1)
+        green = np.zeros_like(bright)
+        green[40:90, 30:90] = 255
+        green[44:76, 194:226] = 255
+        masks = detector.Masks(
+            roi=np.full_like(bright, 255),
+            green=green,
+            red=np.zeros_like(bright),
+            bright=bright,
+            roi_rect=(0, 0, 400, 200),
+            scale=1.0,
+        )
+
+        candidate, diagnostics = detector._find_candidate_with_diagnostics(
+            masks
+        )
+
+        self.assertEqual((200, 50, 20, 20), candidate.bbox)
+        self.assertEqual(2, diagnostics.accepted_candidates)
+        first, second = diagnostics.top_candidates
+        self.assertGreater(second.color_score, first.color_score)
+        self.assertGreater(first.selection_score, second.selection_score)
 
     def test_arrow_like_component_has_fill_density_margin(self):
         mask = make_arrow_mask("right")
@@ -201,6 +239,46 @@ def make_mask_from_logged_band_counts(counts):
 
 
 class ArrowClassificationTests(unittest.TestCase):
+    def test_available_picture_regression_set_keeps_expected_labels(self):
+        expected_labels = {
+            "00010.jpg": "right",
+            "00017.jpg": "left",
+            "00107.jpg": "right",
+            "001_0033.jpg": "unknown",
+            "00299.jpg": "unknown",
+            "003_0030.jpg": "left",
+            "004_0001.jpg": "stop",
+            "006_0018.jpg": "left",
+            "01042.jpg": "straight",
+            "capture_1779365603.jpg": "right",
+            "capture_1779365606.jpg": "right",
+            "capture_1779365607.jpg": "right",
+            "capture_1779365615.jpg": "right",
+        }
+
+        for filename, expected in expected_labels.items():
+            with self.subTest(filename=filename):
+                image = cv2.imread(str(PICTURES_DIR / filename))
+                self.assertIsNotNone(image)
+                self.assertEqual(expected, detect_traffic_light(image).label)
+
+    def test_color_support_recovers_arrows_from_bright_background(self):
+        expected_labels = {
+            "capture_1786544471347320238_000720.jpg": "right",
+            "capture_1786544476988825876_000839.jpg": "left",
+            "capture_1786544480705245656_000920.jpg": "straight",
+        }
+
+        for filename, expected in expected_labels.items():
+            with self.subTest(filename=filename):
+                image = cv2.imread(str(PICTURES_DIR / filename))
+                self.assertIsNotNone(image)
+                detection = detect_traffic_light(image)
+
+                self.assertEqual(expected, detection.label)
+                self.assertIsNotNone(detection.bbox)
+                self.assertGreater(detection.selection_score, 0.0)
+
     def test_synthetic_arrow_shapes_have_expected_directions(self):
         for expected in ("straight", "left", "right"):
             with self.subTest(expected=expected):
@@ -334,12 +412,23 @@ class DrawingAndFixedDemoTests(unittest.TestCase):
             "red_score=",
             "color_density=",
             "component_fill=",
+            "selection_score=",
+            "support_kernel=",
+            "bright_raw:",
+            "color_support:",
+            "bright_supported:",
             "mask_pixels=",
             "limits=",
             "components=",
             "rejected=",
         ):
             self.assertIn(field_name, message)
+
+        candidate_message = detector.format_candidate_debug(
+            diagnostics.search.top_candidates
+        )
+        self.assertIn("top_candidates=[#1(", candidate_message)
+        self.assertNotIn("#4(", candidate_message)
 
     def test_realtime_log_tracker_throttles_noisy_state_changes(self):
         tracker = detector.RealtimeLogTracker(interval_seconds=1.0)

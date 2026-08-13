@@ -1,6 +1,6 @@
 # 传统交通灯亮区约束与候选排序设计
 
-状态：设计草案，待实现（尚未修改识别实现）  
+状态：已实现  
 适用脚本：`src/traffic_light/scripts/traditional_light_cv.py`
 
 ## 1. 背景
@@ -116,12 +116,12 @@ HSV + ROI
 color_mask = cv2.bitwise_or(green, red)
 ```
 
-使用椭圆核膨胀，让颜色区域覆盖内部的白色箭头：
+使用矩形核膨胀，让颜色区域覆盖内部白色箭头：
 
 ```python
-support_kernel_size = scaled_odd_length(15, scale)
+support_kernel_size = scaled_odd_length(12, scale)
 support_kernel = cv2.getStructuringElement(
-    cv2.MORPH_ELLIPSE,
+    cv2.MORPH_RECT,
     (support_kernel_size, support_kernel_size),
 )
 color_support = cv2.dilate(color_mask, support_kernel)
@@ -130,7 +130,7 @@ color_support = cv2.dilate(color_mask, support_kernel)
 参数定义：
 
 ```python
-color_support_kernel_size: int = 15
+color_support_kernel_size: int = 12
 ```
 
 核尺寸必须是奇数：
@@ -143,9 +143,15 @@ if scaled % 2 == 0:
 
 因此：
 
-- `scale=1.0` 时使用 `15×15`；
-- `scale=2.0` 时使用 `31×31`；
+- `scale=1.0` 时使用 `13×13`；
+- `scale=2.0` 时使用 `25×25`；
 - 小分辨率下至少使用 `3×3`。
+
+使用矩形而非椭圆形结构元素是实时性优化。OpenCV 可以用可分离方式执行
+矩形膨胀；在 `1280×960` 上，椭圆膨胀实测约 40 ms，矩形膨胀约 3 ms。
+基准长度从模拟阶段的 `15` 收紧到 `12`，用于抵消矩形核四角增加的覆盖范围。
+三张问题图片和全部现有样本的分类结果一致。十字核也经过测试，但会使既有
+直行样本 `01042.jpg` 从 `straight` 回归为 `unknown`，因此未采用。
 
 ### 6.2 约束亮区
 
@@ -223,7 +229,7 @@ max(
 `Config` 新增：
 
 ```python
-color_support_kernel_size: int = 15
+color_support_kernel_size: int = 12
 ```
 
 以下参数保持不变：
@@ -246,7 +252,7 @@ min_color_density=0.10
 每条周期诊断增加：
 
 ```text
-support_kernel=31
+support_kernel=25
 bright_raw_pixels=...
 color_support_pixels=...
 bright_supported_pixels=...
@@ -270,7 +276,7 @@ orientation, peak
 
 ## 9. 验证结果
 
-使用设计方案进行离线模拟，核尺寸按 `15 × scale` 缩放：
+使用设计方案进行离线模拟，核尺寸按 `12 × scale` 缩放并取奇数：
 
 | 图片 | 当前结果 | 设计方案结果 |
 | --- | --- | --- |
@@ -279,6 +285,9 @@ orientation, peak
 | 直行 `capture_...000920.jpg` | `straight` | `straight` |
 
 对工作区内之前的 13 张 JPG 样本进行回归，分类结果保持不变；其中原本为 `unknown` 的样本仍为 `unknown`，不会因为本方案被强行分类。
+
+实现完成后的验证结果：三张问题图片和 13 张既有图片共 16 张全部符合预期；
+`1280×960` 右箭头图片稳定阶段的单帧检测平均耗时约 27 ms。
 
 ## 10. 测试计划
 
@@ -336,7 +345,7 @@ orientation, peak
 
 箭头中心离绿色边缘较远时，亮区可能被截断。表现为 `bright_raw_pixels` 正常，但 `bright_supported_pixels` 明显过少。
 
-处理方式：以小步长增加 `color_support_kernel_size`，例如 `15 → 17`。
+处理方式：以小步长增加 `color_support_kernel_size`，例如 `12 → 13`。
 
 ### 支撑核过大
 

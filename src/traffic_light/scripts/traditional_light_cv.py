@@ -1,3 +1,4 @@
+#!/home/ucar/venv3.9/bin/python3
 from __future__ import annotations
 
 import argparse
@@ -32,6 +33,7 @@ class Config:
     bright_low: tuple[int, int, int] = (0, 0, 212)
     bright_high: tuple[int, int, int] = (179, 110, 255)
     close_kernel_size: int = 3
+    color_support_kernel_size: int = 12
     component_width: tuple[int, int] = (15, 90)
     component_height: tuple[int, int] = (12, 90)
     min_component_area: int = 80
@@ -75,6 +77,7 @@ class Detection:
     color_density: float = 0.0
     component_area: int = 0
     component_fill_density: float = 0.0
+    selection_score: float = 0.0
     orientation: str = "unknown"
     projection_peak: int | None = None
     diagnostics: DirectionDiagnostics | None = field(default=None, compare=False)
@@ -96,6 +99,9 @@ class Masks:
     bright: np.ndarray
     roi_rect: BBox
     scale: float
+    bright_raw: np.ndarray | None = field(default=None, compare=False)
+    color_support: np.ndarray | None = field(default=None, compare=False)
+    support_kernel_size: int = 0
 
 
 @dataclass(frozen=True)
@@ -109,6 +115,23 @@ class Candidate:
     component_area: int
     component_fill_density: float
     color_density: float
+    selection_score: float
+
+
+@dataclass(frozen=True)
+class CandidateDebugSummary:
+    """Small, mask-free candidate record suitable for DEBUG logging."""
+
+    bbox: BBox
+    color: str
+    label: str
+    color_score: int
+    color_density: float
+    component_area: int
+    component_fill_density: float
+    selection_score: float
+    orientation: str
+    projection_peak: int | None
 
 
 @dataclass(frozen=True)
@@ -131,6 +154,9 @@ class CandidateSearchDiagnostics:
     rejected_color_score: int = 0
     rejected_color_density: int = 0
     accepted_candidates: int = 0
+    top_candidates: tuple[CandidateDebugSummary, ...] = field(
+        default=(), compare=False
+    )
 
 
 @dataclass(frozen=True)
@@ -143,10 +169,19 @@ class FrameDiagnostics:
     red_pixels: int
     bright_pixels: int
     search: CandidateSearchDiagnostics
+    bright_raw_pixels: int = 0
+    color_support_pixels: int = 0
+    support_kernel_size: int = 0
 
 
 def _scaled_length(value: int, scale: float) -> int:
     return max(1, int(round(value * scale)))
+
+
+def _scaled_odd_length(value: int, scale: float) -> int:
+    """Scale a morphology length and return an odd value of at least three."""
+    scaled = max(3, int(round(value * scale)))
+    return scaled if scaled % 2 == 1 else scaled + 1
 
 
 def _scaled_area(value: int, scale: float) -> int:
@@ -194,21 +229,43 @@ def build_masks(
     red_1 = cv2.inRange(hsv, red_low_1, red_high_1)
     red_2 = cv2.inRange(hsv, red_low_2, red_high_2)
     red = cv2.bitwise_or(red_1, red_2)
-    bright = cv2.inRange(hsv, bright_low, bright_high)
+    bright_raw = cv2.inRange(hsv, bright_low, bright_high)
 
     roi = np.zeros((height, width), dtype=np.uint8)
     roi[y1:y2, x1:x2] = 255
     green = cv2.bitwise_and(green, roi)
     red = cv2.bitwise_and(red, roi)
-    bright = cv2.bitwise_and(bright, roi)
+    bright_raw = cv2.bitwise_and(bright_raw, roi)
 
     kernel_size = max(1, int(config.close_kernel_size))
     kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)
     )
-    bright = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, kernel)
+    bright_closed = cv2.morphologyEx(bright_raw, cv2.MORPH_CLOSE, kernel)
 
-    return Masks(roi, green, red, bright, roi_rect, scale)
+    color_mask = cv2.bitwise_or(green, red)
+    support_kernel_size = _scaled_odd_length(
+        config.color_support_kernel_size, scale
+    )
+    support_kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (support_kernel_size, support_kernel_size),
+    )
+    color_support = cv2.dilate(color_mask, support_kernel)
+    color_support = cv2.bitwise_and(color_support, roi)
+    bright = cv2.bitwise_and(bright_closed, color_support)
+
+    return Masks(
+        roi=roi,
+        green=green,
+        red=red,
+        bright=bright,
+        roi_rect=roi_rect,
+        scale=scale,
+        bright_raw=bright_raw,
+        color_support=color_support,
+        support_kernel_size=support_kernel_size,
+    )
 
 
 def find_candidate(
@@ -283,6 +340,7 @@ def _find_candidate_with_diagnostics(
             rejected_color_density += 1
             continue
 
+        selection_score = color_score * component_fill_density
         component_mask = np.where(
             labels[y : y + height, x : x + width] == component_id,
             255,
@@ -299,9 +357,19 @@ def _find_candidate_with_diagnostics(
                 component_area=int(area),
                 component_fill_density=component_fill_density,
                 color_density=float(color_density),
+                selection_score=float(selection_score),
             )
         )
 
+    ranked_candidates = sorted(
+        candidates,
+        key=lambda item: (
+            item.selection_score,
+            item.color_score,
+            item.component_area,
+        ),
+        reverse=True,
+    )
     diagnostics = CandidateSearchDiagnostics(
         min_width=min_width,
         max_width=max_width,
@@ -319,13 +387,14 @@ def _find_candidate_with_diagnostics(
         rejected_color_score=rejected_color_score,
         rejected_color_density=rejected_color_density,
         accepted_candidates=len(candidates),
+        top_candidates=tuple(
+            _summarize_candidate(candidate)
+            for candidate in ranked_candidates[:3]
+        ),
     )
-    if not candidates:
+    if not ranked_candidates:
         return None, diagnostics
-    return (
-        max(candidates, key=lambda item: (item.color_score, item.component_area)),
-        diagnostics,
-    )
+    return ranked_candidates[0], diagnostics
 
 
 def classify_green_shape(component_mask: np.ndarray) -> ShapeResult:
@@ -381,6 +450,30 @@ def classify_green_shape(component_mask: np.ndarray) -> ShapeResult:
     return ShapeResult(label, "horizontal", peak, diagnostics)
 
 
+def _summarize_candidate(candidate: Candidate) -> CandidateDebugSummary:
+    if candidate.color == "red":
+        label = "stop"
+        orientation = "unknown"
+        projection_peak = None
+    else:
+        shape = classify_green_shape(candidate.component_mask)
+        label = shape.label
+        orientation = shape.orientation
+        projection_peak = shape.projection_peak
+    return CandidateDebugSummary(
+        bbox=candidate.bbox,
+        color=candidate.color,
+        label=label,
+        color_score=candidate.color_score,
+        color_density=candidate.color_density,
+        component_area=candidate.component_area,
+        component_fill_density=candidate.component_fill_density,
+        selection_score=candidate.selection_score,
+        orientation=orientation,
+        projection_peak=projection_peak,
+    )
+
+
 def detect_traffic_light(
     image: np.ndarray, config: Config = DEFAULT_CONFIG
 ) -> Detection:
@@ -401,6 +494,17 @@ def analyze_traffic_light(
         red_pixels=int(cv2.countNonZero(masks.red)),
         bright_pixels=int(cv2.countNonZero(masks.bright)),
         search=search,
+        bright_raw_pixels=(
+            0
+            if masks.bright_raw is None
+            else int(cv2.countNonZero(masks.bright_raw))
+        ),
+        color_support_pixels=(
+            0
+            if masks.color_support is None
+            else int(cv2.countNonZero(masks.color_support))
+        ),
+        support_kernel_size=masks.support_kernel_size,
     )
     if candidate is None:
         return Detection(label="unknown"), frame_diagnostics
@@ -416,6 +520,7 @@ def analyze_traffic_light(
                 color_density=candidate.color_density,
                 component_area=candidate.component_area,
                 component_fill_density=candidate.component_fill_density,
+                selection_score=candidate.selection_score,
             ),
             frame_diagnostics,
         )
@@ -431,6 +536,7 @@ def analyze_traffic_light(
             color_density=candidate.color_density,
             component_area=candidate.component_area,
             component_fill_density=candidate.component_fill_density,
+            selection_score=candidate.selection_score,
             orientation=shape.orientation,
             projection_peak=shape.projection_peak,
             diagnostics=shape.diagnostics,
@@ -559,14 +665,18 @@ def format_detection_log(
         f"color_density={detection.color_density:.3f} "
         f"component_area={detection.component_area} "
         f"component_fill={detection.component_fill_density:.3f} "
+        f"selection_score={detection.selection_score:.1f} "
         f"axis={detection.orientation} peak={detection.projection_peak} "
         f"pca_abs={pca_abs} axis_margin={axis_margin} "
         f"eig_ratio={eigenvalue_ratio} bands={projection_bands} "
         f"band_density={projection_density} roi={frame_diagnostics.roi_rect} "
         f"scale={frame_diagnostics.scale:.3f} "
+        f"support_kernel={frame_diagnostics.support_kernel_size} "
         f"mask_pixels=(green:{frame_diagnostics.green_pixels},"
         f"red:{frame_diagnostics.red_pixels},"
-        f"bright:{frame_diagnostics.bright_pixels}) "
+        f"bright_raw:{frame_diagnostics.bright_raw_pixels},"
+        f"color_support:{frame_diagnostics.color_support_pixels},"
+        f"bright_supported:{frame_diagnostics.bright_pixels}) "
         f"limits=(w:{search.min_width}-{search.max_width},"
         f"h:{search.min_height}-{search.max_height},"
         f"area>={search.min_area},score>={search.min_color_score},"
@@ -574,6 +684,26 @@ def format_detection_log(
         f"components=(total:{search.total_components},"
         f"accepted:{search.accepted_candidates},rejected={{{rejected}}})"
     )
+
+
+def format_candidate_debug(
+    summaries: Sequence[CandidateDebugSummary],
+) -> str:
+    """Format at most three ranked candidates for DEBUG-only output."""
+    if not summaries:
+        return "top_candidates=[]"
+    items = []
+    for rank, summary in enumerate(summaries[:3], start=1):
+        items.append(
+            f"#{rank}(label:{summary.label},bbox:{summary.bbox},"
+            f"color:{summary.color},score:{summary.color_score},"
+            f"density:{summary.color_density:.3f},"
+            f"area:{summary.component_area},"
+            f"fill:{summary.component_fill_density:.3f},"
+            f"selection:{summary.selection_score:.1f},"
+            f"axis:{summary.orientation},peak:{summary.projection_peak})"
+        )
+    return "top_candidates=[" + ",".join(items) + "]"
 
 
 class FpsMeter:
@@ -697,8 +827,12 @@ def run_camera(
                     suppressed_changes,
                     log_record,
                 )
-            elif LOGGER.isEnabledFor(logging.DEBUG):
-                LOGGER.debug("per_frame %s", log_record)
+            if LOGGER.isEnabledFor(logging.DEBUG):
+                LOGGER.debug(
+                    "per_frame %s %s",
+                    log_record,
+                    format_candidate_debug(diagnostics.search.top_candidates),
+                )
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord(" "):

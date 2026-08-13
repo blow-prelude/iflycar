@@ -61,6 +61,63 @@ void set_awake_word_once(std::string awake_word)
 
 int AudioRecorder::business_proc_callback(business_msg_t businessMsg)
 {
+	if (businessMsg.data == NULL)
+		return -1;
+
+	/* 阵列唤醒事件。 */
+	if (businessMsg.modId == 0x02 && businessMsg.msgId == 0x01)
+	{
+		unsigned char beam_key[] = "beam";
+		unsigned char angle_key[] = "angle";
+		const int mic_id = get_awake_mic_id(businessMsg.data, beam_key);
+		const int wake_angle = get_awake_mic_angle(businessMsg.data, angle_key);
+
+		if (mic_id >= 0 && mic_id <= 5 && wake_angle >= 0 && wake_angle <= 360)
+		{
+			::if_awake = 1;
+			AudioRecorder::if_awake = true;
+			angle = wake_angle;
+			sign_angle = true;
+
+			const int target_led = get_led_based_angle(wake_angle);
+			set_major_mic_led_on(mic_id, target_led);
+
+			ros::NodeHandle nh;
+			int awake = 0;
+			nh.param("awake", awake, 0);
+			if (awake == 0)
+				nh.setParam("awake", 1);
+
+			printf(">>>>>麦克风阵列唤醒成功：麦克风=%d，角度=%d，灯=%d\n",
+				   mic_id, wake_angle, target_led);
+		}
+		else
+		{
+			printf(">>>>>收到无效的阵列唤醒数据：麦克风=%d，角度=%d\n",
+				   mic_id, wake_angle);
+		}
+	}
+	/* 阵列系统状态应答：0 表示正常工作，1 表示正在升级。 */
+	else if (businessMsg.modId == 0x03 && businessMsg.msgId == 0x01)
+	{
+		unsigned char status_key[] = "status";
+		const int status = whether_set_succeed(businessMsg.data, status_key);
+		if (status == 0)
+		{
+			is_boot = 5;
+			AudioRecorder::if_success_boot = true;
+			cout << ">>>>>麦克风阵列状态：正常工作" << endl;
+		}
+		else if (status == 1)
+		{
+			cout << ">>>>>麦克风阵列状态：正在升级，暂时不能唤醒" << endl;
+		}
+		else
+		{
+			cout << ">>>>>无法解析麦克风阵列系统状态，status=" << status << endl;
+		}
+	}
+
 	return 0;
 }
 
@@ -219,7 +276,7 @@ void AIUITester::destory()
 {
 	if (audioRecorder != NULL)
 	{
-		audioRecorder->~AudioRecorder();
+		delete audioRecorder;
 		audioRecorder = NULL;
 	}
 
@@ -271,7 +328,9 @@ void clearAudioFile(char *fileName)
 	pFile = NULL;
 }
 
-AIUITester::AIUITester() : agent(NULL), audioRecorder(NULL), audioPlayer(NULL) {}
+AIUITester::AIUITester()
+	: agent(NULL), audioRecorder(NULL), audioPlayer(NULL),
+	  pcmDevice(pcm_name), hidWakeupEnabled(false) {}
 
 AIUITester::~AIUITester()
 {
@@ -482,35 +541,211 @@ void AIUITester::bind(TEST_CALLBACK callback)
 	testCallback = callback;
 }
 
-// ================== 核心修改区：纯净串口监听模式 ==================
+void AIUITester::setPcmDevice(const std::string &device)
+{
+	pcmDevice = device;
+}
+
+void AIUITester::setHidWakeupEnabled(bool enabled)
+{
+	hidWakeupEnabled = enabled;
+}
+
 void AIUITester::test()
 {
+	cout << ">>>>>创建AIUI代理Agent\n"
+		 << endl;
 	createAgent();
 
-	printf("\n============================================\n");
-	printf("🚀 2026 纯净唤醒模式启动！正在监听串口唤醒信号...\n");
-	printf(">>>>> 请喊出唤醒词：小飞小飞\n");
-	printf("============================================\n");
+	cout << ">>>>>正在准备开启麦克风" << endl;
+	cout << ">>>>>开启录音" << endl;
 
-	int i = set_awake_word(awake_words);
-	printf("唤醒词设置结果：%d\n", i);
+	if (offline_mode)
+	{
+		cout << "buildGrammar" << endl;
+		buildGrammar();
+	}
+
+	if (hidWakeupEnabled)
+	{
+		/* HID 仅用于支持该控制接口的阵列设备，不负责 ALSA 采音。 */
+		cout << ">>>>>正在初始化麦克风阵列 HID" << endl;
+		recorder_creat();
+		if (AudioRecorder::if_success_boot)
+		{
+			const int awake_word_ret = set_awake_word(awake_words);
+			printf(">>>>>唤醒词设置结果: %d\n", awake_word_ret);
+		}
+		else
+		{
+			cout << ">>>>>麦克风阵列 HID 未启动，将继续使用 ALSA 采音和串口唤醒" << endl;
+		}
+	}
+	else
+	{
+		cout << ">>>>>使用串口唤醒，跳过可选的麦克风阵列 HID" << endl;
+	}
+
+	/* PCM 采样格式：16 bit、小端。 */
+	snd_pcm_format_t format = AudioFormat;
+	if ((err = snd_pcm_open(&capture_handle, pcmDevice.c_str(), SND_PCM_STREAM_CAPTURE, 0)) < 0)
+	{
+		printf("无法打开音频设备: %s (%s)\n", pcmDevice.c_str(), snd_strerror(err));
+		return;
+	}
+	printf("音频接口打开成功: %s\n", pcmDevice.c_str());
+
+	if ((err = snd_pcm_hw_params_malloc(&hw_params)) < 0)
+	{
+		printf("无法分配硬件参数结构 (%s)\n", snd_strerror(err));
+		snd_pcm_close(capture_handle);
+		capture_handle = NULL;
+		return;
+	}
+
+	if ((err = snd_pcm_hw_params_any(capture_handle, hw_params)) < 0)
+	{
+		printf("无法初始化硬件参数结构 (%s)\n", snd_strerror(err));
+		snd_pcm_hw_params_free(hw_params);
+		snd_pcm_close(capture_handle);
+		hw_params = NULL;
+		capture_handle = NULL;
+		return;
+	}
+
+	if ((err = snd_pcm_hw_params_set_access(capture_handle, hw_params,
+											SND_PCM_ACCESS_RW_INTERLEAVED)) < 0)
+	{
+		printf("无法设置访问类型 (%s)\n", snd_strerror(err));
+		snd_pcm_hw_params_free(hw_params);
+		snd_pcm_close(capture_handle);
+		hw_params = NULL;
+		capture_handle = NULL;
+		return;
+	}
+
+	if ((err = snd_pcm_hw_params_set_format(capture_handle, hw_params, format)) < 0)
+	{
+		printf("无法设置格式 (%s)\n", snd_strerror(err));
+		snd_pcm_hw_params_free(hw_params);
+		snd_pcm_close(capture_handle);
+		hw_params = NULL;
+		capture_handle = NULL;
+		return;
+	}
+
+	unsigned int actual_rate = rate;
+	if ((err = snd_pcm_hw_params_set_rate_near(capture_handle, hw_params,
+											   &actual_rate, 0)) < 0)
+	{
+		printf("无法设置采样率 (%s)\n", snd_strerror(err));
+		snd_pcm_hw_params_free(hw_params);
+		snd_pcm_close(capture_handle);
+		hw_params = NULL;
+		capture_handle = NULL;
+		return;
+	}
+	if (actual_rate != AUDIO_RATE_SET)
+	{
+		printf("音频设备不支持 %u Hz，实际设置为 %u Hz\n",
+			   AUDIO_RATE_SET, actual_rate);
+		snd_pcm_hw_params_free(hw_params);
+		snd_pcm_close(capture_handle);
+		hw_params = NULL;
+		capture_handle = NULL;
+		return;
+	}
+
+	if ((err = snd_pcm_hw_params_set_channels(capture_handle, hw_params,
+											  AUDIO_CHANNEL_SET)) < 0)
+	{
+		printf("无法设置声道数 (%s)\n", snd_strerror(err));
+		snd_pcm_hw_params_free(hw_params);
+		snd_pcm_close(capture_handle);
+		hw_params = NULL;
+		capture_handle = NULL;
+		return;
+	}
+
+	if ((err = snd_pcm_hw_params(capture_handle, hw_params)) < 0)
+	{
+		printf("无法向驱动程序设置参数 (%s)\n", snd_strerror(err));
+		snd_pcm_hw_params_free(hw_params);
+		snd_pcm_close(capture_handle);
+		hw_params = NULL;
+		capture_handle = NULL;
+		return;
+	}
+	snd_pcm_hw_params_free(hw_params);
+	hw_params = NULL;
+
+	if ((err = snd_pcm_prepare(capture_handle)) < 0)
+	{
+		printf("无法使用音频接口 (%s)\n", snd_strerror(err));
+		snd_pcm_close(capture_handle);
+		capture_handle = NULL;
+		return;
+	}
+
+	const int frame_byte = snd_pcm_format_width(format) / 8;
+	const int audio_bytes = buffer_frames * frame_byte * AUDIO_CHANNEL_SET;
+	buffer1 = (char *)malloc(audio_bytes);
+	if (buffer1 == NULL)
+	{
+		printf("无法分配录音缓冲区。\n");
+		snd_pcm_close(capture_handle);
+		capture_handle = NULL;
+		return;
+	}
+
+	printf("音频参数设置成功：%u Hz, %d bit, %d 声道\n",
+		   actual_rate, snd_pcm_format_width(format), AUDIO_CHANNEL_SET);
+	printf("开始采集数据...\n");
+	cout << ">>>>>请使用唤醒词唤醒" << endl;
 
 	while (ros::ok())
 	{
 		static unsigned char buff[1024];
-		memset(buff, '\0', 1024);
-		int recLen = 0;
-
-		while ((recLen = _serial.read(buff, _serial.available())) > 0)
+		while (_serial.available() > 0)
 		{
+			const size_t bytes_to_read = std::min(_serial.available(), sizeof(buff));
+			const size_t recLen = _serial.read(buff, bytes_to_read);
+			if (recLen == 0)
+				break;
 			uart_rec((const unsigned char *)buff, recLen);
 		}
 
-		usleep(20000); // 休眠20ms，释放系统性能，防止占用过高
+		err = snd_pcm_readi(capture_handle, buffer1, buffer_frames);
+		if (err != buffer_frames)
+		{
+			printf("从音频接口读取失败 (%s)\n", snd_strerror(err));
+			break;
+		}
+
+		Buffer *buffer = Buffer::alloc(audio_bytes);
+		memcpy(buffer->data(), buffer1, audio_bytes);
+		IAIUIMessage *writeMsg = IAIUIMessage::create(
+			AIUIConstant::CMD_WRITE, 0, 0,
+			"data_type=audio,sample_rate=16000", buffer);
+		if (NULL != globalAgent)
+		{
+			globalAgent->sendMessage(writeMsg);
+		}
+		else
+		{
+			cout << ">>>>>globalAgent未创建" << endl;
+		}
+		writeMsg->destroy();
 	}
-	printf("收到 ROS 退出请求，停止监听。\n");
+
+	printf("停止采集。\n");
+	free(buffer1);
+	buffer1 = NULL;
 	_serial.close();
 	AIUITester::stop();
 	AIUITester::destory();
+	snd_pcm_close(capture_handle);
+	capture_handle = NULL;
+	AIUISetting::setAIUIDir(TEST_ROOT_DIR);
+	AIUISetting::initLogger(LOG_DIR);
 }
-// ================================================================

@@ -57,6 +57,8 @@ private:
 	TestListener listener;
 	AudioRecorder *audioRecorder; //与录音相关的
 	AudioPlayer *audioPlayer;	  //与音频播放相关
+	std::string pcmDevice;
+	bool hidWakeupEnabled;
 public:
 	AIUITester();
 	~AIUITester();
@@ -88,6 +90,8 @@ public:
 	void readCmd();
 	void test();
 	void bind(TEST_CALLBACK callback);
+	void setPcmDevice(const std::string &device);
+	void setHidWakeupEnabled(bool enabled);
 };
 void gTTS(string text);
 #endif /* AIUIAGENTTESTER_H_ */

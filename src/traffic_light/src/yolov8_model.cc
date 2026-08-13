@@ -42,16 +42,17 @@ rknn_context *YoloV8Model::get_pctx()
     return &app_ctx_.rknn_ctx;
 }
 
-cv::Mat YoloV8Model::infer(const cv::Mat &bgr_frame)
+YoloV8Result YoloV8Model::infer(const cv::Mat &bgr_frame)
 {
-    cv::Mat output = bgr_frame.clone();
-    if (output.empty())
+    YoloV8Result output;
+    output.image = bgr_frame.clone();
+    if (output.image.empty())
     {
         return output;
     }
 
     cv::Mat rgb;
-    cv::cvtColor(output, rgb, cv::COLOR_BGR2RGB);
+    cv::cvtColor(output.image, rgb, cv::COLOR_BGR2RGB);
 
     image_buffer_t img;
     memset(&img, 0, sizeof(image_buffer_t));
@@ -72,22 +73,28 @@ cv::Mat YoloV8Model::infer(const cv::Mat &bgr_frame)
     for (int i = 0; i < results.count; i++)
     {
         const object_detect_result &det = results.results[i];
-        cv::rectangle(output,
+        cv::rectangle(output.image,
                       cv::Point(det.box.left, det.box.top),
                       cv::Point(det.box.right, det.box.bottom),
                       cv::Scalar(0, 255, 0), 2);
 
         char text[OBJ_NAME_MAX_SIZE];
+        std::string label;
         if (det.cls_id >= 0 && det.cls_id < kTrafficLightLabelCount)
         {
+            label = kTrafficLightLabels[det.cls_id];
             snprintf(text, sizeof(text), "%s@%.3f",
-                     kTrafficLightLabels[det.cls_id], det.prop);
+                     label.c_str(), det.prop);
         }
         else
         {
+            label = cv::format("class_%d", det.cls_id);
             snprintf(text, sizeof(text), "class_%d@%.3f", det.cls_id, det.prop);
         }
-        cv::putText(output, text, cv::Point(det.box.left, std::max(0, det.box.top - 4)),
+        output.detections.push_back({cv::Rect(cv::Point(det.box.left, det.box.top),
+                                              cv::Point(det.box.right, det.box.bottom)),
+                                     det.prop, det.cls_id, label});
+        cv::putText(output.image, text, cv::Point(det.box.left, std::max(0, det.box.top - 4)),
                     cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1);
     }
 

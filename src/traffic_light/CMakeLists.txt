@@ -8,7 +8,11 @@ project(traffic_light)
 # # if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 # # is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
+  cv_bridge
+  roscpp
+  roslib
   rospy
+  sensor_msgs
 )
 
 # # System dependencies are found with CMake's conventions
@@ -111,7 +115,7 @@ set(RGA_LIBRARY ${RGA_ROOT}/libs/librga.a)
 # # CATKIN_DEPENDS: catkin_packages dependent projects also need
 # # DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
-
+  CATKIN_DEPENDS cv_bridge roscpp roslib rospy sensor_msgs std_msgs
   # INCLUDE_DIRS include
   # LIBRARIES traffic_light
   # CATKIN_DEPENDS rospy
@@ -168,6 +172,26 @@ target_link_libraries(traffic_light_demo
 )
 
 target_compile_definitions(traffic_light_demo PRIVATE DISABLE_RGA)
+
+add_executable(traffic_light_ros
+  src/traffic_light_ros.cpp
+  src/yolov8_model.cc
+  src/yolov8.cc
+  src/postprocess.cc
+  ${RKNN_UTILS_ROOT}/image_utils.c
+  ${RKNN_UTILS_ROOT}/file_utils.c
+)
+target_link_libraries(traffic_light_ros
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBS}
+  ${RKNN_LIBRARY}
+  ${RGA_LIBRARY}
+  pthread
+  dl
+  m
+)
+target_compile_definitions(traffic_light_ros PRIVATE DISABLE_RGA)
+
 add_compile_definitions(DISABLE_LIBJPEG)
 
 # ############

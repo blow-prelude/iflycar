@@ -17,7 +17,7 @@ static const int kCameraHeight = 480;
 
 int main()
 {
-    rknnPool<YoloV8Model, cv::Mat, cv::Mat> pool(kModelPath, kThreadCount);
+    rknnPool<YoloV8Model, cv::Mat, YoloV8Result> pool(kModelPath, kThreadCount);
     if (pool.init() != 0)
     {
         std::cerr << "rknnPool init failed" << std::endl;
@@ -99,12 +99,12 @@ int main()
 
         if (frames >= kThreadCount)
         {
-            cv::Mat result;
+            YoloV8Result result;
             if (pool.get(result) != 0)
             {
                 break;
             }
-            show_result(result);
+            show_result(result.image);
         }
 
         if (cv::waitKey(1) == 'q')
@@ -116,12 +116,12 @@ int main()
 
     while (!stop)
     {
-        cv::Mat result;
+        YoloV8Result result;
         if (pool.get(result) != 0)
         {
             break;
         }
-        show_result(result);
+        show_result(result.image);
         if (cv::waitKey(1) == 'q')
         {
             break;

@@ -5,7 +5,7 @@
 
 // 导航点宏定义
 // #define goto_B sendPos(-1.56, -0.5, 3.14)
-#define goto_D sendPos(0.2, -3.0, -1.57)
+#define goto_D sendPos(0.2, -3.2, -1.57)
 
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseAction;
 
@@ -631,7 +631,7 @@ void OURSWITCH::GotoA()
 }
 
 /// =========================================================================
-// 版本二：物品领取区交接 (持续旋转极限测试版)
+// 物品领取区交接 (快速转动 + 静止扫码)
 // =========================================================================
 void OURSWITCH::GotoB()
 {
@@ -652,8 +652,11 @@ void OURSWITCH::GotoB()
     int scan_done = 0;
     bool start_qr_scan_sent = false;
 
-    const double spin_speed = 0.30;
-    const double spin_duration = 2.0 * M_PI / spin_speed + 1.0;
+    const int view_count = 6;
+    const double turn_speed = 1.0;
+    const double turn_duration = (2.0 * M_PI / view_count) / turn_speed;
+    const double settle_duration = 0.4;
+    const double scan_duration = 1.0;
     const double nav_timeout = 15.0;
 
     for (int i = 0; i < (int)qr_points.size() && ros::ok(); ++i)
@@ -704,30 +707,54 @@ void OURSWITCH::GotoB()
             break;
         }
 
-        ROS_INFO("Rotating one circle at QR point %d", i + 1);
-
-        geometry_msgs::Twist spin_cmd;
-        spin_cmd.angular.z = spin_speed;
-
-        ros::Time spin_start = ros::Time::now();
         ros::Rate rate(20);
-
-        while (ros::ok() && (ros::Time::now() - spin_start).toSec() < spin_duration)
+        for (int view = 0; view < view_count && ros::ok(); ++view)
         {
             nh_.getParam("qr_scan_done", scan_done);
             if (scan_done == 1)
             {
-                ROS_INFO("All 3 QR codes found while spinning at point %d", i + 1);
+                ROS_INFO("All 3 QR codes found at point %d", i + 1);
                 break;
             }
 
-            cmd_vel_pub__.publish(spin_cmd);
-            ros::spinOnce();
-            rate.sleep();
+            if (view > 0)
+            {
+                geometry_msgs::Twist turn_cmd;
+                turn_cmd.angular.z = turn_speed;
+                ros::Time turn_start = ros::Time::now();
+
+                while (ros::ok() &&
+                       (ros::Time::now() - turn_start).toSec() < turn_duration)
+                {
+                    cmd_vel_pub__.publish(turn_cmd);
+                    ros::spinOnce();
+                    rate.sleep();
+                }
+            }
+
+            cmd_vel_pub__.publish(stop_cmd);
+            ros::Duration(settle_duration).sleep();
+
+            ROS_INFO("QR point %d, static view %d/%d",
+                     i + 1, view + 1, view_count);
+
+            ros::Time scan_start = ros::Time::now();
+            while (ros::ok() &&
+                   (ros::Time::now() - scan_start).toSec() < scan_duration)
+            {
+                nh_.getParam("qr_scan_done", scan_done);
+                if (scan_done == 1)
+                    break;
+
+                ros::spinOnce();
+                rate.sleep();
+            }
+
+            if (scan_done == 1)
+                break;
         }
 
         cmd_vel_pub__.publish(stop_cmd);
-        ros::Duration(0.3).sleep();
 
         nh_.getParam("qr_scan_done", scan_done);
         if (scan_done == 1)
@@ -736,7 +763,7 @@ void OURSWITCH::GotoB()
             break;
         }
 
-        ROS_WARN("QR codes not complete after one circle at point %d, go next point", i + 1);
+        ROS_WARN("QR codes not complete after all static views at point %d, go next point", i + 1);
     }
 
     nh_.getParam("qr_scan_done", scan_done);
@@ -750,23 +777,40 @@ void OURSWITCH::GotoB()
 
     if (scan_done == 0)
     {
-        ROS_WARN("QR codes still incomplete after all observation points. Starting fallback continuous spin.");
+        ROS_WARN("QR codes still incomplete after all observation points. Starting fallback stop-and-look search.");
 
-        geometry_msgs::Twist spin_cmd;
-        spin_cmd.angular.z = 0.25;
         ros::Rate rate(20);
 
         while (ros::ok())
         {
-            nh_.getParam("qr_scan_done", scan_done);
-            if (scan_done == 1)
-            {
-                break;
-            }
+            geometry_msgs::Twist stop_cmd;
+            cmd_vel_pub__.publish(stop_cmd);
+            ros::Duration(settle_duration).sleep();
 
-            cmd_vel_pub__.publish(spin_cmd);
-            ros::spinOnce();
-            rate.sleep();
+            ros::Time scan_start = ros::Time::now();
+            while (ros::ok() &&
+                   (ros::Time::now() - scan_start).toSec() < scan_duration)
+            {
+                nh_.getParam("qr_scan_done", scan_done);
+                if (scan_done == 1)
+                    break;
+
+                ros::spinOnce();
+                rate.sleep();
+            }
+            if (scan_done == 1)
+                break;
+
+            geometry_msgs::Twist turn_cmd;
+            turn_cmd.angular.z = turn_speed;
+            ros::Time turn_start = ros::Time::now();
+            while (ros::ok() &&
+                   (ros::Time::now() - turn_start).toSec() < turn_duration)
+            {
+                cmd_vel_pub__.publish(turn_cmd);
+                ros::spinOnce();
+                rate.sleep();
+            }
         }
 
         geometry_msgs::Twist stop_cmd;
