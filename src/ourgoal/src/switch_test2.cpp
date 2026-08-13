@@ -646,8 +646,9 @@ void OURSWITCH::GotoB()
 
     std::vector<Pose> qr_points = {
         {-1.56, -0.50, 3.14},
-        {-1.56, -0.70, 3.14},
-        {-1.56, -0.30, 3.14}};
+        {-1.56, -0.70, -1.57},
+        {-1.56, -0.30, 1.57},
+        {-1.56, -0.50, 0}};
 
     int scan_done = 0;
     bool start_qr_scan_sent = false;
@@ -790,81 +791,6 @@ void OURSWITCH::GotoB()
 }
 
 // =========================================================================
-// 版本一：物品领取区交接 (转停转停防拖影版)
-// =========================================================================
-// void OURSWITCH::GotoB()
-// {
-//     ROS_INFO("Entering GotoB state: Navigating to Point B");
-
-//     goto_B;
-//     while (!(ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED) && ros::ok())
-//     {
-//         ros::spinOnce();
-//     }
-//     ROS_INFO("Arrived at Point B!");
-
-//     // 🚑 到了 B 点必须第一时间通知 AI 开启摄像头或开始结算！
-//     nh_.setParam("start_qr_scan", 1);
-
-//     // ================= 核心战术：检查是否在路上已经扫齐了 =================
-//     int scan_done = 0;
-//     nh_.getParam("qr_scan_done", scan_done);
-
-//     if (scan_done == 1)
-//     {
-//         ROS_INFO("🏆 PERFECT! All 3 QR codes were already scanned during GotoA!");
-//     }
-//     else
-//     {
-//         ROS_WARN("⚠️ Not all QR codes found yet. Starting [Stop-and-Go] search...");
-
-//         geometry_msgs::Twist spin_cmd;
-//         int tick = 0;
-//         ros::Rate r(10); // 10Hz，每周期 0.1 秒
-
-//         // 走走停停策略寻找剩余的二维码
-//         while (scan_done == 0 && ros::ok())
-//         {
-//             tick++;
-//             // 周期为4秒
-//             if (tick % 40 < 20)
-//             {
-//                 spin_cmd.angular.z = 0.5; // 转动
-//             }
-//             else
-//             {
-//                 spin_cmd.angular.z = 0.0; // 刹车，给摄像头留出清晰拍照时间
-//             }
-
-//             cmd_vel_pub__.publish(spin_cmd);
-
-//             nh_.getParam("qr_scan_done", scan_done);
-//             ros::spinOnce();
-//             r.sleep();
-//         }
-
-//         // 扫齐后彻底刹车
-//         spin_cmd.angular.z = 0.0;
-//         cmd_vel_pub__.publish(spin_cmd);
-//         ROS_INFO("3 QR Codes found! Car stopped.");
-//     }
-
-//     // ================= 等待 AI 播报完毕 =================
-//     ROS_INFO("Waiting for AI.py to finish LLM matching and Broadcasting...");
-//     int task1_done = 0;
-//     ros::Rate wait_rate(10);
-//     while (task1_done == 0 && ros::ok())
-//     {
-//         nh_.getParam("task1_all_done", task1_done);
-//         ros::spinOnce();
-//         wait_rate.sleep();
-//     }
-
-//     ROS_INFO("AI.py broadcast completed and self-terminated to save CPU.");
-//     current_state = XingHuoAI_;
-// }
-
-// =========================================================================
 // 读取统一规格的参数字典
 // =========================================================================
 void OURSWITCH::XingHuoAI()
@@ -893,37 +819,1132 @@ void OURSWITCH::XingHuoAI()
 // =========================================================================
 // 抵达实体与仿真观测点 (包含播报2)
 // =========================================================================
+
+// void OURSWITCH::GotoC(int target_num)
+// {
+//     // 使用现有的 distance_qian_x 调整小车与前方目标之间的距离。
+//     auto adjustFrontDistance = [this]() -> bool
+//     {
+//         const double target_distance = 0.20;
+//         const double distance_tolerance = 0.02;
+//         const double stable_duration = 0.40;
+//         const double adjustment_timeout = 10.0;
+//         const double maximum_linear_speed = 0.15;
+//         const double maximum_angular_speed = 0.40;
+
+//         PID front_pid = {};
+//         front_pid.kp =
+//             nh_.param("warehouse_front_kp", Kp_dist);
+//         front_pid.ki =
+//             nh_.param("warehouse_front_ki", 0.0);
+//         front_pid.kd =
+//             nh_.param("warehouse_front_kd", 0.0);
+
+//         // 清除构造函数中的默认值，必须等待 /ultra 回调提供新数据。
+//         distance_qian_x =
+//             std::numeric_limits<double>::quiet_NaN();
+
+//         // 保持进入微调阶段时的车头方向。
+//         const double hold_yaw = yaw;
+
+//         ros::Time adjustment_start = ros::Time::now();
+//         ros::Time stable_start;
+//         ros::Rate pid_rate(20);
+
+//         bool adjustment_succeeded = false;
+
+//         ROS_INFO(
+//             "Starting distance_qian_x PID: "
+//             "target=%.3f tolerance=%.3f timeout=%.1f",
+//             target_distance,
+//             distance_tolerance,
+//             adjustment_timeout);
+
+//         while (ros::ok() &&
+//                (ros::Time::now() - adjustment_start).toSec() <
+//                    adjustment_timeout)
+//         {
+//             geometry_msgs::Twist pid_cmd;
+
+//             const double measured_distance =
+//                 distance_qian_x;
+
+//             // 等待 /ultra 提供有效的新数据。
+//             if (!std::isfinite(measured_distance) ||
+//                 measured_distance <= 0.02 ||
+//                 measured_distance > 5.0)
+//             {
+//                 stable_start = ros::Time(0);
+//                 cmd_vel_pub__.publish(pid_cmd);
+
+//                 ROS_WARN_THROTTLE(
+//                     1.0,
+//                     "Waiting for valid distance_qian_x");
+
+//                 pid_rate.sleep();
+//                 continue;
+//             }
+
+//             const double distance_error =
+//                 measured_distance - target_distance;
+
+//             if (std::fabs(distance_error) <=
+//                 distance_tolerance)
+//             {
+//                 // 距离已经满足要求，停止前后移动。
+//                 pid_cmd.linear.x = 0.0;
+
+//                 if (stable_start.isZero())
+//                 {
+//                     stable_start = ros::Time::now();
+//                 }
+
+//                 if ((ros::Time::now() -
+//                      stable_start)
+//                         .toSec() >=
+//                     stable_duration)
+//                 {
+//                     adjustment_succeeded = true;
+//                     cmd_vel_pub__.publish(pid_cmd);
+//                     break;
+//                 }
+//             }
+//             else
+//             {
+//                 stable_start = ros::Time(0);
+
+//                 // distance_qian_x > 0.2：向前移动。
+//                 // distance_qian_x < 0.2：向后移动。
+//                 pid_cmd.linear.x =
+//                     PID_Realize2(
+//                         &front_pid,
+//                         distance_error,
+//                         maximum_linear_speed,
+//                         -maximum_linear_speed,
+//                         0.5);
+//             }
+
+//             pid_cmd.linear.y = 0.0;
+
+//             // 保持进入 PID 阶段时的车头方向。
+//             const double yaw_error =
+//                 std::atan2(
+//                     std::sin(hold_yaw - yaw),
+//                     std::cos(hold_yaw - yaw));
+
+//             pid_cmd.angular.z =
+//                 Limit_Value(
+//                     Kp_yaw * yaw_error,
+//                     maximum_angular_speed,
+//                     -maximum_angular_speed);
+
+//             cmd_vel_pub__.publish(pid_cmd);
+
+//             ROS_INFO_THROTTLE(
+//                 0.5,
+//                 "Front PID: distance_qian_x=%.3f "
+//                 "error=%.3f linear=%.3f angular=%.3f",
+//                 measured_distance,
+//                 distance_error,
+//                 pid_cmd.linear.x,
+//                 pid_cmd.angular.z);
+
+//             pid_rate.sleep();
+//         }
+
+//         // 无论成功还是超时，都强制停车。
+//         geometry_msgs::Twist stop_cmd;
+
+//         for (int i = 0; i < 3; ++i)
+//         {
+//             cmd_vel_pub__.publish(stop_cmd);
+//             ros::Duration(0.05).sleep();
+//         }
+
+//         if (adjustment_succeeded)
+//         {
+//             ROS_INFO(
+//                 "distance_qian_x PID completed: "
+//                 "front distance is stable at %.2f m",
+//                 target_distance);
+//         }
+//         else
+//         {
+//             ROS_WARN(
+//                 "distance_qian_x PID timed out; "
+//                 "vehicle stopped");
+//         }
+
+//         return adjustment_succeeded;
+//     };
+
+//     std::string target_warehouse = "UNKNOWN";
+//     target_locked_ = false;
+
+//     if (target_num == 1)
+//     {
+//         ROS_INFO(
+//             "Entering GotoC1 state: "
+//             "Real Car Warehouse Matching");
+
+//         nh_.getParam(
+//             "real_class",
+//             target_warehouse);
+//     }
+//     else
+//     {
+//         ROS_INFO(
+//             "Entering GotoC2 state: "
+//             "Sim Car Warehouse Matching");
+
+//         nh_.getParam(
+//             "sim_class",
+//             target_warehouse);
+//     }
+
+//     nh_.setParam(
+//         "auto_park_target",
+//         target_warehouse);
+//     nh_.setParam(
+//         "start_auto_park",
+//         0);
+//     nh_.setParam(
+//         "auto_park_status",
+//         "IDLE");
+
+//     int target_class = -1;
+
+//     if (target_warehouse.find("食品") !=
+//         std::string::npos)
+//     {
+//         target_class = 0;
+//     }
+//     else if (
+//         target_warehouse.find("日用品") !=
+//             std::string::npos ||
+//         target_warehouse.find("用品") !=
+//             std::string::npos)
+//     {
+//         target_class = 1;
+//     }
+//     else if (
+//         target_warehouse.find("电子") !=
+//             std::string::npos ||
+//         target_warehouse.find("电") !=
+//             std::string::npos ||
+//         target_warehouse.find("生产") !=
+//             std::string::npos)
+//     {
+//         target_class = 2;
+//     }
+
+//     if (target_class < 0)
+//     {
+//         ROS_ERROR(
+//             "Unknown target warehouse: %s",
+//             target_warehouse.c_str());
+//     }
+
+//     struct Pose
+//     {
+//         double x;
+//         double y;
+//         double yaw;
+//     };
+
+//     std::vector<Pose> search_points = {
+//         {-1.3, -2.4, 1.57},
+//         {0.6, -2.3, 1.57},
+//         {2.0, -2.3, 1.57}};
+
+//     // 已取得有效目标坐标，不代表导航一定成功。
+//     bool target_found = false;
+
+//     // 只有该变量为 true 时才允许进行语音播报。
+//     bool ready_to_announce = false;
+
+//     double target_dx = 0.0;
+//     double target_dy = 0.0;
+//     double target_line_a = 0.0;
+
+//     for (int i = 0;
+//          i < static_cast<int>(search_points.size()) &&
+//          ros::ok();
+//          ++i)
+//     {
+//         ROS_DEBUG(
+//             "Navigating to observation point %d",
+//             i + 1);
+
+//         current_signal_class_ = -1;
+//         last_signal_class_time_ = ros::Time(0);
+//         last_signal_detection_time_ = ros::Time(0);
+
+//         sendPos(
+//             search_points[i].x,
+//             search_points[i].y,
+//             search_points[i].yaw);
+
+//         bool arrived =
+//             ac_.waitForResult(
+//                 ros::Duration(20.0));
+
+//         if (!arrived)
+//         {
+//             ROS_WARN(
+//                 "Point %d timeout, skip",
+//                 i + 1);
+
+//             ac_.cancelGoal();
+//             ac_.waitForResult(
+//                 ros::Duration(0.5));
+//             continue;
+//         }
+
+//         if (ac_.getState() !=
+//             actionlib::SimpleClientGoalState::SUCCEEDED)
+//         {
+//             ROS_WARN(
+//                 "Point %d unreachable, state=%s",
+//                 i + 1,
+//                 ac_.getState().toString().c_str());
+//             continue;
+//         }
+
+//         ROS_DEBUG(
+//             "Arrived point %d, "
+//             "starting stop-and-look signal search",
+//             i + 1);
+
+//         const int view_count = 6;
+//         const double turn_speed = 1.0;
+//         const double turn_duration =
+//             (2.0 * M_PI / view_count) /
+//             turn_speed;
+//         const double settle_duration = 0.4;
+//         const double recognition_duration = 1.0;
+
+//         bool leave_observation_point = false;
+//         ros::Rate rate(20);
+
+//         for (int view = 0;
+//              view < view_count && ros::ok();
+//              ++view)
+//         {
+//             if (view > 0)
+//             {
+//                 target_locked_ = true;
+
+//                 geometry_msgs::Twist turn_cmd;
+//                 turn_cmd.angular.z = turn_speed;
+
+//                 ros::Time turn_start =
+//                     ros::Time::now();
+
+//                 while (ros::ok() &&
+//                        (ros::Time::now() -
+//                         turn_start)
+//                                .toSec() <
+//                            turn_duration)
+//                 {
+//                     cmd_vel_pub__.publish(turn_cmd);
+//                     ros::spinOnce();
+//                     rate.sleep();
+//                 }
+//             }
+
+//             geometry_msgs::Twist stop_cmd;
+//             cmd_vel_pub__.publish(stop_cmd);
+//             ros::Duration(settle_duration).sleep();
+
+//             current_signal_class_ = -1;
+//             last_signal_class_time_ = ros::Time(0);
+//             last_signal_detection_time_ = ros::Time(0);
+//             target_locked_ = false;
+
+//             ROS_DEBUG(
+//                 "Observation point %d, "
+//                 "static view %d/%d",
+//                 i + 1,
+//                 view + 1,
+//                 view_count);
+
+//             ros::Time recognition_start =
+//                 ros::Time::now();
+
+//             while (ros::ok() &&
+//                    (ros::Time::now() -
+//                     recognition_start)
+//                            .toSec() <
+//                        recognition_duration)
+//             {
+//                 ros::spinOnce();
+
+//                 bool class_recent =
+//                     !last_signal_class_time_.isZero() &&
+//                     (ros::Time::now() -
+//                      last_signal_class_time_)
+//                             .toSec() <
+//                         1.0;
+
+//                 bool detection_recent =
+//                     !last_signal_detection_time_.isZero() &&
+//                     (ros::Time::now() -
+//                      last_signal_detection_time_)
+//                             .toSec() <
+//                         1.0;
+
+//                 if (class_recent &&
+//                     detection_recent &&
+//                     current_signal_class_ == target_class)
+//                 {
+//                     ROS_DEBUG(
+//                         "Target class matched. "
+//                         "class=%d center_x=%.1f",
+//                         current_signal_class_,
+//                         signal_center_x_);
+
+//                     geometry_msgs::Twist detection_stop_cmd;
+//                     cmd_vel_pub__.publish(
+//                         detection_stop_cmd);
+
+//                     ros::Duration(0.3).sleep();
+
+//                     bool frozen = false;
+//                     ros::Time freeze_start =
+//                         ros::Time::now();
+
+//                     while (ros::ok() &&
+//                            (ros::Time::now() -
+//                             freeze_start)
+//                                    .toSec() <
+//                                1.0)
+//                     {
+//                         ros::spinOnce();
+
+//                         bool class_ok =
+//                             !last_signal_class_time_.isZero() &&
+//                             (ros::Time::now() -
+//                              last_signal_class_time_)
+//                                     .toSec() <
+//                                 1.0;
+
+//                         bool detection_ok =
+//                             !last_signal_detection_time_.isZero() &&
+//                             (ros::Time::now() -
+//                              last_signal_detection_time_)
+//                                     .toSec() <
+//                                 1.0;
+
+//                         if (class_ok &&
+//                             detection_ok &&
+//                             current_signal_class_ ==
+//                                 target_class)
+//                         {
+//                             locked_signal_class_ =
+//                                 current_signal_class_;
+//                             locked_center_x_ =
+//                                 signal_center_x_;
+//                             locked_box_x_l_ =
+//                                 signal_box_x_l_;
+//                             locked_box_x_r_ =
+//                                 signal_box_x_r_;
+
+//                             target_locked_ = true;
+//                             frozen = true;
+
+//                             ROS_DEBUG(
+//                                 "Target locked after stop. "
+//                                 "class=%d center=%.1f "
+//                                 "left=%.1f right=%.1f",
+//                                 locked_signal_class_,
+//                                 locked_center_x_,
+//                                 locked_box_x_l_,
+//                                 locked_box_x_r_);
+//                             break;
+//                         }
+
+//                         ros::Duration(0.05).sleep();
+//                     }
+
+//                     if (!frozen)
+//                     {
+//                         ROS_WARN(
+//                             "Target matched, but no stable "
+//                             "post-stop detection found");
+//                         continue;
+//                     }
+
+//                     ourgoal::getLaserPoint srv;
+
+//                     srv.request.center_x =
+//                         std::max(
+//                             0,
+//                             std::min(
+//                                 639,
+//                                 static_cast<int>(
+//                                     std::round(
+//                                         locked_center_x_))));
+
+//                     srv.request.left_x =
+//                         std::max(
+//                             0,
+//                             std::min(
+//                                 639,
+//                                 static_cast<int>(
+//                                     std::round(
+//                                         locked_box_x_l_))));
+
+//                     srv.request.right_x =
+//                         std::max(
+//                             0,
+//                             std::min(
+//                                 639,
+//                                 static_cast<int>(
+//                                     std::round(
+//                                         locked_box_x_r_))));
+
+//                     srv.request.mode = false;
+
+//                     if (srv.request.left_x <
+//                             srv.request.right_x &&
+//                         vision_gettool_client_.call(srv))
+//                     {
+//                         target_dx =
+//                             (srv.response.dx_left +
+//                              srv.response.dx_right) /
+//                             2.0;
+
+//                         target_dy =
+//                             (srv.response.dy_left +
+//                              srv.response.dy_right) /
+//                             2.0;
+
+//                         target_line_a =
+//                             srv.response.line_a;
+
+//                         ROS_INFO(
+//                             "Signal metric center: "
+//                             "dx=%.3f dy=%.3f line_a=%.3f",
+//                             target_dx,
+//                             target_dy,
+//                             target_line_a);
+
+//                         nh_.setParam(
+//                             "signal_target_dx",
+//                             target_dx);
+//                         nh_.setParam(
+//                             "signal_target_dy",
+//                             target_dy);
+//                         nh_.setParam(
+//                             "signal_target_line_a",
+//                             target_line_a);
+
+//                         point_2d target_in_base;
+//                         target_in_base.x = target_dx;
+//                         target_in_base.y = target_dy;
+
+//                         double k = target_line_a;
+
+//                         double wall_tangent_yaw =
+//                             (k == 255)
+//                                 ? M_PI / 2.0
+//                                 : std::atan(k);
+
+//                         if (wall_tangent_yaw < 0.0)
+//                         {
+//                             wall_tangent_yaw += M_PI;
+//                         }
+
+//                         double approach_yaw_in_base =
+//                             wall_tangent_yaw -
+//                             M_PI / 2.0;
+
+//                         double car_x =
+//                             nh_.param("CarX", 0.0);
+//                         double car_y =
+//                             nh_.param("CarY", 0.0);
+//                         double car_yaw =
+//                             nh_.param("CarYaw", 0.0);
+
+//                         point_2d target_in_map =
+//                             rotate(
+//                                 target_in_base,
+//                                 car_yaw);
+
+//                         target_in_map =
+//                             translate(
+//                                 target_in_map,
+//                                 car_x,
+//                                 car_y);
+
+//                         double target_yaw =
+//                             approach_yaw_in_base +
+//                             car_yaw;
+
+//                         const double stop_distance = 0.30;
+
+//                         point_2d map_target;
+
+//                         map_target.x =
+//                             target_in_map.x -
+//                             stop_distance *
+//                                 std::cos(target_yaw);
+
+//                         map_target.y =
+//                             target_in_map.y -
+//                             stop_distance *
+//                                 std::sin(target_yaw);
+
+//                         const double original_goal_x =
+//                             map_target.x;
+//                         const double original_goal_y =
+//                             map_target.y;
+
+//                         const double min_goal_x = -1.9;
+//                         const double max_goal_x = 2.4;
+//                         const double min_goal_y = -2.9;
+//                         const double max_goal_y = -1.0;
+
+//                         if (map_target.x < min_goal_x)
+//                         {
+//                             map_target.x = min_goal_x;
+//                         }
+//                         else if (map_target.x > max_goal_x)
+//                         {
+//                             map_target.x = max_goal_x;
+//                         }
+
+//                         if (map_target.y < min_goal_y)
+//                         {
+//                             map_target.y = min_goal_y;
+//                         }
+//                         else if (map_target.y > max_goal_y)
+//                         {
+//                             map_target.y = max_goal_y;
+//                         }
+
+//                         const bool goal_clamped =
+//                             map_target.x != original_goal_x ||
+//                             map_target.y != original_goal_y;
+
+//                         const double face_target_dx =
+//                             target_in_map.x -
+//                             map_target.x;
+
+//                         const double face_target_dy =
+//                             target_in_map.y -
+//                             map_target.y;
+
+//                         const double actual_stop_distance =
+//                             std::hypot(
+//                                 face_target_dx,
+//                                 face_target_dy);
+
+//                         if (actual_stop_distance > 1e-6)
+//                         {
+//                             target_yaw =
+//                                 std::atan2(
+//                                     face_target_dy,
+//                                     face_target_dx);
+//                         }
+
+//                         ROS_INFO(
+//                             "Warehouse target in map: "
+//                             "x=%.3f y=%.3f",
+//                             target_in_map.x,
+//                             target_in_map.y);
+
+//                         if (goal_clamped)
+//                         {
+//                             ROS_WARN(
+//                                 "Parking goal clamped: "
+//                                 "(%.3f, %.3f) -> "
+//                                 "(%.3f, %.3f)",
+//                                 original_goal_x,
+//                                 original_goal_y,
+//                                 map_target.x,
+//                                 map_target.y);
+//                         }
+
+//                         ROS_INFO(
+//                             "Parking goal in map: "
+//                             "x=%.3f y=%.3f yaw=%.3f "
+//                             "distance_to_target=%.3f",
+//                             map_target.x,
+//                             map_target.y,
+//                             target_yaw,
+//                             actual_stop_distance);
+
+//                         // 已成功获得目标坐标。
+//                         target_found = true;
+
+//                         sendPos(
+//                             map_target.x,
+//                             map_target.y,
+//                             target_yaw);
+
+//                         bool park_finished =
+//                             ac_.waitForResult(
+//                                 ros::Duration(15.0));
+
+//                         actionlib::SimpleClientGoalState
+//                             park_state = ac_.getState();
+
+//                         if (park_finished &&
+//                             park_state ==
+//                                 actionlib::
+//                                     SimpleClientGoalState::
+//                                         SUCCEEDED)
+//                         {
+//                             ROS_INFO(
+//                                 "Arrived at warehouse "
+//                                 "navigation pose");
+
+//                             // 到达导航点以后，使用
+//                             // distance_qian_x 调整到 0.20 米。
+//                             bool front_adjusted =
+//                                 adjustFrontDistance();
+
+//                             if (front_adjusted)
+//                             {
+//                                 nh_.setParam(
+//                                     "auto_park_status",
+//                                     "DONE");
+
+//                                 ready_to_announce = true;
+//                             }
+//                             else
+//                             {
+//                                 nh_.setParam(
+//                                     "auto_park_status",
+//                                     "FAILED");
+
+//                                 ready_to_announce = false;
+
+//                                 ROS_WARN(
+//                                     "Reached warehouse pose, "
+//                                     "but distance_qian_x PID "
+//                                     "did not reach 0.20 m; "
+//                                     "skip announcement");
+//                             }
+//                         }
+//                         else
+//                         {
+//                             if (!park_finished)
+//                             {
+//                                 ac_.cancelGoal();
+//                                 ac_.waitForResult(
+//                                     ros::Duration(0.5));
+//                             }
+
+//                             ROS_WARN(
+//                                 "Warehouse target was found, "
+//                                 "but parking failed: "
+//                                 "finished=%s state=%s. "
+//                                 "Stop searching and continue.",
+//                                 park_finished
+//                                     ? "true"
+//                                     : "false",
+//                                 park_state
+//                                     .toString()
+//                                     .c_str());
+
+//                             nh_.setParam(
+//                                 "auto_park_status",
+//                                 "FAILED");
+
+//                             // 保留之前约定：
+//                             // 找到目标但导航无法到达时，
+//                             // 直接播报并进入下一阶段。
+//                             ready_to_announce = true;
+//                         }
+
+//                         target_locked_ = false;
+//                         leave_observation_point = true;
+//                         break;
+//                     }
+//                     else
+//                     {
+//                         ROS_WARN(
+//                             "Target class matched, but "
+//                             "/srv_getLaserPoint failed");
+
+//                         target_locked_ = false;
+//                     }
+//                 }
+
+//                 rate.sleep();
+//             }
+
+//             if (target_found ||
+//                 leave_observation_point)
+//             {
+//                 break;
+//             }
+//         }
+
+//         geometry_msgs::Twist final_stop_cmd;
+//         cmd_vel_pub__.publish(final_stop_cmd);
+
+//         if (target_found)
+//         {
+//             break;
+//         }
+
+//         ROS_WARN(
+//             "Target not found at point %d, go next",
+//             i + 1);
+//     }
+
+//     // move_base 成功时，只有距离 PID 完成后才播报。
+//     // move_base 无法到达时，按照之前要求直接播报。
+//     if (target_found &&
+//         ready_to_announce &&
+//         target_num == 1)
+//     {
+//         std::string item;
+//         std::string room;
+
+//         nh_.getParam("real_item", item);
+//         nh_.getParam("real_room", room);
+
+//         char tts_cmd[512];
+
+//         std::snprintf(
+//             tts_cmd,
+//             sizeof(tts_cmd),
+//             "espeak -v zh+f2 "
+//             "\"已将%s放入%s\" -s 130",
+//             item.c_str(),
+//             room.c_str());
+
+//         system(tts_cmd);
+//     }
+
+//     if (!target_found)
+//     {
+//         ROS_ERROR(
+//             "Failed to find target warehouse "
+//             "after all observation points");
+
+//         nh_.setParam(
+//             "auto_park_status",
+//             "FAILED");
+//     }
+
+//     current_state =
+//         (target_num == 1)
+//             ? GOTOC2_
+//             : Gazebo_;
+// }
+
 void OURSWITCH::GotoC(int target_num)
 {
+    auto publishStop = [this]()
+    {
+        geometry_msgs::Twist stop_cmd;
+
+        for (int i = 0; i < 3; ++i)
+        {
+            cmd_vel_pub__.publish(stop_cmd);
+            ros::WallDuration(0.05).sleep();
+        }
+    };
+
+    // 使用现有成员变量 distance_qian_x，将前方距离调整到 0.20 m。
+    //
+    // require_heading_check:
+    //   true  -> move_base 未成功到达，需要先检查当前朝向是否基本朝向目标。
+    //   false -> move_base 已成功到达目标姿态，不再额外检查。
+    auto adjustFrontDistance =
+        [this, &publishStop](
+            bool require_heading_check,
+            double target_map_yaw) -> bool
+    {
+        const double target_distance = 0.20;
+        const double distance_tolerance = 0.02;
+        const double minimum_valid_distance = 0.05;
+        const double maximum_valid_distance = 0.80;
+        const double maximum_linear_speed = 0.15;
+        const double maximum_angular_speed = 0.40;
+        const double adjustment_timeout = 10.0;
+        const double sample_timeout = 0.50;
+        const double maximum_heading_error = 20.0 * M_PI / 180.0;
+        const int required_stable_samples = 5;
+
+        if (require_heading_check)
+        {
+            double current_map_yaw = 0.0;
+
+            if (!nh_.getParam("CarYaw", current_map_yaw) ||
+                !std::isfinite(current_map_yaw))
+            {
+                ROS_WARN(
+                    "Cannot run distance PID after navigation failure: "
+                    "CarYaw is unavailable");
+
+                publishStop();
+                return false;
+            }
+
+            const double map_heading_error =
+                std::atan2(
+                    std::sin(target_map_yaw - current_map_yaw),
+                    std::cos(target_map_yaw - current_map_yaw));
+
+            if (std::fabs(map_heading_error) >
+                maximum_heading_error)
+            {
+                ROS_WARN(
+                    "Cannot run distance PID safely: "
+                    "heading error %.1f deg exceeds %.1f deg",
+                    map_heading_error * 180.0 / M_PI,
+                    maximum_heading_error * 180.0 / M_PI);
+
+                publishStop();
+                return false;
+            }
+        }
+
+        PID front_pid = {};
+
+        front_pid.kp =
+            nh_.param("warehouse_front_kp", Kp_dist);
+        front_pid.ki =
+            nh_.param("warehouse_front_ki", 0.0);
+        front_pid.kd =
+            nh_.param("warehouse_front_kd", 0.0);
+
+        // 使用 odom 中的当前 yaw 保持车头方向。
+        const double hold_yaw = yaw;
+
+        int stable_samples = 0;
+        bool adjustment_succeeded = false;
+
+        const ros::WallTime adjustment_start =
+            ros::WallTime::now();
+
+        ros::WallRate pid_rate(20.0);
+
+        ROS_INFO(
+            "Starting distance_qian_x PID: "
+            "target=%.3f valid_range=[%.2f, %.2f] "
+            "tolerance=%.3f timeout=%.1f",
+            target_distance,
+            minimum_valid_distance,
+            maximum_valid_distance,
+            distance_tolerance,
+            adjustment_timeout);
+
+        while (ros::ok() &&
+               (ros::WallTime::now() -
+                adjustment_start)
+                       .toSec() <
+                   adjustment_timeout)
+        {
+            // 清除旧值，确保本轮控制等待 /ultra 回调提供新数据。
+            distance_qian_x =
+                std::numeric_limits<double>::quiet_NaN();
+
+            const ros::WallTime sample_wait_start =
+                ros::WallTime::now();
+
+            while (ros::ok() &&
+                   !std::isfinite(distance_qian_x) &&
+                   (ros::WallTime::now() -
+                    sample_wait_start)
+                           .toSec() <
+                       sample_timeout)
+            {
+                // 主程序已经启动 AsyncSpinner，
+                // /ultra 回调会在后台更新 distance_qian_x。
+                ros::WallDuration(0.01).sleep();
+            }
+
+            const double measured_distance =
+                distance_qian_x;
+
+            geometry_msgs::Twist pid_cmd;
+
+            if (!std::isfinite(measured_distance))
+            {
+                stable_samples = 0;
+                cmd_vel_pub__.publish(pid_cmd);
+
+                ROS_WARN_THROTTLE(
+                    1.0,
+                    "No fresh distance_qian_x received");
+
+                pid_rate.sleep();
+                continue;
+            }
+
+            if (measured_distance <
+                    minimum_valid_distance ||
+                measured_distance >
+                    maximum_valid_distance)
+            {
+                stable_samples = 0;
+                cmd_vel_pub__.publish(pid_cmd);
+
+                ROS_WARN_THROTTLE(
+                    1.0,
+                    "Reject unsafe distance_qian_x=%.3f; "
+                    "valid range is [%.2f, %.2f]",
+                    measured_distance,
+                    minimum_valid_distance,
+                    maximum_valid_distance);
+
+                pid_rate.sleep();
+                continue;
+            }
+
+            const double distance_error =
+                measured_distance -
+                target_distance;
+
+            if (std::fabs(distance_error) <=
+                distance_tolerance)
+            {
+                pid_cmd.linear.x = 0.0;
+                ++stable_samples;
+            }
+            else
+            {
+                stable_samples = 0;
+
+                // 距离大于 0.20 m 时向前；
+                // 距离小于 0.20 m 时向后。
+                pid_cmd.linear.x =
+                    PID_Realize2(
+                        &front_pid,
+                        distance_error,
+                        maximum_linear_speed,
+                        -maximum_linear_speed,
+                        0.5);
+            }
+
+            pid_cmd.linear.y = 0.0;
+
+            const double yaw_error =
+                std::atan2(
+                    std::sin(hold_yaw - yaw),
+                    std::cos(hold_yaw - yaw));
+
+            pid_cmd.angular.z =
+                Limit_Value(
+                    Kp_yaw * yaw_error,
+                    maximum_angular_speed,
+                    -maximum_angular_speed);
+
+            cmd_vel_pub__.publish(pid_cmd);
+
+            ROS_INFO(
+                "Front PID: distance_qian_x=%.3f "
+                "error=%.3f linear=%.3f angular=%.3f "
+                "stable=%d/%d",
+                measured_distance,
+                distance_error,
+                pid_cmd.linear.x,
+                pid_cmd.angular.z,
+                stable_samples,
+                required_stable_samples);
+
+            if (stable_samples >=
+                required_stable_samples)
+            {
+                adjustment_succeeded = true;
+                break;
+            }
+
+            pid_rate.sleep();
+        }
+
+        publishStop();
+
+        if (adjustment_succeeded)
+        {
+            ROS_INFO(
+                "distance_qian_x PID completed: "
+                "front distance is stable at %.2f m",
+                target_distance);
+        }
+        else
+        {
+            ROS_WARN(
+                "distance_qian_x PID failed or timed out; "
+                "vehicle stopped");
+        }
+
+        return adjustment_succeeded;
+    };
+
     std::string target_warehouse = "UNKNOWN";
     target_locked_ = false;
 
     if (target_num == 1)
     {
-        ROS_INFO("Entering GotoC1 state: Real Car Warehouse Matching");
-        nh_.getParam("real_class", target_warehouse);
+        ROS_INFO(
+            "Entering GotoC1 state: "
+            "Real Car Warehouse Matching");
+
+        nh_.getParam(
+            "real_class",
+            target_warehouse);
     }
     else
     {
-        ROS_INFO("Entering GotoC2 state: Sim Car Warehouse Matching");
-        nh_.getParam("sim_class", target_warehouse);
+        ROS_INFO(
+            "Entering GotoC2 state: "
+            "Sim Car Warehouse Matching");
+
+        nh_.getParam(
+            "sim_class",
+            target_warehouse);
     }
 
-    nh_.setParam("auto_park_target", target_warehouse);
-    nh_.setParam("start_auto_park", 0);
-    nh_.setParam("auto_park_status", "IDLE");
+    nh_.setParam(
+        "auto_park_target",
+        target_warehouse);
+    nh_.setParam(
+        "start_auto_park",
+        0);
+    nh_.setParam(
+        "auto_park_status",
+        "IDLE");
 
     int target_class = -1;
-    if (target_warehouse.find("食品") != std::string::npos)
+
+    if (target_warehouse.find("食品") !=
+        std::string::npos)
+    {
         target_class = 0;
-    else if (target_warehouse.find("日用品") != std::string::npos || target_warehouse.find("用品") != std::string::npos)
+    }
+    else if (
+        target_warehouse.find("日用品") !=
+            std::string::npos ||
+        target_warehouse.find("用品") !=
+            std::string::npos)
+    {
         target_class = 1;
-    else if (target_warehouse.find("电子") != std::string::npos || target_warehouse.find("电") != std::string::npos || target_warehouse.find("生产") != std::string::npos)
+    }
+    else if (
+        target_warehouse.find("电子") !=
+            std::string::npos ||
+        target_warehouse.find("电") !=
+            std::string::npos ||
+        target_warehouse.find("生产") !=
+            std::string::npos)
+    {
         target_class = 2;
+    }
 
     if (target_class < 0)
     {
-        ROS_ERROR("Unknown target warehouse: %s", target_warehouse.c_str());
+        ROS_ERROR(
+            "Unknown target warehouse: %s",
+            target_warehouse.c_str());
     }
 
     struct Pose
@@ -938,57 +1959,100 @@ void OURSWITCH::GotoC(int target_num)
         {0.6, -2.3, 1.57},
         {2.0, -2.3, 1.57}};
 
+    // 已获得目标物的有效坐标。
     bool target_found = false;
+
+    // 只有该变量为 true，实车阶段才进行播报。
+    bool ready_to_announce = false;
+
     double target_dx = 0.0;
     double target_dy = 0.0;
     double target_line_a = 0.0;
 
-    // 遍历每个观测点
-    for (int i = 0; i < (int)search_points.size() && ros::ok(); ++i)
+    for (int i = 0;
+         i < static_cast<int>(search_points.size()) &&
+         ros::ok();
+         ++i)
     {
-        ROS_DEBUG("Navigating to observation point %d", i + 1);
+        ROS_DEBUG(
+            "Navigating to observation point %d",
+            i + 1);
 
         current_signal_class_ = -1;
         last_signal_class_time_ = ros::Time(0);
         last_signal_detection_time_ = ros::Time(0);
 
-        sendPos(search_points[i].x, search_points[i].y, search_points[i].yaw);
+        sendPos(
+            search_points[i].x,
+            search_points[i].y,
+            search_points[i].yaw);
 
-        bool arrived = ac_.waitForResult(ros::Duration(20.0)); //  一个坐标点最多等20s
+        bool arrived =
+            ac_.waitForResult(
+                ros::Duration(20.0));
+
         if (!arrived)
         {
-            ROS_WARN("Point %d timeout, skip", i + 1);
+            ROS_WARN(
+                "Point %d timeout, skip",
+                i + 1);
+
             ac_.cancelGoal();
+            ac_.waitForResult(
+                ros::Duration(0.5));
+
+            publishStop();
             continue;
         }
 
-        if (ac_.getState() != actionlib::SimpleClientGoalState::SUCCEEDED)
+        if (ac_.getState() !=
+            actionlib::SimpleClientGoalState::SUCCEEDED)
         {
-            ROS_WARN("Point %d unreachable, state=%s", i + 1, ac_.getState().toString().c_str());
+            ROS_WARN(
+                "Point %d unreachable, state=%s",
+                i + 1,
+                ac_.getState().toString().c_str());
+
+            publishStop();
             continue;
         }
 
-        ROS_DEBUG("Arrived point %d, starting stop-and-look signal search", i + 1);
+        ROS_DEBUG(
+            "Arrived point %d, "
+            "starting stop-and-look signal search",
+            i + 1);
 
         const int view_count = 6;
         const double turn_speed = 1.0;
-        const double turn_duration = (2.0 * M_PI / view_count) / turn_speed;
+        const double turn_duration =
+            (2.0 * M_PI / view_count) /
+            turn_speed;
         const double settle_duration = 0.4;
         const double recognition_duration = 1.0;
+
         bool leave_observation_point = false;
         ros::Rate rate(20);
 
-        for (int view = 0; view < view_count && ros::ok(); ++view)
+        for (int view = 0;
+             view < view_count && ros::ok();
+             ++view)
         {
             if (view > 0)
             {
-                target_locked_ = true; // 忽略转动过程中的模糊识别结果
+                // 忽略旋转过程中的识别结果。
+                target_locked_ = true;
 
                 geometry_msgs::Twist turn_cmd;
                 turn_cmd.angular.z = turn_speed;
-                ros::Time turn_start = ros::Time::now();
 
-                while (ros::ok() && (ros::Time::now() - turn_start).toSec() < turn_duration)
+                ros::Time turn_start =
+                    ros::Time::now();
+
+                while (ros::ok() &&
+                       (ros::Time::now() -
+                        turn_start)
+                               .toSec() <
+                           turn_duration)
                 {
                     cmd_vel_pub__.publish(turn_cmd);
                     ros::spinOnce();
@@ -996,71 +2060,112 @@ void OURSWITCH::GotoC(int target_num)
                 }
             }
 
-            geometry_msgs::Twist stop_cmd;
-            cmd_vel_pub__.publish(stop_cmd);
+            publishStop();
             ros::Duration(settle_duration).sleep();
 
-            // 只接受小车完全停稳后的新识别结果
+            // 只使用停车以后产生的新识别结果。
             current_signal_class_ = -1;
             last_signal_class_time_ = ros::Time(0);
             last_signal_detection_time_ = ros::Time(0);
             target_locked_ = false;
 
-            ROS_DEBUG("Observation point %d, static view %d/%d",
-                      i + 1, view + 1, view_count);
+            ROS_DEBUG(
+                "Observation point %d, "
+                "static view %d/%d",
+                i + 1,
+                view + 1,
+                view_count);
 
-            ros::Time recognition_start = ros::Time::now();
+            ros::Time recognition_start =
+                ros::Time::now();
+
             while (ros::ok() &&
-                   (ros::Time::now() - recognition_start).toSec() < recognition_duration)
+                   (ros::Time::now() -
+                    recognition_start)
+                           .toSec() <
+                       recognition_duration)
             {
                 ros::spinOnce();
 
                 bool class_recent =
                     !last_signal_class_time_.isZero() &&
-                    (ros::Time::now() - last_signal_class_time_).toSec() < 1.0;
+                    (ros::Time::now() -
+                     last_signal_class_time_)
+                            .toSec() <
+                        1.0;
 
                 bool detection_recent =
                     !last_signal_detection_time_.isZero() &&
-                    (ros::Time::now() - last_signal_detection_time_).toSec() < 1.0;
+                    (ros::Time::now() -
+                     last_signal_detection_time_)
+                            .toSec() <
+                        1.0;
 
-                if (class_recent && detection_recent && current_signal_class_ == target_class)
+                if (class_recent &&
+                    detection_recent &&
+                    current_signal_class_ ==
+                        target_class)
                 {
-                    ROS_DEBUG("Target class matched. class=%d center_x=%.1f",
-                              current_signal_class_, signal_center_x_);
+                    ROS_DEBUG(
+                        "Target class matched. "
+                        "class=%d center_x=%.1f",
+                        current_signal_class_,
+                        signal_center_x_);
 
-                    geometry_msgs::Twist stop_cmd;
-                    cmd_vel_pub__.publish(stop_cmd);
-
+                    publishStop();
                     ros::Duration(0.3).sleep();
 
-                    // 停车后重新取一帧最新识别结果，并锁定
                     bool frozen = false;
-                    ros::Time freeze_start = ros::Time::now();
+                    ros::Time freeze_start =
+                        ros::Time::now();
 
-                    while (ros::ok() && (ros::Time::now() - freeze_start).toSec() < 1.0)
+                    while (ros::ok() &&
+                           (ros::Time::now() -
+                            freeze_start)
+                                   .toSec() <
+                               1.0)
                     {
                         ros::spinOnce();
 
                         bool class_ok =
                             !last_signal_class_time_.isZero() &&
-                            (ros::Time::now() - last_signal_class_time_).toSec() < 1.0;
+                            (ros::Time::now() -
+                             last_signal_class_time_)
+                                    .toSec() <
+                                1.0;
 
-                        bool det_ok =
+                        bool detection_ok =
                             !last_signal_detection_time_.isZero() &&
-                            (ros::Time::now() - last_signal_detection_time_).toSec() < 1.0;
+                            (ros::Time::now() -
+                             last_signal_detection_time_)
+                                    .toSec() <
+                                1.0;
 
-                        if (class_ok && det_ok && current_signal_class_ == target_class)
+                        if (class_ok &&
+                            detection_ok &&
+                            current_signal_class_ ==
+                                target_class)
                         {
-                            locked_signal_class_ = current_signal_class_;
-                            locked_center_x_ = signal_center_x_;
-                            locked_box_x_l_ = signal_box_x_l_;
-                            locked_box_x_r_ = signal_box_x_r_;
+                            locked_signal_class_ =
+                                current_signal_class_;
+                            locked_center_x_ =
+                                signal_center_x_;
+                            locked_box_x_l_ =
+                                signal_box_x_l_;
+                            locked_box_x_r_ =
+                                signal_box_x_r_;
+
                             target_locked_ = true;
                             frozen = true;
 
-                            ROS_DEBUG("Target locked after stop. class=%d center=%.1f left=%.1f right=%.1f",
-                                      locked_signal_class_, locked_center_x_,
-                                      locked_box_x_l_, locked_box_x_r_);
+                            ROS_DEBUG(
+                                "Target locked after stop. "
+                                "class=%d center=%.1f "
+                                "left=%.1f right=%.1f",
+                                locked_signal_class_,
+                                locked_center_x_,
+                                locked_box_x_l_,
+                                locked_box_x_r_);
                             break;
                         }
 
@@ -1069,88 +2174,358 @@ void OURSWITCH::GotoC(int target_num)
 
                     if (!frozen)
                     {
-                        ROS_WARN("Target matched, but no stable post-stop detection found");
+                        ROS_WARN(
+                            "Target matched, but no stable "
+                            "post-stop detection found");
                         continue;
                     }
 
                     ourgoal::getLaserPoint srv;
-                    srv.request.center_x = std::max(0, std::min(639, (int)std::round(locked_center_x_)));
-                    srv.request.left_x = std::max(0, std::min(639, (int)std::round(locked_box_x_l_)));
-                    srv.request.right_x = std::max(0, std::min(639, (int)std::round(locked_box_x_r_)));
+
+                    srv.request.center_x =
+                        std::max(
+                            0,
+                            std::min(
+                                639,
+                                static_cast<int>(
+                                    std::round(
+                                        locked_center_x_))));
+
+                    srv.request.left_x =
+                        std::max(
+                            0,
+                            std::min(
+                                639,
+                                static_cast<int>(
+                                    std::round(
+                                        locked_box_x_l_))));
+
+                    srv.request.right_x =
+                        std::max(
+                            0,
+                            std::min(
+                                639,
+                                static_cast<int>(
+                                    std::round(
+                                        locked_box_x_r_))));
+
                     srv.request.mode = false;
 
-                    if (srv.request.left_x < srv.request.right_x && vision_gettool_client_.call(srv))
+                    if (srv.request.left_x <
+                            srv.request.right_x &&
+                        vision_gettool_client_.call(srv))
                     {
-                        target_dx = (srv.response.dx_left + srv.response.dx_right) / 2.0;
-                        target_dy = (srv.response.dy_left + srv.response.dy_right) / 2.0;
-                        target_line_a = srv.response.line_a;
+                        target_dx =
+                            (srv.response.dx_left +
+                             srv.response.dx_right) /
+                            2.0;
 
-                        ROS_INFO("Signal metric center: dx=%.3f dy=%.3f line_a=%.3f",
-                                 target_dx, target_dy, target_line_a);
+                        target_dy =
+                            (srv.response.dy_left +
+                             srv.response.dy_right) /
+                            2.0;
 
-                        nh_.setParam("signal_target_dx", target_dx);
-                        nh_.setParam("signal_target_dy", target_dy);
-                        nh_.setParam("signal_target_line_a", target_line_a);
+                        target_line_a =
+                            srv.response.line_a;
 
-                        point_2d target_point;
-                        target_point.x = target_dx;
-                        target_point.y = target_dy;
+                        ROS_INFO(
+                            "Signal metric center: "
+                            "dx=%.3f dy=%.3f line_a=%.3f",
+                            target_dx,
+                            target_dy,
+                            target_line_a);
 
-                        double k = target_line_a;
-                        double kk = (k == 255) ? M_PI / 2.0 : std::atan(k);
+                        nh_.setParam(
+                            "signal_target_dx",
+                            target_dx);
+                        nh_.setParam(
+                            "signal_target_dy",
+                            target_dy);
+                        nh_.setParam(
+                            "signal_target_line_a",
+                            target_line_a);
 
-                        if (kk < 0)
+                        point_2d target_in_base;
+                        target_in_base.x = target_dx;
+                        target_in_base.y = target_dy;
+
+                        const double k = target_line_a;
+
+                        double wall_tangent_yaw =
+                            (k == 255)
+                                ? M_PI / 2.0
+                                : std::atan(k);
+
+                        if (wall_tangent_yaw < 0.0)
                         {
-                            kk += M_PI;
+                            wall_tangent_yaw += M_PI;
                         }
 
-                        kk -= M_PI / 2.0;
+                        double approach_yaw_in_base =
+                            wall_tangent_yaw -
+                            M_PI / 2.0;
 
-                        double stop_distance = 0.3;
-                        target_point.x -= stop_distance * std::cos(kk);
-                        target_point.y -= stop_distance * std::sin(kk);
+                        double car_x =
+                            nh_.param("CarX", 0.0);
+                        double car_y =
+                            nh_.param("CarY", 0.0);
+                        double car_yaw =
+                            nh_.param("CarYaw", 0.0);
 
-                        double car_x = nh_.param("CarX", 0.0);
-                        double car_y = nh_.param("CarY", 0.0);
-                        double car_yaw = nh_.param("CarYaw", 0.0);
+                        point_2d target_in_map =
+                            rotate(
+                                target_in_base,
+                                car_yaw);
 
-                        point_2d map_target = rotate(target_point, car_yaw);
-                        map_target = translate(map_target, car_x, car_y);
+                        target_in_map =
+                            translate(
+                                target_in_map,
+                                car_x,
+                                car_y);
 
-                        double target_yaw = kk + car_yaw;
+                        double target_yaw =
+                            approach_yaw_in_base +
+                            car_yaw;
 
-                        ROS_INFO("Parking goal in map: x=%.3f y=%.3f yaw=%.3f",
-                                 map_target.x, map_target.y, target_yaw);
+                        // 先计算距离目标物 0.30 m 的导航停车点。
+                        const double stop_distance = 0.30;
 
-                        sendPos(map_target.x, map_target.y, target_yaw);
+                        point_2d map_target;
 
-                        bool park_arrived = ac_.waitForResult(ros::Duration(15.0));
+                        map_target.x =
+                            target_in_map.x -
+                            stop_distance *
+                                std::cos(target_yaw);
 
-                        if (park_arrived && ac_.getState() == actionlib::SimpleClientGoalState::SUCCEEDED)
+                        map_target.y =
+                            target_in_map.y -
+                            stop_distance *
+                                std::sin(target_yaw);
+
+                        const double original_goal_x =
+                            map_target.x;
+                        const double original_goal_y =
+                            map_target.y;
+
+                        const double min_goal_x = -1.9;
+                        const double max_goal_x = 2.4;
+                        const double min_goal_y = -2.9;
+                        const double max_goal_y = -1.0;
+
+                        if (map_target.x < min_goal_x)
                         {
-                            ROS_WARN("Arrived at target warehouse parking pose");
-                            target_found = true;
-                            nh_.setParam("auto_park_status", "DONE");
-                            break;
+                            map_target.x = min_goal_x;
+                        }
+                        else if (map_target.x > max_goal_x)
+                        {
+                            map_target.x = max_goal_x;
+                        }
+
+                        if (map_target.y < min_goal_y)
+                        {
+                            map_target.y = min_goal_y;
+                        }
+                        else if (map_target.y > max_goal_y)
+                        {
+                            map_target.y = max_goal_y;
+                        }
+
+                        const bool goal_clamped =
+                            map_target.x != original_goal_x ||
+                            map_target.y != original_goal_y;
+
+                        // 限幅后重新让车头朝向目标物。
+                        const double face_target_dx =
+                            target_in_map.x -
+                            map_target.x;
+
+                        const double face_target_dy =
+                            target_in_map.y -
+                            map_target.y;
+
+                        const double actual_stop_distance =
+                            std::hypot(
+                                face_target_dx,
+                                face_target_dy);
+
+                        if (actual_stop_distance > 1e-6)
+                        {
+                            target_yaw =
+                                std::atan2(
+                                    face_target_dy,
+                                    face_target_dx);
+                        }
+
+                        ROS_INFO(
+                            "Warehouse target in map: "
+                            "x=%.3f y=%.3f",
+                            target_in_map.x,
+                            target_in_map.y);
+
+                        if (goal_clamped)
+                        {
+                            ROS_WARN(
+                                "Parking goal clamped: "
+                                "(%.3f, %.3f) -> "
+                                "(%.3f, %.3f)",
+                                original_goal_x,
+                                original_goal_y,
+                                map_target.x,
+                                map_target.y);
+                        }
+
+                        ROS_INFO(
+                            "Parking goal in map: "
+                            "x=%.3f y=%.3f yaw=%.3f "
+                            "distance_to_target=%.3f",
+                            map_target.x,
+                            map_target.y,
+                            target_yaw,
+                            actual_stop_distance);
+
+                        // 目标已经找到，此后不再搜索其他观测点。
+                        target_found = true;
+
+                        sendPos(
+                            map_target.x,
+                            map_target.y,
+                            target_yaw);
+
+                        bool park_finished =
+                            ac_.waitForResult(
+                                ros::Duration(15.0));
+
+                        actionlib::SimpleClientGoalState
+                            park_state = ac_.getState();
+
+                        const bool navigation_succeeded =
+                            park_finished &&
+                            park_state ==
+                                actionlib::
+                                    SimpleClientGoalState::
+                                        SUCCEEDED;
+
+                        bool navigation_stopped = true;
+
+                        if (navigation_succeeded)
+                        {
+                            ROS_INFO(
+                                "Arrived at warehouse "
+                                "navigation pose");
                         }
                         else
                         {
-                            ROS_WARN("Failed to reach parking pose, continue searching next observation point");
+                            ROS_WARN(
+                                "Warehouse navigation failed: "
+                                "finished=%s state=%s",
+                                park_finished
+                                    ? "true"
+                                    : "false",
+                                park_state.toString().c_str());
 
-                            if (!park_arrived)
+                            if (!park_finished)
                             {
+                                ROS_WARN(
+                                    "Parking navigation timed out; "
+                                    "canceling move_base goal");
+
                                 ac_.cancelGoal();
+
+                                // 确认 move_base 已经处理取消请求。
+                                ac_.waitForResult(
+                                    ros::Duration(1.0));
+
+                                const actionlib::
+                                    SimpleClientGoalState
+                                        state_after_cancel =
+                                            ac_.getState();
+
+                                navigation_stopped =
+                                    state_after_cancel !=
+                                        actionlib::
+                                            SimpleClientGoalState::
+                                                ACTIVE &&
+                                    state_after_cancel !=
+                                        actionlib::
+                                            SimpleClientGoalState::
+                                                PENDING;
+
+                                if (!navigation_stopped)
+                                {
+                                    ROS_ERROR(
+                                        "move_base goal is still active "
+                                        "after cancellation; skip PID");
+                                }
                             }
 
-                            nh_.setParam("auto_park_status", "FAILED");
-                            target_locked_ = false;
-                            leave_observation_point = true;
-                            break;
+                            publishStop();
                         }
+
+                        bool front_adjusted = false;
+
+                        if (navigation_stopped)
+                        {
+                            // 导航失败时要求检查当前 map 航向；
+                            // 导航成功时直接执行距离 PID。
+                            front_adjusted =
+                                adjustFrontDistance(
+                                    !navigation_succeeded,
+                                    target_yaw);
+                        }
+
+                        if (front_adjusted)
+                        {
+                            nh_.setParam(
+                                "auto_park_status",
+                                "DONE");
+
+                            ready_to_announce = true;
+
+                            ROS_INFO(
+                                "Warehouse parking completed "
+                                "using distance_qian_x PID");
+                        }
+                        else
+                        {
+                            nh_.setParam(
+                                "auto_park_status",
+                                "FAILED");
+
+                            if (navigation_succeeded)
+                            {
+                                // 导航成功但距离微调失败：
+                                // 停车，不播报。
+                                ready_to_announce = false;
+
+                                ROS_WARN(
+                                    "Navigation succeeded, but "
+                                    "distance PID failed; "
+                                    "skip announcement");
+                            }
+                            else
+                            {
+                                // 按照之前约定：
+                                // 已找到目标但导航/PID均失败，
+                                // 仍然播报并进入下一阶段。
+                                ready_to_announce = true;
+
+                                ROS_WARN(
+                                    "Target was found, but navigation "
+                                    "and distance PID failed; "
+                                    "continue with announcement");
+                            }
+                        }
+
+                        target_locked_ = false;
+                        leave_observation_point = true;
+                        break;
                     }
                     else
                     {
-                        ROS_WARN("Target class matched, but /srv_getLaserPoint failed");
+                        ROS_WARN(
+                            "Target class matched, but "
+                            "/srv_getLaserPoint failed");
+
                         target_locked_ = false;
                     }
                 }
@@ -1158,41 +2533,63 @@ void OURSWITCH::GotoC(int target_num)
                 rate.sleep();
             }
 
-            if (target_found || leave_observation_point)
+            if (target_found ||
+                leave_observation_point)
             {
                 break;
             }
         }
 
-        geometry_msgs::Twist stop_cmd;
-        cmd_vel_pub__.publish(stop_cmd);
+        publishStop();
 
         if (target_found)
         {
             break;
         }
 
-        ROS_WARN("Target not found at point %d, go next", i + 1);
+        ROS_WARN(
+            "Target not found at point %d, go next",
+            i + 1);
     }
 
-    if (target_found && target_num == 1)
+    if (target_found &&
+        ready_to_announce &&
+        target_num == 1)
     {
-        std::string item, room;
+        std::string item;
+        std::string room;
+
         nh_.getParam("real_item", item);
         nh_.getParam("real_room", room);
 
         char tts_cmd[512];
-        sprintf(tts_cmd, "espeak -v zh+f2 \"已将%s放入%s\" -s 130", item.c_str(), room.c_str());
-        system(tts_cmd); // 语音播报
+
+        std::snprintf(
+            tts_cmd,
+            sizeof(tts_cmd),
+            "espeak -v zh+f2 "
+            "\"已将%s放入%s\" -s 130",
+            item.c_str(),
+            room.c_str());
+
+        system(tts_cmd);
     }
 
     if (!target_found)
     {
-        ROS_ERROR("Failed to find target warehouse after all observation points");
-        nh_.setParam("auto_park_status", "FAILED");
+        ROS_ERROR(
+            "Failed to find target warehouse "
+            "after all observation points");
+
+        nh_.setParam(
+            "auto_park_status",
+            "FAILED");
     }
 
-    current_state = (target_num == 1) ? GOTOC2_ : Gazebo_;
+    current_state =
+        (target_num == 1)
+            ? GOTOC2_
+            : Gazebo_;
 }
 
 // =========================================================================
@@ -1481,4 +2878,3 @@ int main(int argc, char **argv)
     spinner.stop();
     return 0;
 }
-

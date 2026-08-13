@@ -1,5 +1,9 @@
 <launch>
+  <arg name="clear_params" default="true"/>
+
   <!-- roslaunch starts roscore automatically when one is not already running. -->
+  <!-- Match start_test2.sh: clear all stale parameters before loading this launch. -->
+  <rosparam command="delete" param="/" if="$(arg clear_params)"/>
   <!-- Clear stale inter-node handshake flags before any worker node starts. -->
   <include file="$(find startup_scripts)/launch/init_params.launch"/>
 
@@ -14,7 +18,7 @@
   <node pkg="find_signal" type="rknn_ros" name="find_signal" output="screen"/>
 
   <node pkg="ourgoal" type="switch_test2" name="switch_test2" output="screen"/>
-  <!-- <node pkg="ourgoal" type="TransformListener2" name="TransformListener2" output="screen"/> -->
+  <node pkg="ourgoal" type="TransformListener2" name="TransformListener2" output="screen"/>
 
   <node pkg="ourgoal" type="AI.py" name="AI" output="screen"/>
 

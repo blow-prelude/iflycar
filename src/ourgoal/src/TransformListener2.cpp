@@ -66,9 +66,9 @@ int main(int argc, char **argv)
         nh.setParam("CarW", CarW);
         nh.setParam("CarYaw", CarYaw);
 
-        printf("CarX: %lf\n", CarX);
-        printf("CarY: %lf\n", CarY);
-        printf("CarYaw: %lf\n", CarYaw);
+        // printf("CarX: %lf\n", CarX);
+        // printf("CarY: %lf\n", CarY);
+        // printf("CarYaw: %lf\n", CarYaw);
 
         rate.sleep();
     }

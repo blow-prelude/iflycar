@@ -17,8 +17,8 @@ def image_callback(msg):
         rospy.logerr("CvBridge Error: {0}".format(e))
     
     # 在窗口中显示图像
-    # cv2.imshow("Image Window", cv_image)
-    # cv2.waitKey(3)
+    cv2.imshow("Image Window", cv_image)
+    cv2.waitKey(3)
 
 if __name__ == '__main__':
     # 初始化ROS节点
