@@ -460,7 +460,6 @@ void process_recv(const unsigned char *buf, int len)
 				if (content["eventType"].asInt() == 4)
 				{
 					string info = content["info"].asString();
-					string result = content["result"].asString();
 					Json::Reader reader;
 					Json::Value root;
 					if (reader.parse(info, root))
@@ -468,24 +467,9 @@ void process_recv(const unsigned char *buf, int len)
 						angle = root["ivw"]["angle"].asFloat();
 
 						ros::NodeHandle nh;
-						int awake = 0;
-						nh.param("awake", awake, 0);
-						// ================== 核心修改区 ==================
-						if (awake == 0) // 继续使用 awake 变量
-						{
-							// system("aplay /home/ucar/ucar_ws/src/speech_command/audio/wakeup.wav");
-							nh.setParam("awake", 1); // 唤醒后，将 awake 设为 1，通知 Python 接管
-							cout << "\n==============================================" << endl;
-							cout << "✅ 唤醒成功！已释放底层拦截，通知 Python 开始录音..." << endl;
-							cout << "==============================================\n"
-								 << endl;
-						}
-						else
-						{
-							cout << "正在等待 Python 处理任务中..." << endl;
-						}
-						// ================================================
-						printf("awake_angle: %d\n", angle);
+						nh.setParam("/awake", 1);
+						ROS_INFO("唤醒成功：角度=%d，已设置 /awake=1，正在退出语音节点", angle);
+						ros::requestShutdown();
 					}
 				}
 			}
@@ -578,8 +562,6 @@ void AIUITester::bind(TEST_CALLBACK callback)
 
 void AIUITester::test()
 {
-	createAgent();
-
 	printf("\n============================================\n");
 	printf("纯串口唤醒模式启动，正在监听唤醒信号...\n");
 	printf(">>>>> 请喊出唤醒词：小飞小飞\n");
@@ -602,7 +584,6 @@ void AIUITester::test()
 	}
 
 	printf("收到 ROS 退出请求，停止串口监听。\n");
-	_serial.close();
-	AIUITester::stop();
-	AIUITester::destory();
+	if (_serial.isOpen())
+		_serial.close();
 }

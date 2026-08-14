@@ -189,6 +189,7 @@ target_link_libraries(audio_recorder hid_lib msc)
 add_library(AIUITester SHARED
 
   # src/AudioRecorder.cpp
+  src/Global.cpp
   src/AIUITester.cpp
   src/TestListener.cpp
   src/WriteAudioThread.cpp

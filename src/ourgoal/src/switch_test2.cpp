@@ -651,7 +651,7 @@ void OURSWITCH::GotoB()
 
     const int view_count = 6;
     const double turn_speed = 1.0;
-    const double turn_duration = 2 * (2.0 * M_PI / view_count) / turn_speed; // 时间乘2防止转速上限
+    const double turn_duration = (2.0 * M_PI / view_count) / turn_speed; // 时间乘2防止转速上限
     const double settle_duration = 0.4;
     const double scan_duration = 1.0;
     const double nav_timeout = 15.0;
@@ -706,7 +706,7 @@ void OURSWITCH::GotoB()
 
         ros::Rate rate(20);
 
-        for (int view = 0; view < view_count && ros::ok(); ++view)
+        for (int view = 0; view <= view_count && ros::ok(); ++view)
         {
             nh_.getParam("qr_scan_done", scan_done);
             if (scan_done == 1)
@@ -2235,9 +2235,58 @@ void OURSWITCH::GotoC(int target_num)
     };
 
     std::vector<Pose> search_points = {
-        {-1.3, -2.4, 1.57},
-        {0.6, -2.3, 1.57},
-        {2.0, -2.3, 1.57}};
+        {-1.3, -1.7, 3.14},
+        {-0.8, -2.3, -1.57},
+        {-0.3, -1.8, 1.57},
+        {0.2, -2.3, -1.57},
+        {0.7, -1.8, 1.57},
+        {1.2, -2.3, -1.57},
+        {1.7, -1.8, 1.57},
+        {2.2, -2.3, 0.0}};
+
+    auto navigateToSearchPoint =
+        [this, &publishStop](
+            const Pose &point,
+            int point_number,
+            const char *point_kind) -> bool
+    {
+        sendPos(
+            point.x,
+            point.y,
+            point.yaw);
+
+        const bool finished_before_timeout =
+            ac_.waitForResult(
+                ros::Duration(20.0));
+        const actionlib::SimpleClientGoalState navigation_state =
+            ac_.getState();
+
+        if (finished_before_timeout &&
+            navigation_state ==
+                actionlib::SimpleClientGoalState::SUCCEEDED)
+        {
+            return true;
+        }
+
+        if (!finished_before_timeout)
+        {
+            ac_.cancelGoal();
+            ac_.waitForResult(
+                ros::Duration(0.5));
+        }
+
+        publishStop();
+
+        ROS_WARN(
+            "%s observation point %d navigation failed: "
+            "finished=%s state=%s",
+            point_kind,
+            point_number,
+            finished_before_timeout ? "true" : "false",
+            navigation_state.toString().c_str());
+
+        return false;
+    };
 
     const int navigation_max_attempts = 3;
     const double navigation_retry_delay = 1.0;
@@ -2329,43 +2378,41 @@ void OURSWITCH::GotoC(int target_num)
             "Navigating to observation point %d",
             i + 1);
 
+        Pose active_observation_point =
+            search_points[i];
+
         current_signal_class_ = -1;
         last_signal_class_time_ = ros::Time(0);
         last_signal_detection_time_ = ros::Time(0);
 
-        sendPos(
-            search_points[i].x,
-            search_points[i].y,
-            search_points[i].yaw);
-
-        bool arrived =
-            ac_.waitForResult(
-                ros::Duration(20.0));
-
-        if (!arrived)
-        {
-            ROS_WARN(
-                "Point %d timeout, skip",
-                i + 1);
-
-            ac_.cancelGoal();
-            ac_.waitForResult(
-                ros::Duration(0.5));
-
-            publishStop();
-            continue;
-        }
-
-        if (ac_.getState() !=
-            actionlib::SimpleClientGoalState::SUCCEEDED)
-        {
-            ROS_WARN(
-                "Point %d unreachable, state=%s",
+        if (!navigateToSearchPoint(
+                active_observation_point,
                 i + 1,
-                ac_.getState().toString().c_str());
+                "Primary"))
+        {
+            // 编号从 1 开始：奇数点 y-1，偶数点 y+1。
+            active_observation_point.y +=
+                (i % 2 == 0) ? -1.0 : 1.0;
 
-            publishStop();
-            continue;
+            ROS_WARN(
+                "Trying mirror observation point %d: "
+                "x=%.3f y=%.3f yaw=%.3f",
+                i + 1,
+                active_observation_point.x,
+                active_observation_point.y,
+                active_observation_point.yaw);
+
+            if (!navigateToSearchPoint(
+                    active_observation_point,
+                    i + 1,
+                    "Mirror"))
+            {
+                ROS_WARN(
+                    "Both primary and mirror observation "
+                    "point %d are unreachable; go next",
+                    i + 1);
+                continue;
+            }
         }
 
         ROS_DEBUG(
@@ -2737,11 +2784,11 @@ void OURSWITCH::GotoC(int target_num)
                         // 保存本次发现目标时所在的观察点。
                         // 仅供后续 GotoD 导航巡线粗起点失败时恢复。
                         last_parking_observation_x_ =
-                            search_points[i].x;
+                            active_observation_point.x;
                         last_parking_observation_y_ =
-                            search_points[i].y;
+                            active_observation_point.y;
                         last_parking_observation_yaw_ =
-                            search_points[i].yaw;
+                            active_observation_point.yaw;
                         last_parking_observation_valid_ = true;
 
                         ROS_INFO(
@@ -2787,9 +2834,9 @@ void OURSWITCH::GotoC(int target_num)
                             {
                                 returned_to_observation =
                                     navigateWithRetry(
-                                        search_points[i].x,
-                                        search_points[i].y,
-                                        search_points[i].yaw,
+                                        active_observation_point.x,
+                                        active_observation_point.y,
+                                        active_observation_point.yaw,
                                         20.0,
                                         "GotoC observation point");
 
@@ -3496,8 +3543,8 @@ void OURSWITCH::GotoD()
 
     const bool reached_fixed_point =
         navigateWithRetry(
-            0.25,
-            -3.00,
+            0.5,
+            -3.10,
             -1.57,
             20.0,
             "fixed GotoD point");

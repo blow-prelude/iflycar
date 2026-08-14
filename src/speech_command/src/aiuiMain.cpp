@@ -122,7 +122,7 @@ void awakeWatchdog()
 	ROS_WARN("启动 %d 秒后仍未收到唤醒信号，自动将 /awake 设置为 1 并结束节点",
 			 kAwakeTimeoutSeconds);
 	node.setParam("/awake", 1);
-	ros::shutdown();
+	ros::requestShutdown();
 }
 } // namespace
 
@@ -322,7 +322,8 @@ int main(int argc, char **argv)
 		exitCode = 1;
 	}
 
-	ros::shutdown();
+	if (ros::ok())
+		ros::shutdown();
 	if (awakeWatchdogThread.joinable())
 		awakeWatchdogThread.join();
 	if (publisherThread.joinable())
