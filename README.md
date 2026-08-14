@@ -140,6 +140,7 @@ lsusb -d 10d6:b003
 
 项目决定参考提交 `0c63c6d94dfd07f0895b5b5d592e11e1c89a7de2`，采用纯串口唤醒：
 
+- 麦克风阵列内部可能已经设置了唤醒引擎。
 - `/dev/ttyS3` 接收外部 AIUI 唤醒包。
 - `uart_rec()` 完成串口分包和校验。
 - `process_recv()` 解析 `eventType == 4` 的唤醒事件、获取角度，并将 ROS 参数 `awake` 设置为 `1`。

@@ -18,6 +18,7 @@ using namespace std;
 namespace
 {
 const int kTestTimeoutSeconds = 10;
+const int kAwakeTimeoutSeconds = 10;
 bool get_request_test = false;
 vector<string> third_line;
 
@@ -98,6 +99,30 @@ bool openSerialPort(const string &port, int baudRate)
 	_serial.flush();
 	ROS_INFO("串口初始化成功：%s，波特率 %d", port.c_str(), baudRate);
 	return true;
+}
+
+void awakeWatchdog()
+{
+	ros::NodeHandle node;
+	const ros::WallTime deadline =
+		ros::WallTime::now() + ros::WallDuration(kAwakeTimeoutSeconds);
+	ros::WallRate waitRate(10);
+
+	while (ros::ok() && ros::WallTime::now() < deadline)
+		waitRate.sleep();
+
+	if (!ros::ok())
+		return;
+
+	int awake = 0;
+	node.param("/awake", awake, 0);
+	if (awake == 1)
+		return;
+
+	ROS_WARN("启动 %d 秒后仍未收到唤醒信号，自动将 /awake 设置为 1 并结束节点",
+			 kAwakeTimeoutSeconds);
+	node.setParam("/awake", 1);
+	ros::shutdown();
 }
 } // namespace
 
@@ -285,6 +310,7 @@ int main(int argc, char **argv)
 	tester.bind(test_callback);
 
 	thread publisherThread(data_send);
+	thread awakeWatchdogThread(awakeWatchdog);
 	int exitCode = 0;
 	try
 	{
@@ -297,6 +323,8 @@ int main(int argc, char **argv)
 	}
 
 	ros::shutdown();
+	if (awakeWatchdogThread.joinable())
+		awakeWatchdogThread.join();
 	if (publisherThread.joinable())
 		publisherThread.join();
 	if (_serial.isOpen())

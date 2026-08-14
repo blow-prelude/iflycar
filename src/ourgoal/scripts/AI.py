@@ -139,7 +139,7 @@ def get_spark_llm(prompt):
 
 # ================= 业务工具 =================
 def record_audio(duration=10, filename="/tmp/cmd.wav"):
-    rospy.loginfo(f"🎤 录音开始 ({duration}s)...")
+    rospy.loginfo(f" 录音开始 ({duration}s)...")
     result = subprocess.run(
         ["arecord", "-D", MIC_DEVICE, "-r", "16000", "-f", "S16_LE",
          "-c", "1", "-d", str(duration), filename, "-q"],
@@ -149,7 +149,7 @@ def record_audio(duration=10, filename="/tmp/cmd.wav"):
         raise RuntimeError(f"录音失败，arecord 退出码: {result.returncode}")
 
 def play_offline_tts(text):
-    rospy.loginfo(f"🔊 播报: {text}")
+    rospy.loginfo(f" 播报: {text}")
     result = subprocess.run(
         ["espeak", "-v", "zh+f2", str(text), "-s", "130"],
         check=False,
@@ -177,15 +177,26 @@ def logic_worker():
             return
 
         # 2. 录音
-        record_audio(30)
+        record_audio(20)
 
         # 3. 录音结束立刻放行底盘走迷宫 (C++ 看到 awake2 就开始跑)
         rospy.set_param("awake2", 1)
-        rospy.loginfo("🚀 录音完成，底盘已放行！后台开始解析指令...")
+        rospy.loginfo(" 录音完成，底盘已放行！后台开始解析指令...")
 
         # 4. 后台进行语音听写与大模型提取
         user_speech = get_iat_text("/tmp/cmd.wav")
-        intent_res = get_spark_llm(f"严格分析指令：“{user_speech}”。任务1是实体抓取，任务2是仿真抓取。请精确提取这两个大类（只能是：食品/日用品/电子产品）。返回严格的JSON格式：{{\"ACT\":\"[实体大类]\", \"SIM\":\"[仿真大类]\"}}")
+        if not user_speech:
+            rospy.logwarn("语音识别失败或结果为空，默认使用实体=食品，仿真=电子产品")
+            ACT_global = "食品"
+            SIM_global = "电子产品"
+        else:
+            user_speech = user_speech.strip()
+            rospy.loginfo(f" 语音识别结果: {user_speech}")
+            
+        intent_res = get_spark_llm(
+            f"严格分析指令：“{user_speech}”。任务1是实体抓取，任务2是仿真抓取。\
+            请精确提取这两个大类（只能是：食品/日用品/电子产品）。\
+            返回严格的JSON格式：{{\"ACT\":\"[实体大类]\", \"SIM\":\"[仿真大类]\"}}")
         ACT_global = intent_res.get("ACT", "食品") if intent_res else "食品"
         SIM_global = intent_res.get("SIM", "电子产品") if intent_res else "电子产品"
         rospy.loginfo(f"🧠 大类识别完成: 实体={ACT_global}, 仿真={SIM_global}")
@@ -211,7 +222,8 @@ def logic_worker():
 
         # 7. 第二次大模型匹配
         items = fetch_items_from_urls(qr_urls)
-        allocate_res = get_spark_llm(f"物品：{items}。目标：实体={ACT_global}，仿真={SIM_global}。返回JSON：{{\"A1\":\"实体物品\", \"A2\":\"{ACT_global}\", \"A3\":\"实体车间\", \"B1\":\"仿真物品\", \"B2\":\"{SIM_global}\", \"B3\":\"仿真车间\"}}")
+        allocate_res = get_spark_llm(f"物品：{items}。目标：实体={ACT_global}，仿真={SIM_global}。\
+            返回JSON：{{\"A1\":\"实体物品\", \"A2\":\"{ACT_global}\", \"A3\":\"实体车间\", \"B1\":\"仿真物品\", \"B2\":\"{SIM_global}\", \"B3\":\"仿真车间\"}}")
 
         if allocate_res:
             # 上传关键参数给 switch_test2.cpp
@@ -288,7 +300,7 @@ def main():
                     rospy.set_param("qr_scan_done", 1)
 
         if not rospy.is_shutdown():
-            rospy.loginfo("🛑 摄像头扫描结束，等待后台大模型处理与播报...")
+            rospy.loginfo(" 摄像头扫描结束，等待后台大模型处理与播报...")
 
         while worker.is_alive() and not rospy.is_shutdown():
             worker.join(timeout=0.2)

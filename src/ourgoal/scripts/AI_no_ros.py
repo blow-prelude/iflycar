@@ -297,8 +297,15 @@ def play_offline_tts(text):
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
-        audio_path = record_audio()
-        speech = get_iat_text(audio_path)
+        # audio_path = record_audio()
+        speech = get_iat_text("/tmp/cmd.wav")  # 直接使用预录音频文件，避免现场录音失败
+        if not speech:
+            LOGGER.error("语音识别失败或结果为空")
+            return 1
+        speech = speech.strip()
+        if not speech:
+            LOGGER.error("语音识别结果为空")
+            return 1
         LOGGER.info("语音识别结果：%s", speech or "（空）")
 
         intent = get_spark_llm(

@@ -213,7 +213,7 @@ class OURSWITCH
         int gap_required_samples_;
         int gap_wall_min_points_;
 
-        // GotoD 导航失败时返回最近一次 GotoC 停泊观察点。
+        // 仅供 GotoD 导航巡线粗起点失败时返回最近一次 GotoC 观察点。
         bool last_parking_observation_valid_ = false;
         double last_parking_observation_x_ = 0.0;
         double last_parking_observation_y_ = 0.0;

@@ -651,7 +651,7 @@ void OURSWITCH::GotoB()
 
     const int view_count = 6;
     const double turn_speed = 1.0;
-    const double turn_duration = (2.0 * M_PI / view_count) / turn_speed;
+    const double turn_duration = 2 * (2.0 * M_PI / view_count) / turn_speed; // 时间乘2防止转速上限
     const double settle_duration = 0.4;
     const double scan_duration = 1.0;
     const double nav_timeout = 15.0;
@@ -2239,6 +2239,77 @@ void OURSWITCH::GotoC(int target_num)
         {0.6, -2.3, 1.57},
         {2.0, -2.3, 1.57}};
 
+    const int navigation_max_attempts = 3;
+    const double navigation_retry_delay = 1.0;
+
+    auto navigateWithRetry =
+        [this,
+         &publishStop,
+         navigation_max_attempts,
+         navigation_retry_delay](
+            double goal_x,
+            double goal_y,
+            double goal_yaw,
+            double timeout,
+            const char *goal_name) -> bool
+    {
+        for (int attempt = 1;
+             attempt <= navigation_max_attempts && ros::ok();
+             ++attempt)
+        {
+            ROS_INFO(
+                "Navigating to %s, attempt %d/%d",
+                goal_name,
+                attempt,
+                navigation_max_attempts);
+
+            sendPos(goal_x, goal_y, goal_yaw);
+
+            const bool finished_before_timeout =
+                ac_.waitForResult(ros::Duration(timeout));
+            const actionlib::SimpleClientGoalState navigation_state =
+                ac_.getState();
+
+            if (finished_before_timeout &&
+                navigation_state ==
+                    actionlib::SimpleClientGoalState::SUCCEEDED)
+            {
+                ROS_INFO(
+                    "Reached %s on attempt %d/%d",
+                    goal_name,
+                    attempt,
+                    navigation_max_attempts);
+                return true;
+            }
+
+            if (!finished_before_timeout)
+            {
+                ac_.cancelGoal();
+                ac_.waitForResult(ros::Duration(1.0));
+            }
+
+            publishStop();
+
+            ROS_WARN(
+                "Failed to reach %s on attempt %d/%d: "
+                "finished=%s state=%s",
+                goal_name,
+                attempt,
+                navigation_max_attempts,
+                finished_before_timeout ? "true" : "false",
+                navigation_state.toString().c_str());
+
+            if (attempt < navigation_max_attempts)
+            {
+                ros::WallDuration(
+                    navigation_retry_delay)
+                    .sleep();
+            }
+        }
+
+        return false;
+    };
+
     // 已获得目标物的有效坐标。
     bool target_found = false;
 
@@ -2663,8 +2734,8 @@ void OURSWITCH::GotoC(int target_num)
                             target_yaw,
                             actual_stop_distance);
 
-                        // 记录本次发现停泊目标时所在的观察点，
-                        // 供后续 GotoD 导航失败时返回并重新规划。
+                        // 保存本次发现目标时所在的观察点。
+                        // 仅供后续 GotoD 导航巡线粗起点失败时恢复。
                         last_parking_observation_x_ =
                             search_points[i].x;
                         last_parking_observation_y_ =
@@ -2674,7 +2745,8 @@ void OURSWITCH::GotoC(int target_num)
                         last_parking_observation_valid_ = true;
 
                         ROS_INFO(
-                            "Saved last parking observation point: "
+                            "Saved GotoC observation point for "
+                            "GotoD coarse-goal recovery: "
                             "x=%.3f y=%.3f yaw=%.3f",
                             last_parking_observation_x_,
                             last_parking_observation_y_,
@@ -2683,101 +2755,89 @@ void OURSWITCH::GotoC(int target_num)
                         // 目标已经找到，此后不再搜索其他观测点。
                         target_found = true;
 
-                        sendPos(
-                            map_target.x,
-                            map_target.y,
-                            target_yaw);
+                        bool navigation_succeeded = false;
 
-                        bool park_finished =
-                            ac_.waitForResult(
-                                ros::Duration(15.0));
-
-                        actionlib::SimpleClientGoalState
-                            park_state = ac_.getState();
-
-                        const bool navigation_succeeded =
-                            park_finished &&
-                            park_state ==
-                                actionlib::
-                                    SimpleClientGoalState::
-                                        SUCCEEDED;
-
-                        bool navigation_stopped = true;
-
-                        if (navigation_succeeded)
+                        while (ros::ok() &&
+                               !navigation_succeeded)
                         {
-                            ROS_INFO(
-                                "Arrived at warehouse "
-                                "navigation pose");
-                        }
-                        else
-                        {
-                            ROS_WARN(
-                                "Warehouse navigation failed: "
-                                "finished=%s state=%s",
-                                park_finished
-                                    ? "true"
-                                    : "false",
-                                park_state.toString().c_str());
+                            navigation_succeeded =
+                                navigateWithRetry(
+                                    map_target.x,
+                                    map_target.y,
+                                    target_yaw,
+                                    15.0,
+                                    "warehouse parking pose");
 
-                            if (!park_finished)
+                            if (navigation_succeeded)
                             {
-                                ROS_WARN(
-                                    "Parking navigation timed out; "
-                                    "canceling move_base goal");
+                                break;
+                            }
 
-                                ac_.cancelGoal();
+                            ROS_ERROR(
+                                "Warehouse parking navigation failed "
+                                "after %d attempts; returning to "
+                                "observation point %d",
+                                navigation_max_attempts,
+                                i + 1);
 
-                                // 确认 move_base 已经处理取消请求。
-                                ac_.waitForResult(
-                                    ros::Duration(1.0));
+                            bool returned_to_observation = false;
 
-                                const actionlib::
-                                    SimpleClientGoalState
-                                        state_after_cancel =
-                                            ac_.getState();
+                            while (ros::ok() &&
+                                   !returned_to_observation)
+                            {
+                                returned_to_observation =
+                                    navigateWithRetry(
+                                        search_points[i].x,
+                                        search_points[i].y,
+                                        search_points[i].yaw,
+                                        20.0,
+                                        "GotoC observation point");
 
-                                navigation_stopped =
-                                    state_after_cancel !=
-                                        actionlib::
-                                            SimpleClientGoalState::
-                                                ACTIVE &&
-                                    state_after_cancel !=
-                                        actionlib::
-                                            SimpleClientGoalState::
-                                                PENDING;
-
-                                if (!navigation_stopped)
+                                if (!returned_to_observation)
                                 {
                                     ROS_ERROR(
-                                        "move_base goal is still active "
-                                        "after cancellation; skip PID");
+                                        "Failed to return to GotoC "
+                                        "observation point; retrying");
+                                    ros::WallDuration(
+                                        navigation_retry_delay)
+                                        .sleep();
                                 }
                             }
 
-                            publishStop();
+                            if (returned_to_observation)
+                            {
+                                ROS_WARN(
+                                    "Returned to observation point %d; "
+                                    "retry warehouse parking navigation",
+                                    i + 1);
+                            }
                         }
+
+                        if (!navigation_succeeded)
+                        {
+                            publishStop();
+                            target_locked_ = false;
+                            return;
+                        }
+
+                        ROS_INFO(
+                            "Arrived at warehouse navigation pose");
 
                         bool lateral_adjusted = false;
                         bool front_adjusted = false;
 
-                        if (navigation_stopped)
-                        {
-                            // 先根据停车后的新 RKNN 结果横向对正，
-                            // 再调整与目标之间的前后距离。
-                            lateral_adjusted =
-                                adjustLateralPosition(
-                                    !navigation_succeeded,
-                                    target_yaw,
-                                    target_class);
+                        // 先根据停车后的新 RKNN 结果横向对正，
+                        // 再调整与目标之间的前后距离。
+                        lateral_adjusted =
+                            adjustLateralPosition(
+                                false,
+                                target_yaw,
+                                target_class);
 
-                            // 导航失败时要求检查当前 map 航向；
-                            // 导航成功时直接执行距离 PID。
-                            front_adjusted =
-                                adjustFrontDistance(
-                                    !navigation_succeeded,
-                                    target_yaw);
-                        }
+                        front_adjusted =
+                            adjustFrontDistance(
+                                false,
+                                target_yaw);
 
                         if (lateral_adjusted &&
                             front_adjusted)
@@ -2799,36 +2859,21 @@ void OURSWITCH::GotoC(int target_num)
                                 "auto_park_status",
                                 "FAILED");
 
-                            if (navigation_succeeded)
-                            {
-                                // 导航成功但最终位置微调失败：
-                                // 停车，不播报。
-                                ready_to_announce = false;
+                            // 导航成功但最终位置微调失败：
+                            // 停车，不播报。
+                            ready_to_announce = false;
 
-                                ROS_WARN(
-                                    "Navigation succeeded, but "
-                                    "final position adjustment "
-                                    "failed (lateral=%s front=%s); "
-                                    "skip announcement",
-                                    lateral_adjusted
-                                        ? "true"
-                                        : "false",
-                                    front_adjusted
-                                        ? "true"
-                                        : "false");
-                            }
-                            else
-                            {
-                                // 按照之前约定：
-                                // 已找到目标但导航或最终位置微调失败，
-                                // 仍然播报并进入下一阶段。
-                                ready_to_announce = true;
-
-                                ROS_WARN(
-                                    "Target was found, but navigation "
-                                    "or final position adjustment failed; "
-                                    "continue with announcement");
-                            }
+                            ROS_WARN(
+                                "Navigation succeeded, but "
+                                "final position adjustment "
+                                "failed (lateral=%s front=%s); "
+                                "skip announcement",
+                                lateral_adjusted
+                                    ? "true"
+                                    : "false",
+                                front_adjusted
+                                    ? "true"
+                                    : "false");
                         }
 
                         target_locked_ = false;
@@ -3032,16 +3077,17 @@ void OURSWITCH::GotoD()
             goto_d_recovery_pending_ = false;
 
             ROS_ERROR(
-                "Cannot recover GotoD navigation: "
-                "no parking observation point was saved");
+                "Cannot recover GotoD coarse-goal navigation: "
+                "no GotoC observation point was saved");
             return false;
         }
 
         goto_d_recovery_pending_ = true;
 
         ROS_WARN(
-            "Returning to last parking observation point "
-            "before retrying GotoD: x=%.3f y=%.3f yaw=%.3f",
+            "Returning to the last GotoC observation point "
+            "before retrying the GotoD coarse goal: "
+            "x=%.3f y=%.3f yaw=%.3f",
             last_parking_observation_x_,
             last_parking_observation_y_,
             last_parking_observation_yaw_);
@@ -3052,20 +3098,20 @@ void OURSWITCH::GotoD()
                 last_parking_observation_y_,
                 last_parking_observation_yaw_,
                 20.0,
-                "last parking observation point");
+                "last GotoC observation point");
 
         if (recovered)
         {
             goto_d_recovery_pending_ = false;
             ROS_INFO(
-                "Returned to the last parking observation point; "
-                "GotoD navigation can restart");
+                "Returned to the last GotoC observation point; "
+                "the GotoD coarse goal can be retried");
         }
         else
         {
             ROS_ERROR(
-                "Failed to return to the last parking observation "
-                "point; keep recovery pending");
+                "Failed to return to the last GotoC observation "
+                "point; keep coarse-goal recovery pending");
         }
 
         return recovered;
@@ -3107,9 +3153,8 @@ void OURSWITCH::GotoD()
 
             if (values.size() % 2 == 0)
             {
-                return
-                    (values[middle - 1] + values[middle]) /
-                    2.0;
+                return (values[middle - 1] + values[middle]) /
+                       2.0;
             }
 
             return values[middle];
@@ -3437,7 +3482,8 @@ void OURSWITCH::GotoD()
         return alignment_succeeded;
     };
 
-    // 上一轮如果连返回观察点也失败，本轮必须先完成返回动作。
+    // 如果上一轮连观察点也未能返回，本轮先完成恢复，
+    // 暂不尝试巡线粗起点。
     if (goto_d_recovery_pending_ &&
         !recoverToLastParkingObservation())
     {
@@ -3450,8 +3496,8 @@ void OURSWITCH::GotoD()
 
     const bool reached_fixed_point =
         navigateWithRetry(
-            0.05,
-            -3.2,
+            0.25,
+            -3.00,
             -1.57,
             20.0,
             "fixed GotoD point");
@@ -3463,7 +3509,8 @@ void OURSWITCH::GotoD()
 
         ROS_ERROR(
             "Fixed GotoD point failed after %d attempts. "
-            "Return to the last parking observation point.",
+            "Return to the last GotoC observation point "
+            "before retrying the coarse goal.",
             max_attempts);
 
         const bool recovered =
@@ -3472,14 +3519,17 @@ void OURSWITCH::GotoD()
         if (recovered)
         {
             ROS_WARN(
-                "Recovery completed; restart GotoD navigation "
-                "on the next state-machine cycle");
+                "Coarse-goal recovery completed; retry the fixed "
+                "GotoD point on the next state-machine cycle");
         }
 
         current_state = GOTOD_;
         ros::WallDuration(retry_delay).sleep();
         return;
     }
+
+    // 粗起点已经成功到达，从这里开始不再启用观察点恢复机制。
+    goto_d_recovery_pending_ = false;
 
     ROS_INFO("Arrived at the stop line successfully.");
 
@@ -3490,23 +3540,10 @@ void OURSWITCH::GotoD()
         geometry_msgs::Twist stop_cmd;
         cmd_vel_pub__.publish(stop_cmd);
 
-        ROS_ERROR(
+        ROS_WARN(
             "Direct map-x gap alignment failed. "
-            "Return to the last parking observation point.");
-
-        const bool recovered =
-            recoverToLastParkingObservation();
-
-        if (recovered)
-        {
-            ROS_WARN(
-                "Recovery completed; restart GotoD navigation "
-                "on the next state-machine cycle");
-        }
-
-        current_state = GOTOD_;
-        ros::WallDuration(retry_delay).sleep();
-        return;
+            "Continue to the traffic-light and line-following "
+            "stage from the current pose.");
     }
 
     nh_.setParam("start_traffic_light_det", 1);

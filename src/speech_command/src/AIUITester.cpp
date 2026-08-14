@@ -1,7 +1,44 @@
 #include <AIUITester.h>
 #include <vector>
 #include <algorithm>
+#include <iomanip>
+#include <sstream>
 #define MAX_BUFFER 2097152
+
+namespace
+{
+	void logSerialRx(const unsigned char *data, std::size_t length)
+	{
+		static std::size_t streamOffset = 0;
+
+		for (std::size_t lineStart = 0; lineStart < length; lineStart += 16)
+		{
+			const std::size_t lineLength = std::min<std::size_t>(16, length - lineStart);
+			std::ostringstream line;
+			line << std::hex << std::setfill('0') << std::setw(8)
+				 << streamOffset + lineStart << ":";
+
+			for (std::size_t i = 0; i < 16; ++i)
+			{
+				if (i < lineLength)
+					line << " " << std::setw(2) << static_cast<unsigned int>(data[lineStart + i]);
+				else
+					line << "   ";
+			}
+
+			line << "  ";
+			for (std::size_t i = 0; i < lineLength; ++i)
+			{
+				const unsigned char byte = data[lineStart + i];
+				line << ((byte >= 0x20 && byte <= 0x7e) ? static_cast<char>(byte) : '.');
+			}
+
+			ROS_INFO_STREAM("UART received: " << line.str());
+		}
+
+		streamOffset += length;
+	}
+} // namespace
 
 void gWakeup();
 void gSleep();
@@ -557,6 +594,7 @@ void AIUITester::test()
 			const size_t recLen = _serial.read(buff, bytes_to_read);
 			if (recLen == 0)
 				break;
+			logSerialRx(buff, recLen);
 			uart_rec((const unsigned char *)buff, recLen);
 		}
 
