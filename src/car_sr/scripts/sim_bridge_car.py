@@ -20,10 +20,10 @@ def sim_class_to_category(sim_class):
     if "食品" in text or "食" in text:
         return "food"
 
-    if "日用品" in text or "用品" in text or "日用" in text:
+    if "日用品" in text or "用品" in text or "日" in text:
         return "daily"
 
-    if "电子" in text or "电" in text or "生产" in text:
+    if "电子" in text or "电" in text or "产品" in text:
         return "electronics"
 
     return None

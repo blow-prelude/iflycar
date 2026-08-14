@@ -41,7 +41,7 @@ int classfy(const std::string &text)
     {
         return 1;
     }
-    if (contains({"电子产品", "电子", "电", "生产"}))
+    if (contains({"电子产品", "电子", "电", "产品"}))
     {
         return 2;
     }
