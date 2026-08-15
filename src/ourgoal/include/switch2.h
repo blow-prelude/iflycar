@@ -188,6 +188,21 @@ class OURSWITCH
         // 食品、日用品、电子产品三个车间在本次运行中的停车位置。
         WarehouseParkingCache warehouse_parking_cache_[3];
 
+        // 只记录“在哪个观察姿态看到了某类别”，不把它当作停车点。
+        // 下次以该类别为目标时，GotoC 会先到这里复核，失败后再恢复完整搜索。
+        struct WarehouseObservationCache
+        {
+            bool valid = false;
+            double observation_x = 0.0;
+            double observation_y = 0.0;
+            double observation_yaw = 0.0;
+            int wall = -1;
+            int first_slot = -1;
+            int last_slot = -1;
+        };
+
+        WarehouseObservationCache warehouse_observation_cache_[3];
+
         // 任务参数
         double roll, pitch, yaw;
 

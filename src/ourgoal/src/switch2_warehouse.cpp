@@ -660,6 +660,24 @@ void OURSWITCH::GotoC(int target_num)
             nh_.param(
                 "warehouse_recognition_message_max_age",
                 2.0));
+    const int observation_cache_confirmations =
+        std::max(
+            1,
+            nh_.param(
+                "warehouse_observation_cache_confirmations",
+                2));
+    const double observation_cache_center_tolerance =
+        std::max(
+            0.0,
+            nh_.param(
+                "warehouse_observation_cache_center_tolerance_px",
+                120.0));
+    const double observation_cache_timestamp_skew =
+        std::max(
+            0.0,
+            nh_.param(
+                "warehouse_observation_cache_timestamp_skew",
+                0.50));
 
     const double production_right_x =
         production_left_x +
@@ -1137,6 +1155,86 @@ void OURSWITCH::GotoC(int target_num)
         production_top_y,
         production_bottom_y);
 
+    // 类别观察缓存只作为一次“快速复核”入口，和停车缓存严格分离。
+    // 缓存姿态失效时不阻塞原有的完整观察点搜索。
+    bool cached_observation_region_inserted = false;
+
+    if (target_class >= 0 &&
+        warehouse_observation_cache_[target_class].valid)
+    {
+        WarehouseObservationCache &cached_observation =
+            warehouse_observation_cache_[target_class];
+
+        const int maximum_slot =
+            (cached_observation.wall == TOP_WALL ||
+             cached_observation.wall == BOTTOM_WALL)
+                ? production_columns - 1
+                : production_rows - 1;
+
+        const bool cache_geometry_valid =
+            cached_observation.wall >= TOP_WALL &&
+            cached_observation.wall <= LEFT_WALL &&
+            cached_observation.first_slot >= 0 &&
+            cached_observation.last_slot >=
+                cached_observation.first_slot &&
+            cached_observation.last_slot <= maximum_slot &&
+            std::isfinite(
+                cached_observation.observation_x) &&
+            std::isfinite(
+                cached_observation.observation_y) &&
+            std::isfinite(
+                cached_observation.observation_yaw);
+
+        if (!cache_geometry_valid)
+        {
+            cached_observation.valid = false;
+            ROS_WARN(
+                "Discarding invalid warehouse observation cache "
+                "for class=%d",
+                target_class);
+        }
+        else
+        {
+            Pose cached_pose = {};
+            cached_pose.x =
+                cached_observation.observation_x;
+            cached_pose.y =
+                cached_observation.observation_y;
+            cached_pose.yaw =
+                cached_observation.observation_yaw;
+            cached_pose.wall = cached_observation.wall;
+            cached_pose.first_slot =
+                cached_observation.first_slot;
+            cached_pose.last_slot =
+                cached_observation.last_slot;
+            cached_pose.has_secondary_view = false;
+            cached_pose.secondary_wall = -1;
+            cached_pose.secondary_first_slot = -1;
+            cached_pose.secondary_last_slot = -1;
+            cached_pose.secondary_yaw = 0.0;
+            cached_pose.fallback = false;
+
+            ObservationRegion cached_region;
+            cached_region.push_back(cached_pose);
+            search_regions.insert(
+                search_regions.begin(),
+                cached_region);
+            cached_observation_region_inserted = true;
+
+            ROS_INFO(
+                "Prepended cached warehouse observation for "
+                "class=%d: wall=%s slots=%d-%d "
+                "pose=(%.3f, %.3f, %.3f)",
+                target_class,
+                observationWallName(cached_pose.wall),
+                cached_pose.first_slot + 1,
+                cached_pose.last_slot + 1,
+                cached_pose.x,
+                cached_pose.y,
+                cached_pose.yaw);
+        }
+    }
+
     auto getCurrentMapPose =
         [this](double &car_x,
                double &car_y,
@@ -1148,6 +1246,91 @@ void OURSWITCH::GotoC(int target_num)
                std::isfinite(car_x) &&
                std::isfinite(car_y) &&
                std::isfinite(car_yaw);
+    };
+
+    auto cacheObservationForClass =
+        [&](int detected_class,
+            const Pose &observation_pose,
+            int wall,
+            int first_slot,
+            int last_slot)
+    {
+        if (detected_class < 0 ||
+            detected_class >= 3 ||
+            wall < TOP_WALL ||
+            wall > LEFT_WALL ||
+            first_slot < 0 ||
+            last_slot < first_slot ||
+            !std::isfinite(observation_pose.x) ||
+            !std::isfinite(observation_pose.y) ||
+            !std::isfinite(observation_pose.yaw))
+        {
+            return;
+        }
+
+        WarehouseObservationCache &cached_observation =
+            warehouse_observation_cache_[detected_class];
+
+        // 第一次稳定看到该类别的位置优先保留；如果它后来失效，
+        // 复核失败路径会清除 valid，之后可由完整搜索写入新位置。
+        if (cached_observation.valid)
+        {
+            return;
+        }
+
+        cached_observation.valid = true;
+        cached_observation.observation_x =
+            observation_pose.x;
+        cached_observation.observation_y =
+            observation_pose.y;
+        cached_observation.observation_yaw =
+            observation_pose.yaw;
+        cached_observation.wall = wall;
+        cached_observation.first_slot = first_slot;
+        cached_observation.last_slot = last_slot;
+
+        ROS_INFO(
+            "Cached warehouse observation for class=%d: "
+            "wall=%s slots=%d-%d pose=(%.3f, %.3f, %.3f)",
+            detected_class,
+            observationWallName(wall),
+            first_slot + 1,
+            last_slot + 1,
+            observation_pose.x,
+            observation_pose.y,
+            observation_pose.yaw);
+    };
+
+    auto makeCurrentObservationPose =
+        [&](const Pose &active_pose,
+            int wall,
+            int first_slot,
+            int last_slot) -> Pose
+    {
+        Pose cache_pose = active_pose;
+        cache_pose.wall = wall;
+        cache_pose.first_slot = first_slot;
+        cache_pose.last_slot = last_slot;
+        cache_pose.has_secondary_view = false;
+        cache_pose.secondary_wall = -1;
+        cache_pose.secondary_first_slot = -1;
+        cache_pose.secondary_last_slot = -1;
+        cache_pose.secondary_yaw = 0.0;
+        cache_pose.fallback = false;
+
+        double car_x = 0.0;
+        double car_y = 0.0;
+        double car_yaw = 0.0;
+
+        // 导航目标只是期望姿态；缓存优先使用停车后读取到的实际地图姿态。
+        if (getCurrentMapPose(car_x, car_y, car_yaw))
+        {
+            cache_pose.x = car_x;
+            cache_pose.y = car_y;
+            cache_pose.yaw = car_yaw;
+        }
+
+        return cache_pose;
     };
 
     auto getWallSlotCenter =
@@ -1895,14 +2078,18 @@ void OURSWITCH::GotoC(int target_num)
          ros::ok();
          ++i)
     {
+        const bool using_cached_observation =
+            cached_observation_region_inserted && i == 0;
         const ObservationRegion &observation_region =
             search_regions[i];
         const Pose &region_description =
             observation_region.front();
         const char *observation_phase =
-            region_description.fallback
-                ? "Fallback"
-                : "Coarse";
+            using_cached_observation
+                ? "Cached"
+                : (region_description.fallback
+                       ? "Fallback"
+                       : "Coarse");
 
         if (region_description.has_secondary_view)
         {
@@ -1941,6 +2128,16 @@ void OURSWITCH::GotoC(int target_num)
                 observation_region,
                 active_observation_point))
         {
+            if (using_cached_observation)
+            {
+                warehouse_observation_cache_[target_class].valid =
+                    false;
+                ROS_WARN(
+                    "Cached observation pose is not currently "
+                    "visible/reachable; invalidate it and continue "
+                    "with the normal search");
+            }
+
             ROS_WARN(
                 "%s observation region %d has no "
                 "currently reachable, visible candidate; "
@@ -1976,6 +2173,15 @@ void OURSWITCH::GotoC(int target_num)
 
         if (!can_observe)
         {
+            if (using_cached_observation)
+            {
+                warehouse_observation_cache_[target_class].valid =
+                    false;
+                ROS_WARN(
+                    "Cached observation pose was not reached and "
+                    "cannot provide a stable view; invalidate it");
+            }
+
             ROS_WARN(
                 "Observation region %d was not reached and "
                 "the stopped vehicle is outside its stable "
@@ -2088,6 +2294,17 @@ void OURSWITCH::GotoC(int target_num)
             ros::Time recognition_start =
                 ros::Time::now();
 
+            // 在静止画面中对同一类别做连续确认，避免把一帧 OCR
+            // 抖动误写成类别位置缓存。
+            int consecutive_observed_class = -1;
+            int consecutive_observation_frames = 0;
+            double consecutive_observation_center_x = -1.0;
+            ros::Time last_counted_detection_time(0);
+            bool observation_cache_written[3] = {
+                false,
+                false,
+                false};
+
             while (ros::ok() &&
                    (ros::Time::now() -
                     recognition_start)
@@ -2110,6 +2327,102 @@ void OURSWITCH::GotoC(int target_num)
                             .toSec() <
                         recognition_message_max_age;
 
+                const bool new_detection =
+                    detection_recent &&
+                    last_signal_detection_time_ !=
+                        last_counted_detection_time;
+
+                if (new_detection)
+                {
+                    last_counted_detection_time =
+                        last_signal_detection_time_;
+
+                    const int observed_class =
+                        current_signal_class_;
+                    const bool timestamps_are_close =
+                        !last_signal_class_time_.isZero() &&
+                        !last_signal_detection_time_.isZero() &&
+                        std::fabs(
+                            (last_signal_class_time_ -
+                             last_signal_detection_time_)
+                                .toSec()) <=
+                            observation_cache_timestamp_skew;
+                    const bool valid_observation =
+                        class_recent &&
+                        timestamps_are_close &&
+                        observed_class >= 0 &&
+                        observed_class < 3 &&
+                        std::isfinite(signal_center_x_) &&
+                        signal_center_x_ >= 0.0 &&
+                        signal_center_x_ <= 640.0;
+
+                    if (!valid_observation)
+                    {
+                        consecutive_observed_class = -1;
+                        consecutive_observation_frames = 0;
+                        consecutive_observation_center_x = -1.0;
+                    }
+                    else
+                    {
+                        const bool same_stable_class =
+                            observed_class ==
+                                consecutive_observed_class &&
+                            std::fabs(
+                                signal_center_x_ -
+                                consecutive_observation_center_x) <=
+                                observation_cache_center_tolerance;
+
+                        if (same_stable_class)
+                        {
+                            ++consecutive_observation_frames;
+                        }
+                        else
+                        {
+                            consecutive_observed_class =
+                                observed_class;
+                            consecutive_observation_frames = 1;
+                        }
+
+                        consecutive_observation_center_x =
+                            signal_center_x_;
+
+                        if (consecutive_observation_frames >=
+                                observation_cache_confirmations &&
+                            !observation_cache_written[observed_class])
+                        {
+                            const int observed_wall =
+                                view == 0
+                                    ? region_description.wall
+                                    : region_description.secondary_wall;
+                            const int observed_first_slot =
+                                view == 0
+                                    ? region_description.first_slot
+                                    : region_description
+                                          .secondary_first_slot;
+                            const int observed_last_slot =
+                                view == 0
+                                    ? region_description.last_slot
+                                    : region_description
+                                          .secondary_last_slot;
+                            const Pose observed_pose =
+                                makeCurrentObservationPose(
+                                    active_observation_point,
+                                    observed_wall,
+                                    observed_first_slot,
+                                    observed_last_slot);
+
+                            cacheObservationForClass(
+                                observed_class,
+                                observed_pose,
+                                observed_wall,
+                                observed_first_slot,
+                                observed_last_slot);
+                            observation_cache_written[observed_class] =
+                                true;
+                        }
+                    }
+                }
+
                 if (class_recent &&
                     detection_recent &&
                     current_signal_class_ ==
@@ -2120,6 +2433,33 @@ void OURSWITCH::GotoC(int target_num)
                         "class=%d center_x=%.1f",
                         current_signal_class_,
                         signal_center_x_);
+
+                    // 目标类别已经进入既有的停车流程；同时把当前
+                    // 观察姿态留作独立的快速复核缓存（若尚无该类缓存）。
+                    const int target_viewed_wall =
+                        view == 0
+                            ? region_description.wall
+                            : region_description.secondary_wall;
+                    const int target_viewed_first_slot =
+                        view == 0
+                            ? region_description.first_slot
+                            : region_description.secondary_first_slot;
+                    const int target_viewed_last_slot =
+                        view == 0
+                            ? region_description.last_slot
+                            : region_description.secondary_last_slot;
+                    const Pose target_observation_pose =
+                        makeCurrentObservationPose(
+                            active_observation_point,
+                            target_viewed_wall,
+                            target_viewed_first_slot,
+                            target_viewed_last_slot);
+                    cacheObservationForClass(
+                        current_signal_class_,
+                        target_observation_pose,
+                        target_viewed_wall,
+                        target_viewed_first_slot,
+                        target_viewed_last_slot);
 
                     publishStop();
 
@@ -2579,6 +2919,15 @@ void OURSWITCH::GotoC(int target_num)
         }
 
         publishStop();
+
+        if (using_cached_observation && !target_found)
+        {
+            warehouse_observation_cache_[target_class].valid = false;
+            ROS_WARN(
+                "Cached observation did not reproduce target class "
+                "%d; invalidate it and resume full observation search",
+                target_class);
+        }
 
         if (target_found)
         {

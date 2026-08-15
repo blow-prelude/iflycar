@@ -300,6 +300,7 @@ public:
                                              TrackingTarget::TURNING);
                         cv::imshow("binary", binary_img);
                         cv::imshow("processed_img", canvas);
+                        cv::waitKey(1);
                     }
                     else
                     {
@@ -327,6 +328,7 @@ public:
                         cv::imshow("perspective", pers_frame);
                         cv::imshow("binary", binary_img);
                         cv::imshow("processed_img", canvas);
+                        cv::waitKey(1);
                     }
                 }
                 catch (const cv::Exception &e)
@@ -379,7 +381,7 @@ private:
     double disabled_rate_ = 10.0;
     bool enabled_ = false;
     ros::ServiceServer enable_service_;
-    double left_tracking_left_weight_ = 0.65;
+    double left_tracking_left_weight_ = 0.58;
     double right_tracking_left_weight_ = 0.40;
 
     // ---- 停止线检测 / STOP 状态 ----
