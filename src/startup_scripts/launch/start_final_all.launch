@@ -1,0 +1,43 @@
+<launch>
+  <arg name="clear_params" default="true"/>
+
+  <!-- roslaunch starts roscore automatically when one is not already running. -->
+  <!-- Match start_test2.sh: clear all stale parameters before loading this launch. -->
+  <rosparam command="delete" param="/" if="$(arg clear_params)"/>
+  <!-- Clear stale inter-node handshake flags before any worker node starts. -->
+  <include file="$(find startup_scripts)/launch/init_params.launch"/>
+
+  <include file="$(find ourgoal)/launch/ourgoal.launch"/>
+
+  <node pkg="ucar_camera" type="ucar_camera.py" name="ucar_camera" output="screen"/>
+
+  <include file="$(find camera_2d_lidar_calibration)/launch/reprojection.launch"/>
+
+  <node pkg="ourgoal" type="getLaserPoint" name="getLaserPoint" output="screen"/>
+
+  <node pkg="find_signal" type="rknn_ros" name="find_signal" output="screen"/>
+
+  <node pkg="ourgoal" type="switch_test2" name="switch_test2" output="screen"/>
+  <node pkg="ourgoal" type="TransformListener2" name="TransformListener2" output="screen"/>
+
+  <node pkg="ourgoal" type="AI.py" name="AI" output="screen"/>
+
+  <include file="$(find speech_command)/launch/speech_command.launch"/>
+
+  <node pkg="pcl_work" type="laser2plc" name="laser2plc" output="screen"/>
+  <node pkg="pcl_work" type="ultrasound" name="ultrasound" output="screen"/>
+
+  <node pkg="car_sr" type="sim_bridge_car.py" name="sim_bridge_car" output="screen"/> 
+  
+  <node pkg="traffic_light" type="traffic_light_ros" name="traffic_light_ros" output="screen">
+    <param name="initial_enabled" value="false"/>
+  </node>
+  <node pkg="vision_line" type="find_way_ros_final" name="image_process" output="screen"/>
+  <node pkg="vision_line" type="vision_line_node_fixed" name="vision_line_node" output="screen"/>
+  <node pkg="startup_scripts" type="managed_nodes_client.py" name="managed_nodes" output="screen">
+    <param name="traffic_light_enable_param" value="/start_traffic_light_det"/>
+    <param name="vision_line_enable_param" value="/start_traffic_light_det"/>
+    <param name="traffic_light_service" value="/traffic_light_ros/set_enabled"/>
+    <param name="find_signal_enable_param" value="/task1_all_done"/>
+  </node>
+</launch>
