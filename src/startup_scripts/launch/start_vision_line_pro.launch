@@ -1,7 +1,7 @@
 <launch>
   <arg name="traffic_light_enabled" default="true"/>
 
-  <include file="$(find startup_scripts)/launch/init_params.launch"/>
+  <include file="$(find startup_scripts)/launch/init_params_pro.launch"/>
   <param name="/start_vision_line_enabled" value="true" type="bool"/>
   <param name="/start_traffic_light_det" value="$(arg traffic_light_enabled)" type="bool"/>
 

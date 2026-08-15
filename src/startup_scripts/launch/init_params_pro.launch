@@ -1,5 +1,6 @@
 <launch>
   <!--
+    Pro variant of init_params.launch: superset for the pro startup chain.
     Reset one-shot inter-node handshake flags before starting any nodes.
     ROS parameters survive node restarts while roscore is still running, so
     stale values from the previous run must not release a waiting node.
@@ -10,6 +11,9 @@
   <param name="/qr_scan_done" value="0" type="int"/>
   <param name="/task1_all_done" value="0" type="int"/>
   <param name="/start_traffic_light_det" value="0" type="int"/>
+  <!-- 巡线链路：STOP 完成标志与控制节点主开关，全链路无节点主动清零，必须在此复位 -->
+  <param name="/vision_line_done" value="0" type="int"/>
+  <param name="/start_vision1" value="0" type="int"/>
   <!-- 远程 Gazebo 仿真握手（switch2 与 sim_bridge 双向标志） -->
   <param name="/start_gazebo_sim" value="0" type="int"/>
   <param name="/gazebo_sim_done" value="0" type="int"/>
