@@ -1,4 +1,5 @@
 #include <chrono>
+#include <deque>
 #include <string>
 
 #include <cv_bridge/cv_bridge.h>
@@ -12,12 +13,17 @@
 #include <std_srvs/SetBool.h>
 
 #include "rknn_pool.hpp"
+#include "traffic_light_decision.hpp"
 #include "yolov8_model.hpp"
 
 namespace
 {
     const int kThreadCount = 3;
-    const int kRequiredConsecutiveFrames = 5;
+    const int kStartupDiscardFrames = 5;    // 跳过开头5帧
+    const std::size_t kVoteWindowSize = 10; // 方向投票窗口大小
+    const std::size_t kVoteThreshold = 8;   // 需要8票才能确认方向
+    const std::size_t kFallbackFrameLimit = 30;
+    const std::size_t kFallbackCvStreak = 2;
     const char *kDefaultImageTopic = "/ucar_camera/image_raw";
     const char *kDirectionTopic = "/vision_line_direction";
     const char *kWindowName = "Traffic Light Detection";
@@ -32,7 +38,11 @@ namespace
               image_topic_(image_topic),
               enabled_(initial_enabled),
               queued_frames_(0),
-              discard_results_(0),
+              discard_results_(kStartupDiscardFrames),
+              decision_(kVoteWindowSize,
+                        kVoteThreshold,
+                        kFallbackFrameLimit,
+                        kFallbackCvStreak),
               last_output_time_(Clock::now() - std::chrono::seconds(1))
         {
         }
@@ -93,8 +103,7 @@ namespace
             }
 
             enabled_ = request.data;
-            direction_candidate_.clear();
-            direction_streak_ = 0;
+            decision_.reset();
             if (enabled_)
             {
                 discard_results_ = queued_frames_;
@@ -144,6 +153,7 @@ namespace
                 return;
             }
             ++queued_frames_;
+            pending_frames_.push_back(frame);
 
             if (queued_frames_ > kThreadCount)
             {
@@ -154,6 +164,20 @@ namespace
                     return;
                 }
                 --queued_frames_;
+
+                cv::Mat source_frame;
+                bool has_source_frame = false;
+                if (!pending_frames_.empty())
+                {
+                    source_frame = pending_frames_.front();
+                    pending_frames_.pop_front();
+                    has_source_frame = true;
+                }
+                else
+                {
+                    ROS_ERROR_THROTTLE(1.0,
+                                       "inference result has no matching source frame");
+                }
 
                 if (discard_results_ > 0)
                 {
@@ -167,7 +191,15 @@ namespace
                         showResult(result);
                         last_output_time_ = now;
                     }
-                    updateDirectionStreak(result);
+                    if (has_source_frame)
+                    {
+                        updateDirectionDecision(result, source_frame);
+                    }
+                    else
+                    {
+                        ROS_WARN_THROTTLE(1.0,
+                                          "skipping direction decision without source frame");
+                    }
                 }
             }
 
@@ -216,39 +248,70 @@ namespace
             return best_direction;
         }
 
-        void updateDirectionStreak(const YoloV8Result &result)
+        void updateDirectionDecision(const YoloV8Result &result,
+                                     const cv::Mat &source_frame)
         {
             const TrafficLightDetection *best_direction = bestDirection(result);
-            if (best_direction == nullptr)
+            std::string model_label;
+            std::string cv_label = "unknown";
+            if (best_direction != nullptr)
             {
-                direction_candidate_.clear();
-                direction_streak_ = 0;
-                return;
+                model_label = best_direction->label;
+                if ((model_label == "left" || model_label == "right") &&
+                    !source_frame.empty())
+                {
+                    try
+                    {
+                        cv_label = traffic_light::classifyArrowDirection(
+                            source_frame, best_direction->box);
+                    }
+                    catch (const cv::Exception &error)
+                    {
+                        ROS_WARN_THROTTLE(1.0,
+                                          "traffic-light CV classification failed: %s",
+                                          error.what());
+                    }
+                }
             }
 
-            if (best_direction->label == direction_candidate_)
+            const bool was_fallback = decision_.inFallback();
+            const std::string final_label = decision_.processFrame(
+                model_label, cv_label);
+            if (!was_fallback && decision_.inFallback())
             {
-                ++direction_streak_;
-            }
-            else
-            {
-                direction_candidate_ = best_direction->label;
-                direction_streak_ = 1;
+                ROS_WARN("No traffic-light vote reached %zu votes in %zu frames; "
+                         "switching to CV-only fallback",
+                         kVoteThreshold, kFallbackFrameLimit);
             }
 
-            if (direction_streak_ < kRequiredConsecutiveFrames)
+            ROS_INFO_THROTTLE(
+                1.0,
+                "direction frame=%zu model=%s cv=%s votes=%zu "
+                "straight=%d left=%d right=%d mode=%s cv_candidate=%s cv_streak=%zu",
+                decision_.processedFrameCount(),
+                model_label.empty() ? "unknown" : model_label.c_str(),
+                cv_label.c_str(),
+                decision_.voteCount(),
+                decision_.voteCountFor("straight"),
+                decision_.voteCountFor("left"),
+                decision_.voteCountFor("right"),
+                decision_.inFallback() ? "cv-only" : "vote",
+                decision_.cvCandidate().empty() ? "none" : decision_.cvCandidate().c_str(),
+                decision_.cvStreak());
+
+            if (final_label.empty())
             {
                 return;
             }
 
             std_msgs::String message;
-            message.data = direction_candidate_;
+            message.data = final_label;
             direction_publisher_.publish(message);
-            ROS_INFO("Published traffic-light direction after %d consecutive frames: %s; waiting silently",
-                     kRequiredConsecutiveFrames, message.data.c_str());
+            ROS_INFO("Published traffic-light direction: %s (source=%s); waiting silently",
+                     message.data.c_str(),
+                     was_fallback ? "cv-fallback" : "vote");
 
-            direction_candidate_.clear();
-            direction_streak_ = 0;
+            decision_.reset();
             enabled_ = false;
             if (window_created_)
             {
@@ -267,8 +330,8 @@ namespace
         bool enabled_;
         int queued_frames_;
         int discard_results_;
-        std::string direction_candidate_;
-        int direction_streak_ = 0;
+        std::deque<cv::Mat> pending_frames_;
+        traffic_light::DirectionDecisionAccumulator decision_;
         bool window_created_ = false;
         Clock::time_point last_output_time_;
         cv::Mat map_x_;

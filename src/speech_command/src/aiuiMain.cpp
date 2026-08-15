@@ -17,113 +17,113 @@ using namespace std;
 
 namespace
 {
-const int kTestTimeoutSeconds = 10;
-const int kAwakeTimeoutSeconds = 10;
-bool get_request_test = false;
-vector<string> third_line;
+	const int kTestTimeoutSeconds = 10;
+	const int kAwakeTimeoutSeconds = 10;
+	bool get_request_test = false;
+	vector<string> third_line;
 
-/* Keep the strings alive while the legacy SDK uses their char pointers. */
-struct RuntimePaths
-{
-	explicit RuntimePaths(const string &base)
-		: package(base),
-		  cfg(base + CFG_FILE_PATH),
-		  source(base + SOURCE_FILE_PATH),
-		  grammar(base + GRAMMAR_FILE_PATH),
-		  testAudio(base + TEST_AUDIO_PATH),
-		  log(base + LOG_DIR),
-		  config(base + CONFIG_FILE_PATH),
-		  pcm(base + PCM_FILE_PATH),
-		  originalPcm(base + ORIPCM_FILE_PATH),
-		  wakeupResponse(base + WAKEUP_RESPONSE_WAV),
-		  noInternetResponse(base + NO_INTERNET_RESPONSE_WAV)
+	/* Keep the strings alive while the legacy SDK uses their char pointers. */
+	struct RuntimePaths
 	{
+		explicit RuntimePaths(const string &base)
+			: package(base),
+			  cfg(base + CFG_FILE_PATH),
+			  source(base + SOURCE_FILE_PATH),
+			  grammar(base + GRAMMAR_FILE_PATH),
+			  testAudio(base + TEST_AUDIO_PATH),
+			  log(base + LOG_DIR),
+			  config(base + CONFIG_FILE_PATH),
+			  pcm(base + PCM_FILE_PATH),
+			  originalPcm(base + ORIPCM_FILE_PATH),
+			  wakeupResponse(base + WAKEUP_RESPONSE_WAV),
+			  noInternetResponse(base + NO_INTERNET_RESPONSE_WAV)
+		{
+		}
+
+		void apply()
+		{
+			package_path = const_cast<char *>(package.c_str());
+			package_path1 = package_path;
+			CFG_FILE_PATH = const_cast<char *>(cfg.c_str());
+			SOURCE_FILE_PATH = const_cast<char *>(source.c_str());
+			GRAMMAR_FILE_PATH = const_cast<char *>(grammar.c_str());
+			TEST_AUDIO_PATH = const_cast<char *>(testAudio.c_str());
+			LOG_DIR = const_cast<char *>(log.c_str());
+			CONFIG_FILE_PATH = const_cast<char *>(config.c_str());
+			PCM_FILE_PATH = const_cast<char *>(pcm.c_str());
+			ORIPCM_FILE_PATH = const_cast<char *>(originalPcm.c_str());
+			WAKEUP_RESPONSE_WAV = const_cast<char *>(wakeupResponse.c_str());
+			NO_INTERNET_RESPONSE_WAV = const_cast<char *>(noInternetResponse.c_str());
+		}
+
+		string package;
+		string cfg;
+		string source;
+		string grammar;
+		string testAudio;
+		string log;
+		string config;
+		string pcm;
+		string originalPcm;
+		string wakeupResponse;
+		string noInternetResponse;
+	};
+
+	bool openSerialPort(const string &port, int baudRate)
+	{
+		try
+		{
+			_serial.setPort(port);
+			_serial.setBaudrate(baudRate);
+			_serial.setFlowcontrol(serial::flowcontrol_none);
+			_serial.setParity(serial::parity_none);
+			_serial.setStopbits(serial::stopbits_one);
+			_serial.setBytesize(serial::eightbits);
+			serial::Timeout timeout = serial::Timeout::simpleTimeout(1000);
+			_serial.setTimeout(timeout);
+			_serial.open();
+		}
+		catch (const std::exception &e)
+		{
+			ROS_ERROR("could not open uart %s:%s", port.c_str(), e.what());
+			return false;
+		}
+
+		if (!_serial.isOpen())
+		{
+			ROS_ERROR("could not open uart %s", port.c_str());
+			return false;
+		}
+
+		ros::Duration(0.1).sleep();
+		_serial.flush();
+		ROS_INFO("initial uart success：%s，baud rate %d", port.c_str(), baudRate);
+		return true;
 	}
 
-	void apply()
+	void awakeWatchdog()
 	{
-		package_path = const_cast<char *>(package.c_str());
-		package_path1 = package_path;
-		CFG_FILE_PATH = const_cast<char *>(cfg.c_str());
-		SOURCE_FILE_PATH = const_cast<char *>(source.c_str());
-		GRAMMAR_FILE_PATH = const_cast<char *>(grammar.c_str());
-		TEST_AUDIO_PATH = const_cast<char *>(testAudio.c_str());
-		LOG_DIR = const_cast<char *>(log.c_str());
-		CONFIG_FILE_PATH = const_cast<char *>(config.c_str());
-		PCM_FILE_PATH = const_cast<char *>(pcm.c_str());
-		ORIPCM_FILE_PATH = const_cast<char *>(originalPcm.c_str());
-		WAKEUP_RESPONSE_WAV = const_cast<char *>(wakeupResponse.c_str());
-		NO_INTERNET_RESPONSE_WAV = const_cast<char *>(noInternetResponse.c_str());
+		ros::NodeHandle node;
+		const ros::WallTime deadline =
+			ros::WallTime::now() + ros::WallDuration(kAwakeTimeoutSeconds);
+		ros::WallRate waitRate(10);
+
+		while (ros::ok() && ros::WallTime::now() < deadline)
+			waitRate.sleep();
+
+		if (!ros::ok())
+			return;
+
+		int awake = 0;
+		node.param("/awake", awake, 0);
+		if (awake == 1)
+			return;
+
+		ROS_WARN("startup %d seconds later still not receive wake up signal, automatically set /awake to 1 and shutdown node",
+				 kAwakeTimeoutSeconds);
+		node.setParam("/awake", 1);
+		ros::requestShutdown();
 	}
-
-	string package;
-	string cfg;
-	string source;
-	string grammar;
-	string testAudio;
-	string log;
-	string config;
-	string pcm;
-	string originalPcm;
-	string wakeupResponse;
-	string noInternetResponse;
-};
-
-bool openSerialPort(const string &port, int baudRate)
-{
-	try
-	{
-		_serial.setPort(port);
-		_serial.setBaudrate(baudRate);
-		_serial.setFlowcontrol(serial::flowcontrol_none);
-		_serial.setParity(serial::parity_none);
-		_serial.setStopbits(serial::stopbits_one);
-		_serial.setBytesize(serial::eightbits);
-		serial::Timeout timeout = serial::Timeout::simpleTimeout(1000);
-		_serial.setTimeout(timeout);
-		_serial.open();
-	}
-	catch (const std::exception &e)
-	{
-		ROS_ERROR("无法打开串口 %s：%s", port.c_str(), e.what());
-		return false;
-	}
-
-	if (!_serial.isOpen())
-	{
-		ROS_ERROR("无法打开串口 %s", port.c_str());
-		return false;
-	}
-
-	ros::Duration(0.1).sleep();
-	_serial.flush();
-	ROS_INFO("串口初始化成功：%s，波特率 %d", port.c_str(), baudRate);
-	return true;
-}
-
-void awakeWatchdog()
-{
-	ros::NodeHandle node;
-	const ros::WallTime deadline =
-		ros::WallTime::now() + ros::WallDuration(kAwakeTimeoutSeconds);
-	ros::WallRate waitRate(10);
-
-	while (ros::ok() && ros::WallTime::now() < deadline)
-		waitRate.sleep();
-
-	if (!ros::ok())
-		return;
-
-	int awake = 0;
-	node.param("/awake", awake, 0);
-	if (awake == 1)
-		return;
-
-	ROS_WARN("启动 %d 秒后仍未收到唤醒信号，自动将 /awake 设置为 1 并结束节点",
-			 kAwakeTimeoutSeconds);
-	node.setParam("/awake", 1);
-	ros::requestShutdown();
-}
 } // namespace
 
 int LoadUserConfig(const string &configPath)
@@ -131,7 +131,7 @@ int LoadUserConfig(const string &configPath)
 	ifstream file(configPath.c_str());
 	if (!file.is_open())
 	{
-		ROS_ERROR("无法打开离线语义配置：%s", configPath.c_str());
+		ROS_ERROR("could not open offline semantic config: %s", configPath.c_str());
 		return -1;
 	}
 
@@ -144,7 +144,7 @@ int LoadUserConfig(const string &configPath)
 		boost::split(fields, line, boost::is_any_of(":"));
 		if (fields.size() != 3)
 		{
-			ROS_WARN("忽略离线语义配置第 %d 行：格式应为 问题:协议:音频路径", lineNumber);
+			ROS_WARN("ignoring line %d in offline semantic config: format should be 'question:protocol:audio path'", lineNumber);
 			continue;
 		}
 
@@ -285,7 +285,7 @@ int main(int argc, char **argv)
 
 	if (baudRate <= 0)
 	{
-		ROS_ERROR("启动参数无效：baud_rate=%d", baudRate);
+		ROS_ERROR("invalid params：baud_rate=%d", baudRate);
 		return 1;
 	}
 
@@ -295,7 +295,7 @@ int main(int argc, char **argv)
 	const string packagePath = ros::package::getPath("speech_command");
 	if (packagePath.empty())
 	{
-		ROS_ERROR("找不到 ROS 功能包 speech_command");
+		ROS_ERROR("could not find ROS package speech_command");
 		_serial.close();
 		return 1;
 	}
@@ -304,7 +304,7 @@ int main(int argc, char **argv)
 	paths.apply();
 	LoadUserConfig(packagePath + USER_CONFIG_PATH);
 
-	ROS_INFO("唤醒方式：纯串口（不初始化 USB HID 和 ALSA 录音）");
+	ROS_INFO("wake up: only uart(without initial USB HID and ALSA )");
 
 	AIUITester tester;
 	tester.bind(test_callback);
@@ -318,7 +318,7 @@ int main(int argc, char **argv)
 	}
 	catch (const std::exception &e)
 	{
-		ROS_ERROR("语音处理异常退出：%s", e.what());
+		ROS_ERROR("audio error: %s", e.what());
 		exitCode = 1;
 	}
 
