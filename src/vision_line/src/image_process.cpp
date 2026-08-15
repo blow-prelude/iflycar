@@ -1323,67 +1323,83 @@ void ImageProcess::scan_side_lines(const ValidatedScanFrame &frame,
             }
 
             normalize_search_range(search_left_start, search_left_end, max_edge_x, true);
-            if (draw)
-            {
-                cv::circle(*frame.canvas, cv::Point(search_left_start, y), 1, cv::Scalar(0, 255, 255), -1);
-                cv::circle(*frame.canvas, cv::Point(search_left_end, y), 1, cv::Scalar(0, 255, 255), -1);
-            }
 
-            for (int i = search_left_start; i >= search_left_end; i--)
+            // 搜索起点本应位于赛道内部的黑色区域；若为白色，说明该侧起点被
+            // 横向白线覆盖，本行按遮挡处理：不搜索跳变点、不添加候选点、
+            // 不更新搜索锚点，也不累计或重置 miss。已稳定的边线保留稳定状态
+            // 和锚点；未稳定的边线清空稳定点缓冲，避免遮挡前后的横线端点
+            // 共同凑满 init_stable_count。
+            if (img.at<uchar>(y, search_left_start) != 0)
             {
-                if (row_ptr[i] != 0)
-                { // 非0表示存在黑白跳变点
-                    lx = i;
-                    break;
-                }
-            }
-
-            // 先进行稳定点判断
-            if (lx >= 0)
-            {
-                assert(lx <= max_edge_x);
-                left_added = add_point_with_stable_start(
-                    this->left_line_, cv::Point(lx, y), left_stable_buf, left_stable_flag);
-            }
-
-            // 如果当前行的点没有加入左边线，则下一行的搜索起点不更新
-            if (left_added)
-            {
-                prev_row_left_x = lx;
-                // 只有稳定点才参与拐点检测
-                if (find_corner && !find_left_corner)
+                if (!left_stable_flag)
                 {
-                    const cv::Point current(lx, y);
-                    if (left_corner_count == left_corner_history.size())
-                    {
-                        const float angle = get_angle_p(
-                            left_corner_history[0], left_corner_history[1], current);
-                        if (angle < this->config_.corner_angle_high && angle > this->config_.corner_angle_low)
-                        {
-                            find_left_corner = true;
-                            this->left_corners_ = left_corner_history[1];
-                        }
-                        left_corner_history[0] = left_corner_history[1];
-                        left_corner_history[1] = current;
-                    }
-                    else
-                    {
-                        left_corner_history[left_corner_count++] = current;
-                    }
+                    left_stable_buf.clear();
                 }
             }
-
-            // miss计数逻辑应该在left_added条件之外
-            if (left_stable_flag && !left_added)
-                miss_left_count++;
             else
-                miss_left_count = 0;
-            if (miss_left_count > this->config_.miss_threshold)
             {
-                miss_left_count = 0;
-                prev_row_left_x = mid_x - this->config_.search_offset;
-                left_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
-                left_stable_buf.clear();  // 清空稳定缓冲区
+                if (draw)
+                {
+                    cv::circle(*frame.canvas, cv::Point(search_left_start, y), 1, cv::Scalar(0, 255, 255), -1);
+                    cv::circle(*frame.canvas, cv::Point(search_left_end, y), 1, cv::Scalar(0, 255, 255), -1);
+                }
+
+                for (int i = search_left_start; i >= search_left_end; i--)
+                {
+                    if (row_ptr[i] != 0)
+                    { // 非0表示存在黑白跳变点
+                        lx = i;
+                        break;
+                    }
+                }
+
+                // 先进行稳定点判断
+                if (lx >= 0)
+                {
+                    assert(lx <= max_edge_x);
+                    left_added = add_point_with_stable_start(
+                        this->left_line_, cv::Point(lx, y), left_stable_buf, left_stable_flag);
+                }
+
+                // 如果当前行的点没有加入左边线，则下一行的搜索起点不更新
+                if (left_added)
+                {
+                    prev_row_left_x = lx;
+                    // 只有稳定点才参与拐点检测
+                    if (find_corner && !find_left_corner)
+                    {
+                        const cv::Point current(lx, y);
+                        if (left_corner_count == left_corner_history.size())
+                        {
+                            const float angle = get_angle_p(
+                                left_corner_history[0], left_corner_history[1], current);
+                            if (angle < this->config_.corner_angle_high && angle > this->config_.corner_angle_low)
+                            {
+                                find_left_corner = true;
+                                this->left_corners_ = left_corner_history[1];
+                            }
+                            left_corner_history[0] = left_corner_history[1];
+                            left_corner_history[1] = current;
+                        }
+                        else
+                        {
+                            left_corner_history[left_corner_count++] = current;
+                        }
+                    }
+                }
+
+                // miss计数逻辑应该在left_added条件之外
+                if (left_stable_flag && !left_added)
+                    miss_left_count++;
+                else
+                    miss_left_count = 0;
+                if (miss_left_count > this->config_.miss_threshold)
+                {
+                    miss_left_count = 0;
+                    prev_row_left_x = mid_x - this->config_.search_offset;
+                    left_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
+                    left_stable_buf.clear();  // 清空稳定缓冲区
+                }
             }
         }
 
@@ -1404,64 +1420,80 @@ void ImageProcess::scan_side_lines(const ValidatedScanFrame &frame,
             }
 
             normalize_search_range(search_right_start, search_right_end, max_edge_x, false);
-            if (draw)
-            {
-                cv::circle(*frame.canvas, cv::Point(search_right_start, y), 1, cv::Scalar(255, 255, 0), -1);
-                cv::circle(*frame.canvas, cv::Point(search_right_end, y), 1, cv::Scalar(255, 255, 0), -1);
-            }
 
-            for (int i = search_right_start; i <= search_right_end; i++)
+            // 搜索起点本应位于赛道内部的黑色区域；若为白色，说明该侧起点被
+            // 横向白线覆盖，本行按遮挡处理：不搜索跳变点、不添加候选点、
+            // 不更新搜索锚点，也不累计或重置 miss。已稳定的边线保留稳定状态
+            // 和锚点；未稳定的边线清空稳定点缓冲，避免遮挡前后的横线端点
+            // 共同凑满 init_stable_count。
+            if (img.at<uchar>(y, search_right_start) != 0)
             {
-                if (row_ptr[i] != 0)
-                { // 非0表示存在黑白跳变点
-                    rx = i;
-                    break; // 右侧搜索：找到第一个跳变点就停止
-                }
-            }
-            if (rx >= 0)
-            {
-                assert(rx <= max_edge_x);
-                right_added = add_point_with_stable_start(
-                    this->right_line_, cv::Point(rx, y), right_stable_buf, right_stable_flag);
-            }
-
-            if (right_added)
-            {
-                prev_row_right_x = rx;
-                // 只有稳定点才参与拐点检测
-                if (find_corner && !find_right_corner)
+                if (!right_stable_flag)
                 {
-                    const cv::Point current(rx, y);
-                    if (right_corner_count == right_corner_history.size())
-                    {
-                        const float angle = get_angle_p(
-                            right_corner_history[0], right_corner_history[1], current);
-                        if (angle < this->config_.corner_angle_high && angle > this->config_.corner_angle_low)
-                        {
-                            find_right_corner = true;
-                            this->right_corners_ = right_corner_history[1];
-                        }
-                        right_corner_history[0] = right_corner_history[1];
-                        right_corner_history[1] = current;
-                    }
-                    else
-                    {
-                        right_corner_history[right_corner_count++] = current;
-                    }
+                    right_stable_buf.clear();
                 }
             }
-
-            // miss计数逻辑应该在right_added条件之外
-            if (right_stable_flag && !right_added)
-                miss_right_count++;
             else
-                miss_right_count = 0;
-            if (miss_right_count > this->config_.miss_threshold)
             {
-                miss_right_count = 0;
-                prev_row_right_x = mid_x + this->config_.search_offset;
-                right_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
-                right_stable_buf.clear();  // 清空稳定缓冲区
+                if (draw)
+                {
+                    cv::circle(*frame.canvas, cv::Point(search_right_start, y), 1, cv::Scalar(255, 255, 0), -1);
+                    cv::circle(*frame.canvas, cv::Point(search_right_end, y), 1, cv::Scalar(255, 255, 0), -1);
+                }
+
+                for (int i = search_right_start; i <= search_right_end; i++)
+                {
+                    if (row_ptr[i] != 0)
+                    { // 非0表示存在黑白跳变点
+                        rx = i;
+                        break; // 右侧搜索：找到第一个跳变点就停止
+                    }
+                }
+                if (rx >= 0)
+                {
+                    assert(rx <= max_edge_x);
+                    right_added = add_point_with_stable_start(
+                        this->right_line_, cv::Point(rx, y), right_stable_buf, right_stable_flag);
+                }
+
+                if (right_added)
+                {
+                    prev_row_right_x = rx;
+                    // 只有稳定点才参与拐点检测
+                    if (find_corner && !find_right_corner)
+                    {
+                        const cv::Point current(rx, y);
+                        if (right_corner_count == right_corner_history.size())
+                        {
+                            const float angle = get_angle_p(
+                                right_corner_history[0], right_corner_history[1], current);
+                            if (angle < this->config_.corner_angle_high && angle > this->config_.corner_angle_low)
+                            {
+                                find_right_corner = true;
+                                this->right_corners_ = right_corner_history[1];
+                            }
+                            right_corner_history[0] = right_corner_history[1];
+                            right_corner_history[1] = current;
+                        }
+                        else
+                        {
+                            right_corner_history[right_corner_count++] = current;
+                        }
+                    }
+                }
+
+                // miss计数逻辑应该在right_added条件之外
+                if (right_stable_flag && !right_added)
+                    miss_right_count++;
+                else
+                    miss_right_count = 0;
+                if (miss_right_count > this->config_.miss_threshold)
+                {
+                    miss_right_count = 0;
+                    prev_row_right_x = mid_x + this->config_.search_offset;
+                    right_stable_flag = false; // 重置稳定标志，避免使用错误的搜索范围
+                    right_stable_buf.clear();  // 清空稳定缓冲区
+                }
             }
         }
 
