@@ -19,11 +19,11 @@
 namespace
 {
     const int kThreadCount = 3;
-    const int kStartupDiscardFrames = 5;    // 跳过开头5帧
-    const std::size_t kVoteWindowSize = 10; // 方向投票窗口大小
-    const std::size_t kVoteThreshold = 8;   // 需要8票才能确认方向
-    const std::size_t kFallbackFrameLimit = 30;
-    const std::size_t kFallbackCvStreak = 2;
+    const int kStartupDiscardFrames = 2;   // 跳过开头2帧
+    const std::size_t kVoteWindowSize = 8; // 方向投票窗口大小
+    const std::size_t kVoteThreshold = 5;  // 需要5票才能确认方向
+    const std::size_t kFallbackFrameLimit = 15;
+    const std::size_t kFallbackCvStreak = 3;
     const char *kDefaultImageTopic = "/ucar_camera/image_raw";
     const char *kDirectionTopic = "/vision_line_direction";
     const char *kWindowName = "Traffic Light Detection";

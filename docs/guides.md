@@ -42,11 +42,11 @@ image_callback
 
 **正常投票模式**:
 
-1. 每帧向滑动窗口(容量 10,先进先出)投一票 model_label。
+1. 每帧向滑动窗口(容量 8,先进先出)投一票 model_label。
 2. 若 model_label 与 cv_label 都是 left/right 且**一致**,额外再投一票(CV 确认票,即一帧最多两票)。
-3. 任一方向票数 ≥ 8 → 该方向胜出,发布。
+3. 任一方向票数 ≥ 5 → 该方向胜出,发布。
 
-**CV 兜底模式**:处理满 30 帧仍未有方向达到 8 票 → 切换到 CV-only 模式(打 WARN 日志):此后只看 cv_label,连续 2 帧一致且该两帧 model_label 也是 left/right → 发布该方向。兜底模式下不回退到投票模式。
+**CV 兜底模式**:处理满 15 帧仍未有方向达到 5 票 → 切换到 CV-only 模式(打 WARN 日志):此后只看 cv_label,连续 3 帧一致且该两帧 model_label 也是 left/right → 发布该方向。兜底模式下不回退到投票模式。
 
 **发布后**:节点自动 `enabled_ = false`(一次红绿灯只报一次),由任务流程通过 `~set_enabled` 服务重新启用;重新启用时会重置决策器并丢弃在途的旧推理结果。
 
@@ -61,7 +61,7 @@ image_callback
 
 ### 启动丢帧
 
-构造时 `discard_results_ = 5`:启动后最先取回的 5 帧推理结果直接丢弃(不打印、不参与决策)。原因是相机自动曝光未收敛的前几帧是过曝/欠曝噪声,量化模型会在这种帧上输出铺满全图、置信度饱和(0.998)的大量假框。
+构造时 `discard_results_ = 2`:启动后最先取回的 2 帧推理结果直接丢弃(不打印、不参与决策)。原因是相机自动曝光未收敛的前几帧是过曝/欠曝噪声,量化模型会在这种帧上输出铺满全图、置信度饱和(0.998)的大量假框。
 
 ### 参数
 
@@ -76,6 +76,11 @@ image_callback
 - 检测日志(`class=... box=...`)每 1 秒最多打一帧的完整列表,启动初期若仍见大量 0.998 假框,说明坏帧超过了丢弃窗口。
 - `direction frame=... model=... cv=... votes=... mode=...` 为每秒节流的状态行,可观察投票进度与是否进入兜底。
 - `Published traffic-light direction: ...(source=vote|cv-fallback)` 为最终发布日志。
+
+### 启动说明
+
+- 单独运行 `rosrun traffic_light traffic_light_ros` ，默认开启推理
+- 可以通过 `rosservice call /traffic_light_ros/set_enabled "data: true"` 重新使能
 
 ---
 ## `find_signal`(rknn_ros.cpp)信号牌识别节点
@@ -131,7 +136,8 @@ image_callback
 | `~confirm_frames` | 5 | 类别确认所需连续帧数 |
 | `~visualize` | true | 是否开 cv 窗口 |
 
-### 注意事项
+### 启动说明
+
 
 
 
