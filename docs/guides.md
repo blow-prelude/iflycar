@@ -83,6 +83,7 @@ image_callback
 - 可以通过 `rosservice call /traffic_light_ros/set_enabled "data: true"` 重新使能
 
 ---
+
 ## `find_signal`(rknn_ros.cpp)信号牌识别节点
 
 ### 功能概述
@@ -447,4 +448,289 @@ VISION_LINE_  轮询等 vision_line_done=1 → 置 start_vision_line=0 → 播�
 
 ---
 
+# 节点指南-pro篇
 
+## pro 巡线链路概述
+
+pro 版本把职责拆成两个独立节点：
+
+- `find_way_ros_pro`（源码 `find_way_ros_pro.cpp`，launch 节点名
+  `/image_process`）负责相机巡线、停止线计数，以及在避障期间暂停处理、避障结束
+  后复位巡线状态机。
+- `vision_line_node_fixed_pro`（源码 `vision_line_fixed_pro.cpp`，launch 节点名
+  `/vision_line_node`）负责雷达检测、三段式避障动作和正常巡线速度控制。
+
+两个节点通过锁存话题 `/vision_line_avoidance_active` 对接：
+
+```text
+/ucar_camera/image_raw
+        ↓
+find_way_ros_pro ── /vision_line ──→ vision_line_node_fixed_pro ──→ /cmd_vel
+        ↑                                      ↑
+        │ /vision_line_avoidance_active        └── /scan
+        └──────────── false / true ────────────────┘
+
+true : 控制节点正在避障，图像节点暂停巡线和停止线检测
+false: 避障完成或取消，图像节点完整复位后重新巡线
+```
+
+`start_all_pro.launch` 同时启动两个 pro 可执行文件，并由
+`managed_node_client_pro.py` 通过各节点的 `~set_enabled` 服务统一管理生命周期。
+普通版 `find_way_ros` / `vision_line_node_fixed` 不参与这条 pro 链路。
+
+---
+
+## `find_way_ros_pro`（find_way_ros_pro.cpp）pro 视觉巡线节点
+
+### 功能概述
+
+`find_way_ros_pro` 的相机巡线、方向状态机、中线消息和停止线检测与普通版
+`find_way_ros` 相同。pro 版额外订阅控制节点发布的避障活动状态：
+
+- 避障开始（`true`）后暂停相机帧处理，不再更新停止线检测，也不再发布
+  `/vision_line`。
+- 避障完成或取消（`false`）后清除停止线计数、停止线去抖阶段、视觉拟合线和
+  上一条有效消息，从 `IDLE` 按原 `direction_` 重新进入巡线。
+
+图像节点不订阅 `/scan`，也不发布 `/cmd_vel`；实际雷达检测和底盘绕行动作完全
+由 `vision_line_node_fixed_pro` 执行。
+
+### 话题与服务
+
+| 方向 | 名称 | 类型 | 说明 |
+|------|------|------|------|
+| 订阅 | `ucar_camera/image_raw`（`~image_topic`） | `sensor_msgs/Image` | 相机输入，队列 1，回调覆盖保存最新帧 |
+| 订阅 | `/vision_line_direction_out`（`~direction_topic`） | `std_msgs/String` | `straight` / `left` / `right` / `stop` |
+| 订阅 | `/vision_line_avoidance_active` | `std_msgs/Bool` | pro 控制节点发布的锁存避障状态 |
+| 发布 | `/vision_line`（`~vision_line_topic`） | `std_msgs/Float32MultiArray` | `[x_error, y_raw]`；避障和 STOP 期间不发布 |
+| 服务 | `~set_enabled` | `std_srvs/SetBool` | 启用或暂停图像处理；launch 下为 `/image_process/set_enabled` |
+
+与普通版相同，节点还使用以下全局参数：
+
+| 参数 | 写入时机 | 语义 |
+|------|----------|------|
+| `/start_vision1` | `IDLE → *_TRACKING` | 通知控制节点开始使用巡线消息 |
+| `/start_vision_line2`（默认 `~turning_flag_param`） | 构造、禁用和复位时置 0 | 旧转弯控制标志 |
+| `/vision_line_done` | 停止线计数达到目标时置 1 | 通知总调度巡线结束 |
+
+### 主循环优先级
+
+```text
+ros::spinOnce
+  ├─ disabled：按 ~disabled_rate 慢速等待
+  ├─ 收到 avoidance true→false：完整复位，等待下一帧
+  ├─ avoidance_active == true：暂停处理
+  ├─ STOP 满 5 秒：自动 disabled 并复位
+  ├─ 取最新相机帧
+  ├─ 处理方向变更请求
+  ├─ IDLE：按 direction_ 进入 STRAIGHT/LEFT/RIGHT_TRACKING
+  └─ 跟踪态：图像预处理 → 边线/中线 → 停止线检测 → 发布 /vision_line
+```
+
+避障判断位于取相机帧和 STOP 退出计时之前。因此避障期间不会继续累计停止线，
+也不会因为相机暂时无帧而遗漏避障状态。图像订阅回调仍会覆盖缓存，但避障结束
+复位时会释放该缓存，恢复巡线必须等待一张新的相机帧。
+
+### 避障握手与状态机复位
+
+`avoidanceActiveCallback` 处理 `/vision_line_avoidance_active`：
+
+1. 首次收到 `true`：设置 `avoidance_active_=true`，主循环停止图像处理和
+   `/vision_line` 发布。
+2. 从 `true` 变为 `false`：设置 `avoidance_reset_requested_=true`。
+3. 主循环消费复位请求，调用 `resetProcessingState()`，再调用
+   `processor_.clear_lines()`。
+4. 下一轮等待新相机帧，从 `IDLE` 根据保留的 `direction_` 重新进入对应跟踪态。
+
+复位内容如下：
+
+| 类别 | 被复位的状态 |
+|------|--------------|
+| 主巡线状态机 | `state_=IDLE`、`miss_line_=NO_MISS`、取消旧 `reset_requested_` |
+| 停止线状态机 | `stop_line_count_=0`、`stop_phase_=STOP_IDLE`、`far_run_/near_run_/miss_run_=0` |
+| STOP 状态 | `in_stop_=false`、关闭五秒自动禁用计时 |
+| 视觉缓存 | 释放 `latest_frame_`、清除 ImageProcess 内部线数据、`has_last_valid_msg_=false` |
+| 中线/转弯 | 中线模式先回 `MID_AVG`，`/start_vision_line2=0` |
+
+复位会保留 `direction_`，所以避障前为 left/right/straight，恢复后仍进入同一方向
+的巡线状态。该流程不主动把 `/vision_line_done` 改回 0；正常避障只能在巡线未完成
+时发生，该参数应仍为 0。
+
+避障状态回调即使节点当前 disabled 也会记录最新锁存值。这样节点在避障过程中被
+单独重新启用时，不会误认为当前可以恢复巡线。
+
+### 巡线与停止线处理
+
+三个跟踪态继续沿用普通版逻辑：
+
+- `STRAIGHT_TRACKING`：将输入缩放为 320×240，执行固定地面透视变换，按
+  `straight_track_side_=LEFT_ONLY` 搜索左侧线，以 `LEFT_OFFSET` 生成中线并调用
+  `fit_polynomial()`。
+- `LEFT_TRACKING` / `RIGHT_TRACKING`：原始相机图像预处理后动态搜索双侧线，以
+  左侧权重 0.65 / 0.40 生成中线并调用 `fit_polynomial2()`。
+- 中线有效时发布 `[目标点横向像素误差, 原图 y]`；当前帧无效时沿用上一条有效
+  消息，从未有效过则发布 `{0, -1}`。
+- 停止线仍按“远端连续确认 → 近端连续确认”计数；达到
+  `~stop_line_target` 后设置 `/vision_line_done=1`，停止发布，并在 5 秒后自动
+  disabled。
+
+### 参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `~image_topic` | `ucar_camera/image_raw` | 输入图像话题 |
+| `~vision_line_topic` | `/vision_line` | 巡线结果话题 |
+| `~direction_topic` | `/vision_line_direction_out` | 方向输入话题 |
+| `~turning_flag_param` | `/start_vision_line2` | 复位时清零的转弯标志参数名 |
+| `~initial_direction` | `stop` | 启动方向；pro launch 未覆盖，等待控制节点转发方向 |
+| `~loop_rate` | 120 | 主循环频率 Hz |
+| `~disabled_rate` | 10.0 | disabled 时轮询频率 Hz |
+| `~left_tracking_left_weight` | 0.65 | LEFT_TRACKING 的左边线权重 |
+| `~right_tracking_left_weight` | 0.40 | RIGHT_TRACKING 的左边线权重 |
+| `~stop_line_target` | 2 | 进入 STOP 所需完整跨越的停止线数 |
+| `~stop_y_cross` | 0.80 | LEFT/RIGHT 停止线远近分界 |
+| `~straight_stop_y_cross` | 0.85 | STRAIGHT 停止线远近分界 |
+| `~stop_far_min_frames` | 3 | 远端连续确认帧数 |
+| `~stop_near_min_frames` | 3 | 近端连续确认帧数 |
+| `~stop_miss_min_frames` | 3 | 丢检后放弃当前停止线阶段的帧数 |
+
+`~corner_delay_s`、`~turning_end_x_error_abs_max`、`~vision_target_y` 和
+`~turning_target_y` 仍只加载与校验，不参与当前 pro 主流程。
+
+### 关键日志
+
+- `Avoidance active: pausing vision-line processing`：收到避障开始信号。
+- `Avoidance complete: reset tracking and stop-line state; resuming from IDLE`：收到
+  结束信号并完成复位。
+- `State: IDLE -> ...`：复位后按原方向重新进入巡线。
+- `Stop line crossed: count=n (target=m)`：正常巡线期间完成一次停止线跨越。
+- `STOP has been active for 5 seconds; disabling find_way_ros_pro ...`：STOP 自动禁用。
+
+---
+
+## `vision_line_node_fixed_pro`（vision_line_fixed_pro.cpp）配套雷达避障控制节点
+
+### 功能概述
+
+该节点保留普通版的方向机动和视觉巡线 PID，同时直接订阅二维雷达并接管
+`/cmd_vel` 完成一次固定避障。它是 `/vision_line_avoidance_active` 的唯一发布者，
+负责通知 `find_way_ros_pro` 何时暂停和复位。
+
+当前避障是**单进程一次性**的：首次触发时 `avoidance_used_=true`，服务禁用、
+重新启用或取消当前动作都不会清除此标志；若要再次允许避障，需要重启该节点进程。
+
+### 话题与服务
+
+| 方向 | 名称 | 类型 | 说明 |
+|------|------|------|------|
+| 订阅 | `/vision_line` | `std_msgs/Float32MultiArray` | pro 图像节点发布的横向误差与目标 y |
+| 订阅 | `/scan` | `sensor_msgs/LaserScan` | 二维雷达扫描 |
+| 订阅 | `/vision_line_direction` | `std_msgs/String` | 红绿灯方向原始结果 |
+| 发布 | `/cmd_vel` | `geometry_msgs/Twist` | 正常巡线及避障速度命令 |
+| 发布 | `/vision_line_direction_out` | `std_msgs/String` | 方向机动完成后转发给图像节点 |
+| 发布 | `/vision_line_avoidance_active` | `std_msgs/Bool`（锁存） | 初始 false；避障开始 true；完成/取消 false |
+| 服务 | `~set_enabled` | `std_srvs/SetBool` | launch 下为 `/vision_line_node/set_enabled` |
+
+### 雷达判定
+
+`scanCallback` 只检查车头正前方角度窗口：
+
+1. 将每束雷达角度归一化到 `[-π, π]`。
+2. 只保留 `abs(angle) <= ~obstacle_front_half_angle` 的点。
+3. 忽略非有限值、低于 `range_min` 或高于有效 `range_max` 的量程。
+4. 有效点最小距离不大于 `~obstacle_distance_threshold` 时判定有障碍。
+5. 扫描年龄超过 `~obstacle_scan_timeout` 时视为不新鲜，不触发或结束避障。
+
+雷达避障只在节点 enabled、`/start_vision1 != 0`、方向为 left/right/straight、且
+方向起步/旋转机动已经结束时执行。
+
+### 避障方向
+
+底盘坐标中 `linear.y > 0` 为左移，`linear.y < 0` 为右移：
+
+| 当前方向 | 第一次横移 | 返回横移 |
+|----------|------------|----------|
+| `left` | 右移（`linear.y < 0`） | 左移 |
+| `right` | 左移（`linear.y > 0`） | 右移 |
+| `straight` | 左移（与 `find_way_ros_pro` 当前 `LEFT_ONLY` 一致） | 右移 |
+
+避障开始后只接受 `stop`；新的 left/right/straight 指令会被忽略，避免中途改变横移
+方向。
+
+### 避障状态机
+
+```text
+IDLE
+  └─ 新鲜雷达扫描发现障碍，且本进程尚未避障
+       ↓ 发布 avoidance_active=true
+STOP             发布零速度，等待 avoidance_stop_duration
+       ↓
+LATERAL_OUT      按选定方向横移 0.40 m（名义距离）
+       ↓
+MOVE_FORWARD     前进 0.30 m（名义距离）
+       ↓
+LATERAL_BACK     反向横移 0.40 m（名义距离）
+       ↓
+WAIT_CLEAR       持续发布零速度，等待一帧新鲜且前方无障碍的扫描
+       ↓ 清 PID 与旧视觉消息，发布 avoidance_active=false
+IDLE             恢复接收新的 /vision_line
+```
+
+横移和前进均为“固定距离 ÷ 配置速度”得到持续时间的开环动作。launch 默认横移
+持续 `0.40 / 0.20 = 2.0 s`，前进持续 `0.30 / 0.30 = 1.0 s`；不读取 `/odom`。
+
+完成时控制节点先清空角速度 PID 的积分/微分记忆和 `vision_data_`，再发布
+`avoidance_active=false`。因此图像节点复位期间，控制节点不会使用避障前残留的
+视觉误差驱动底盘。
+
+收到 `stop`、服务 disabled 或 `/start_vision1==0` 会取消当前避障、发布零速度和
+`avoidance_active=false`。图像节点会把该下降沿视为避障结束并执行同一套完整复位。
+
+### 避障参数
+
+| 私有参数 | 代码默认 / pro launch | 说明 |
+|----------|-----------------------|------|
+| `~obstacle_distance_threshold` | 0.10 / 0.50 m | 前方障碍触发距离 |
+| `~obstacle_front_half_angle` | 0.3491 / 0.3491 rad | 前方检测半角，约 20° |
+| `~obstacle_scan_timeout` | 0.5 / 0.5 s | 雷达扫描最大有效年龄 |
+| `~avoidance_lateral_speed` | 0.2 / 0.2 m/s | 横移速度，最大被限到 0.5 m/s |
+| `~avoidance_forward_speed` | 0.3 / 0.3 m/s | 前进速度，最大被限到 0.5 m/s |
+| `~avoidance_stop_duration` | 0.15 / 0.15 s | 检出后先停车的时长 |
+
+固定名义距离 `AVOIDANCE_LATERAL_DISTANCE=0.40 m`、
+`AVOIDANCE_FORWARD_DISTANCE=0.30 m` 写在代码中，不是 ROS 参数。
+
+### 生命周期和启动
+
+pro 全流程启动：
+
+```bash
+roslaunch startup_scripts start_all_pro.launch
+```
+
+或运行工作区脚本：
+
+```bash
+./start_all_pro.sh
+```
+
+`managed_node_client_pro.py` 默认根据 `/start_traffic_light_det` 同步启停
+`/image_process` 和 `/vision_line_node`。也可分别手动调用：
+
+```bash
+rosservice call /image_process/set_enabled "data: true"
+rosservice call /vision_line_node/set_enabled "data: true"
+```
+
+调试握手状态：
+
+```bash
+rostopic echo /vision_line_avoidance_active
+rostopic echo /vision_line
+rostopic echo /cmd_vel
+```
+
+正常启动后 `/vision_line_avoidance_active` 应先得到锁存的 `false`；检测到障碍时
+变为 `true`，三段动作完成且前方扫描清空后恢复为 `false`。
+
+---

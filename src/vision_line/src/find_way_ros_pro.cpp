@@ -3,6 +3,7 @@
 #include <image_transport/image_transport.h>
 #include <cv_bridge/cv_bridge.h>
 #include <sensor_msgs/Image.h>
+#include <std_msgs/Bool.h>
 #include <std_msgs/Float32MultiArray.h>
 #include <std_msgs/String.h>
 #include <std_srvs/SetBool.h>
@@ -98,6 +99,12 @@ public:
         direction_sub_ = nh_.subscribe(direction_topic_, 10, &FindWayROS::directionCallback, this);
         ROS_INFO("Subscribed direction topic: %s", direction_topic_.c_str());
 
+        // pro 控制节点在雷达避障期间接管底盘；本节点暂停视觉处理，结束后完整复位。
+        avoidance_active_sub_ = nh_.subscribe(
+            "/vision_line_avoidance_active", 1,
+            &FindWayROS::avoidanceActiveCallback, this);
+        ROS_INFO("Subscribed avoidance state topic: /vision_line_avoidance_active");
+
         // 发布视觉线话题（全局话题）
         vision_line_pub_ = nh_.advertise<std_msgs::Float32MultiArray>(vision_line_topic, 10);
         ROS_INFO("Publishing vision line topic: %s", vision_line_topic.c_str());
@@ -146,12 +153,28 @@ public:
                 continue;
             }
 
+            if (avoidance_reset_requested_)
+            {
+                avoidance_reset_requested_ = false;
+                resetProcessingState();
+                processor_.clear_lines();
+                ROS_INFO("Avoidance complete: reset tracking and stop-line state; resuming from IDLE");
+                rate.sleep();
+                continue;
+            }
+
+            if (avoidance_active_)
+            {
+                rate.sleep();
+                continue;
+            }
+
             if (stopDisableDelayElapsed())
             {
                 // STOP 满 5 秒不退出进程,改为自动禁用,等待任务流程再次启用
                 enabled_ = false;
                 resetProcessingState();
-                ROS_INFO("STOP has been active for 5 seconds; disabling find_way_ros (enabled_=false)");
+                ROS_INFO("STOP has been active for 5 seconds; disabling find_way_ros_pro (enabled_=false)");
                 continue;
             }
 
@@ -353,6 +376,7 @@ private:
     image_transport::ImageTransport it_;
     image_transport::Subscriber image_sub_;
     ros::Subscriber direction_sub_;
+    ros::Subscriber avoidance_active_sub_;
     ros::Publisher vision_line_pub_;
 
     std::mutex frame_mutex_;
@@ -361,6 +385,8 @@ private:
     std::mutex direction_mutex_;
     std::string direction_ = "left";
     bool reset_requested_ = false;
+    bool avoidance_active_ = false;
+    bool avoidance_reset_requested_ = false;
 
     State state_ = IDLE;
     MissLineState miss_line_ = NO_MISS;
@@ -553,6 +579,24 @@ private:
         ROS_INFO("Direction set to: %s", dir.c_str());
     }
 
+    void avoidanceActiveCallback(const std_msgs::Bool::ConstPtr &msg)
+    {
+        if (msg->data)
+        {
+            if (!avoidance_active_)
+                ROS_INFO("Avoidance active: pausing vision-line processing");
+            avoidance_active_ = true;
+            avoidance_reset_requested_ = false;
+            return;
+        }
+
+        if (avoidance_active_)
+        {
+            avoidance_active_ = false;
+            avoidance_reset_requested_ = true;
+        }
+    }
+
     // 切换 enabled 与 STOP 自动禁用共用的复位逻辑:清帧缓存、回 IDLE、复位停止线检测等
     void resetProcessingState()
     {
@@ -584,6 +628,7 @@ private:
 
         enabled_ = request.data;
         resetProcessingState();
+        avoidance_reset_requested_ = false;
 
         response.success = true;
         response.message = enabled_ ? "enabled" : "disabled";
@@ -747,7 +792,7 @@ private:
 
 int main(int argc, char **argv)
 {
-    ros::init(argc, argv, "find_way_ros");
+    ros::init(argc, argv, "find_way_ros_pro");
     try
     {
         FindWayROS node;
@@ -756,12 +801,12 @@ int main(int argc, char **argv)
     }
     catch (const std::exception &e)
     {
-        ROS_FATAL("find_way_ros terminated: %s", e.what());
+        ROS_FATAL("find_way_ros_pro terminated: %s", e.what());
         return 1;
     }
     catch (...)
     {
-        ROS_FATAL("find_way_ros terminated due to an unknown exception");
+        ROS_FATAL("find_way_ros_pro terminated due to an unknown exception");
         return 1;
     }
 }

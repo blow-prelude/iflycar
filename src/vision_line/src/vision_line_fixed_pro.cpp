@@ -1,6 +1,7 @@
 #include <ros/ros.h>
 #include "geometry_msgs/Twist.h"
 #include "sensor_msgs/LaserScan.h"
+#include "std_msgs/Bool.h"
 #include "std_msgs/Float32MultiArray.h"
 #include "std_msgs/String.h"
 #include "std_srvs/SetBool.h"
@@ -68,6 +69,7 @@ private:
 
     // 雷达前方障碍检测缓存。
     ros::Subscriber scan_sub_;
+    ros::Publisher avoidance_active_pub_;
     bool front_obstacle_detected_ = false;
     bool front_scan_valid_ = false;
     double front_obstacle_distance_ = std::numeric_limits<double>::infinity();
@@ -202,10 +204,17 @@ private:
     // 清除当前避障机动。禁用巡线或收到 stop 时调用，避免下次启动时接着执行旧状态。
     void resetAvoidance()
     {
+        const bool was_active = avoidance_state_ != AvoidanceState::IDLE;
         // 这里只重置当前阶段；avoidance_used_ 故意保留，保证进程内只执行一次。
         avoidance_state_ = AvoidanceState::IDLE;
         avoidance_start_time_ = ros::Time(0);
         avoidance_lateral_direction_ = 1.0;
+        if (was_active)
+        {
+            std_msgs::Bool msg;
+            msg.data = false;
+            avoidance_active_pub_.publish(msg);
+        }
     }
 
     // 读取雷达缓存，并检查数据是否仍在有效时间内。
@@ -277,6 +286,9 @@ private:
         avoidance_used_ = true;
         avoidance_state_ = AvoidanceState::STOP;
         avoidance_start_time_ = ros::Time::now();
+        std_msgs::Bool active_msg;
+        active_msg.data = true;
+        avoidance_active_pub_.publish(active_msg);
         ROS_WARN("Front obstacle detected (%.3fm). Avoidance: stop, %s %.2fm, "
                  "forward %.2fm, return %.2fm",
                  obstacle_distance,
@@ -377,6 +389,13 @@ private:
                 current_error_ = 0.0;
                 angular_pid_.err_last = 0.0;
                 angular_pid_.err_sum = 0.0;
+                {
+                    std::lock_guard<std::mutex> lock(data_mutex_);
+                    vision_data_ = {0.0f, 0.0f, false, false};
+                }
+                std_msgs::Bool active_msg;
+                active_msg.data = false;
+                avoidance_active_pub_.publish(active_msg);
                 ROS_INFO("Avoidance complete: front scan is clear, resume line following");
             }
             break;
@@ -493,10 +512,15 @@ public:
 
         // 创建发布者和订阅者
         cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>("/cmd_vel", 10);
+        avoidance_active_pub_ =
+            nh_.advertise<std_msgs::Bool>("/vision_line_avoidance_active", 1, true);
         vision_sub_ = nh_.subscribe("/vision_line", 10, &VisionErrorController::visionCallback, this);
         scan_sub_ = nh_.subscribe("/scan", 10, &VisionErrorController::scanCallback, this);
         direction_sub_ = nh_.subscribe("/vision_line_direction", 10, &VisionErrorController::directionCallback, this);
         direction_pub_ = nh_.advertise<std_msgs::String>("/vision_line_direction_out", 10);
+        std_msgs::Bool initial_avoidance_state;
+        initial_avoidance_state.data = false;
+        avoidance_active_pub_.publish(initial_avoidance_state);
         nh_private_.param("disabled_rate", disabled_rate_, 10.0);
         if (disabled_rate_ <= 0.0)
             throw std::invalid_argument("~disabled_rate must be > 0");
@@ -814,4 +838,3 @@ int main(int argc, char **argv)
     controller.run();
     return 0;
 }
-

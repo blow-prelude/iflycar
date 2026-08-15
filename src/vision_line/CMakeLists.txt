@@ -162,6 +162,7 @@ add_executable(${PROJECT_NAME}_node_fixed src/vision_line_fixed.cpp)
 add_executable(${PROJECT_NAME}_node_fixed_pro src/vision_line_fixed_pro.cpp)
 add_executable(find_way src/find_way.cpp)
 add_executable(find_way_ros src/find_way_ros.cpp)
+add_executable(find_way_ros_pro src/find_way_ros_pro.cpp)
 add_executable(camera_test src/camera_test.cpp)
 
 add_library(camera_capture src/camera_capture.cpp)
@@ -193,6 +194,10 @@ target_link_libraries(find_way
   camera_capture
 )
 target_link_libraries(find_way_ros
+  ${catkin_LIBRARIES}
+  image_process
+)
+target_link_libraries(find_way_ros_pro
   ${catkin_LIBRARIES}
   image_process
 )
@@ -254,6 +259,12 @@ target_include_directories(find_way_ros
   ${catkin_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
 )
+target_include_directories(find_way_ros_pro
+  PUBLIC
+  include
+  ${catkin_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
+)
 
 target_include_directories(camera_test
   PUBLIC
@@ -268,6 +279,7 @@ target_include_directories(ground_perspective PUBLIC
   ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(find_way ground_perspective)
 target_link_libraries(find_way_ros ground_perspective)
+target_link_libraries(find_way_ros_pro ground_perspective)
 target_compile_options(ground_perspective PRIVATE -std=c++11)
 
 add_executable(dynamic_ground_perspective_cpp
@@ -296,6 +308,20 @@ if(CATKIN_ENABLE_TESTING)
       ${catkin_INCLUDE_DIRS}
       ${OpenCV_INCLUDE_DIRS})
     target_compile_options(test_ground_perspective PRIVATE -std=c++11)
+  endif()
+
+  catkin_add_gtest(test_image_process
+    test/test_image_process.cpp)
+  if(TARGET test_image_process)
+    target_link_libraries(test_image_process
+      gtest_main
+      image_process
+      ${OpenCV_LIBS})
+    target_include_directories(test_image_process PUBLIC
+      include
+      ${catkin_INCLUDE_DIRS}
+      ${OpenCV_INCLUDE_DIRS})
+    target_compile_options(test_image_process PRIVATE -std=c++11)
   endif()
 endif()
 

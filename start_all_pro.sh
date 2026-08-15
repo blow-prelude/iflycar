@@ -22,4 +22,4 @@ if [ "$old_master_stopped" != true ]; then
 fi
 
 echo "Starting ROS nodes with a clean roscore..."
-exec roslaunch startup_scripts start_final_all.launch
+exec roslaunch startup_scripts start_all_pro.launch

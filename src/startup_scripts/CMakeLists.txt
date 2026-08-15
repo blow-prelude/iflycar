@@ -7,6 +7,7 @@ catkin_package()
 
 catkin_install_python(PROGRAMS
   scripts/managed_nodes_client.py
+  scripts/managed_node_client_pro.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
