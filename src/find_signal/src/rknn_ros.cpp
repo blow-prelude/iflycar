@@ -56,12 +56,14 @@ namespace
     const char *kClassTopic = "/signal_class";
     const char *kWindowName = "Signal Detection Result";
     const int kMaxThreadCount = 3;
+    const int kConfirmFrames = 5;
 
     struct NodeConfig
     {
         std::string det_model_path;
         std::string rec_model_path;
         int thread_count;
+        int confirm_frames;
         bool visualize;
     };
 
@@ -112,6 +114,7 @@ namespace
         config.det_model_path = package_path + "/models/ppocrv4_det.rknn";
         config.rec_model_path = package_path + "/models/ppocrv4_rec.rknn";
         config.thread_count = 3;
+        config.confirm_frames = kConfirmFrames;
         config.visualize = true;
 
         private_node.param<std::string>("det_model_path", config.det_model_path,
@@ -119,6 +122,8 @@ namespace
         private_node.param<std::string>("rec_model_path", config.rec_model_path,
                                         config.rec_model_path);
         private_node.param("thread_count", config.thread_count, config.thread_count);
+        private_node.param("confirm_frames", config.confirm_frames,
+                           config.confirm_frames);
         private_node.param("visualize", config.visualize, config.visualize);
         return config;
     }
@@ -131,9 +136,13 @@ namespace
                     config.thread_count),
               thread_count_(config.thread_count),
               pending_count_(0),
+              confirm_frames_(std::max(1, config.confirm_frames)),
               visualize_(config.visualize),
               enabled_(false),
-              processed_frame_count_(0)
+              processed_frame_count_(0),
+              streak_class_id_(-1),
+              streak_count_(0),
+              last_confirmed_class_(-1)
         {
         }
 
@@ -279,11 +288,42 @@ namespace
             cv::waitKey(1);
         }
 
+        // 连续 confirm_frames_ 帧识别到同一类别才对外确认;确认后每帧继续发布,
+        // 满足消费端按时间戳判断数据新鲜度的需要(switch2 侧 maximum_detection_age)。
+        void update_class_streak(int class_id)
+        {
+            if (class_id == -1)
+            {
+                streak_class_id_ = -1;
+                streak_count_ = 0;
+                last_confirmed_class_ = -1;
+                return;
+            }
+
+            if (class_id != streak_class_id_)
+            {
+                streak_class_id_ = class_id;
+                streak_count_ = 0;
+            }
+            ++streak_count_;
+
+            if (streak_count_ >= confirm_frames_ &&
+                last_confirmed_class_ != streak_class_id_)
+            {
+                ROS_INFO("class %d confirmed after %d consecutive frames",
+                         streak_class_id_, streak_count_);
+                last_confirmed_class_ = streak_class_id_;
+            }
+        }
+
         void publish_result(const ppocr_text_recog_array_result_t &results)
         {
             const ppocr_text_recog_result_t *result = get_biggest_result(results);
             if (result == NULL)
+            {
+                update_class_streak(-1);
                 return;
+            }
 
             const rknn_quad_t &box = result->box;
             std_msgs::Float32MultiArray detection_message;
@@ -304,12 +344,15 @@ namespace
 
             const std::string text(result->text.str);
             const int class_id = classfy(text);
-            ROS_INFO_THROTTLE(1.5, "OCR text: %s, class_id: %d", text.c_str(), class_id);
-            if (class_id == -1)
+            update_class_streak(class_id);
+            ROS_INFO_THROTTLE(1.5, "OCR text: %s, class_id: %d, streak: %d/%d",
+                              text.c_str(), class_id, streak_count_,
+                              confirm_frames_);
+            if (last_confirmed_class_ == -1)
                 return;
 
             std_msgs::Int32 class_message;
-            class_message.data = class_id;
+            class_message.data = last_confirmed_class_;
             class_pub_.publish(class_message);
         }
 
@@ -323,9 +366,13 @@ namespace
         std::queue<double> callback_preprocess_times_;
         int thread_count_;
         int pending_count_;
+        int confirm_frames_;
         bool visualize_;
         bool enabled_;
         unsigned long long processed_frame_count_;
+        int streak_class_id_;
+        int streak_count_;
+        int last_confirmed_class_;
     };
 } // namespace
 
