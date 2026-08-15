@@ -180,7 +180,7 @@ void OURSWITCH::GotoD()
     const bool reached_fixed_point =
         navigateWithRetry(
             0.4,
-            -3.05,
+            -3.08,
             -1.57,
             20.0,
             "fixed GotoD point");
