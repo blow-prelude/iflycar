@@ -79,6 +79,10 @@ SLAM建图
 激光雷达驱动
 
 ---
+一键启动 `./start_all.sh`
+启动巡线测试 `roslaunch startup_scripts start_vision_line.launch`
+
+---
 ### `managed_nodes_client.py` 节点生命周期管理
 
 `startup_scripts/scripts/managed_nodes_client.py` 通过各节点提供的
@@ -101,10 +105,16 @@ SLAM建图
 
 #### 参数驱动的状态切换
 
-管理节点默认以 10 Hz（`~parameter_poll_rate`）读取以下两个 ROS 参数：
+管理节点默认以 10 Hz（`~parameter_poll_rate`）读取以下 ROS 参数：
 
-- `/start_traffic_light_det`：控制交通灯检测和两个视觉巡线节点。
-- `/task1_all_done`：请求启用 `find_signal` OCR。
+- `~traffic_light_enable_param`：交通灯检测开关参数名，默认指向
+  `/start_traffic_light_det`。
+- `~vision_line_enable_param`：视觉巡线开关参数名，默认与交通灯开关参数相同。
+- `~find_signal_enable_param`：OCR 请求参数名，默认指向 `/task1_all_done`。
+- `~manage_find_signal`：是否管理 OCR 节点，默认值为 `true`。
+
+`start_all.launch` 将交通灯和视觉巡线开关都绑定到
+`/start_traffic_light_det`，因此该启动方式下它们仍然同步启停。
 
 OCR 与交通灯检测互斥，`find_signal` 的实际启用条件为：
 
@@ -121,10 +131,10 @@ find_signal_enabled = task1_all_done && !start_traffic_light_det
 | 1 | 0 | 启用 | 禁用，静默等待 |
 | 1 | 1 | 启用 | 禁用，静默等待 |
 
-当 `/start_traffic_light_det` 变为 `1` 时，管理节点先禁用 `find_signal`，
-再依次启用 `traffic_light_ros`、`image_process` 和 `vision_line_node`，避免
-OCR 与交通灯推理同时占用计算资源。当该参数恢复为 `0` 时，先禁用交通灯和
-巡线节点，再根据 `/task1_all_done` 决定是否恢复 OCR。
+当 `/start_traffic_light_det` 变为 `1` 时，管理节点会在启用
+`traffic_light_ros` 前禁用 `find_signal`，避免 OCR 与交通灯推理同时占用计算
+资源。当该参数恢复为 `0` 时，先禁用交通灯，再根据 `/task1_all_done` 决定
+是否恢复 OCR。视觉巡线节点独立服从 `~vision_line_enable_param` 指向的参数。
 
 `init_params.launch` 在整套系统启动时将两个参数都初始化为 `0`，因此所有
 受管视觉处理默认处于禁用状态。`find_signal` 被禁用后仍接收图像回调，但会
@@ -153,6 +163,31 @@ rosservice call /managed_nodes/set_enabled "data: false"
 
 参数轮询和手动服务调用使用同一把锁进行串行化，避免多个启停请求同时修改
 受管节点状态。
+
+#### 单独启动巡线任务
+
+`start_vision_line.launch` 将视觉巡线开关单独绑定到始终为 `true` 的
+`/start_vision_line_enabled`，所以启动后会立即启用 `image_process` 和
+`vision_line_node`。交通灯 ROS 进程始终启动，但检测业务由
+`/start_traffic_light_det` 决定，默认启用：
+
+```bash
+# 启动巡线，默认同时启用交通灯检测
+roslaunch startup_scripts start_vision_line.launch
+
+# 启动巡线，但不启用交通灯检测业务
+roslaunch startup_scripts start_vision_line.launch traffic_light_enabled:=false
+```
+
+运行期间也可以独立切换交通灯业务，不会关闭巡线：
+
+```bash
+rosparam set /start_traffic_light_det 0
+rosparam set /start_traffic_light_det 1
+```
+
+该 launch 没有启动 `find_signal`，因此给管理节点设置了
+`~manage_find_signal=false`，不会等待或调用不存在的 OCR 服务。
 
 ---
 ### `speech_command` 找不到麦克风设备问题
@@ -244,6 +279,82 @@ roslaunch speech_command speech_command.launch \
 唤醒方式：纯串口（不初始化 USB HID 和 ALSA 录音）
 纯串口唤醒模式启动，正在监听唤醒信号...
 ```
+
+---
+### SSH 无线连接卡顿排查
+
+#### 现象
+
+通过 Wi-Fi SSH 连接板卡后，交互过程中发送命令会出现卡顿。系统启动日志中
+`wlan0` 最终成功进入可用状态：
+
+```text
+[WLAN_RFKILL]: wlan_platdata_parse_dt: wifi_chip_type = rtl8821cs
+IPv6: ADDRCONF(NETDEV_CHANGE): wlan0: link becomes ready
+```
+
+日志中没有发现欠压、Wi-Fi 固件加载失败或网卡断开记录。以下启动提示存在，
+但目前没有证据表明它们直接导致 SSH 卡顿：
+
+```text
+[WLAN_RFKILL]: can't find rockchip,grf property
+[WLAN_RFKILL]: WIFI,host_wake_irq = 0, flags = 0
+[WLAN_RFKILL]: The ref_wifi_clk not found !
+```
+
+同一份日志中的 SquashFS 和 Mali GPU 报错与无线网络无关。`usb 2-1` 的
+`error -71` 也不是该网卡的错误，因为无线网卡实际使用 SDIO 总线。
+
+#### 已确认的网卡与驱动信息
+
+```text
+driver: rtl8821cs
+version: v5.14.2-28-g6011b0372.20220328
+firmware-version: 24.5
+bus-info: mmc1:0001:1
+kernel module: RTL8821CS
+module file: /lib/modules/5.10.176/extra/RTL8821CS.ko
+```
+
+`RTL8821CS` 出现在 `/proc/modules` 中，并带有 `(O)` 标记，说明当前使用的是
+可加载的树外厂商驱动，而不是内核内建驱动。`/lib/modules` 和
+`/usr/lib/modules` 下显示的模块路径通常来自 usr-merge，是同一份模块，不代表
+加载了两个相互冲突的驱动。
+
+接口层查询结果为：
+
+```text
+Power save: off
+```
+
+但驱动模块参数为：
+
+```text
+rtw_power_mgnt    = 2
+rtw_ips_mode      = 1
+rtw_smart_ps      = 2
+rtw_lps_level     = 1
+rtw_low_power     = 0
+rtw_lps_chk_by_tp = 1
+rtw_en_napi       = 1
+rtw_en_gro        = 1
+```
+
+其中 `rtw_power_mgnt=2` 表示驱动内部采用较积极的省电模式，
+`rtw_ips_mode=1` 表示 IPS 已启用，`rtw_lps_level=1` 对应 SDIO 低时钟省电
+状态。NAPI 和 GRO 已启用，通常不是交互卡顿的原因。
+
+#### 当前分析结论
+
+网卡已成功初始化和关联，现有日志不足以证明设备树提示、固件或 USB 错误是
+SSH 卡顿的直接原因。接口层报告省电关闭，但 Realtek 厂商驱动内部仍配置了
+LPS/IPS，因此驱动从空闲省电状态恢复时产生延迟是当前的主要怀疑方向，尤其
+符合“空闲后第一条命令卡顿、随后短时间恢复正常”的表现。
+
+该判断目前仍是排查结论，不是已经验证的根因。需要通过修改驱动加载参数前后
+的对照测试，并结合网关 ping 延迟、`iw dev wlan0 station dump` 中的重传和
+失败计数，才能区分省电唤醒、无线信号干扰和 SDIO 传输问题。目前尚未形成
+经过验证的最终解决方案。
 
 
 ---

@@ -14,6 +14,8 @@
 
 #include "yolov8.h"
 
+#include <algorithm>
+#include <cmath>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -205,20 +207,26 @@ static float deqnt_affine_to_f32(int8_t qnt, int32_t zp, float scale) { return (
 
 static float deqnt_affine_u8_to_f32(uint8_t qnt, int32_t zp, float scale) { return ((float)qnt - (float)zp) * scale; }
 
-static void compute_dfl(float* tensor, int dfl_len, float* box){
-    for (int b=0; b<4; b++){
-        float exp_t[dfl_len];
-        float exp_sum=0;
-        float acc_sum=0;
-        for (int i=0; i< dfl_len; i++){
-            exp_t[i] = exp(tensor[i+b*dfl_len]);
-            exp_sum += exp_t[i];
+static void compute_dfl(float *tensor, int dfl_len, float *box)
+{
+    for (int b = 0; b < 4; b++)
+    {
+        const float *values = tensor + b * dfl_len;
+        float max_value = values[0];
+        for (int i = 1; i < dfl_len; i++)
+        {
+            max_value = std::max(max_value, values[i]);
         }
-        
-        for (int i=0; i< dfl_len; i++){
-            acc_sum += exp_t[i]/exp_sum *i;
+
+        float exp_sum = 0.0f;
+        float weighted_sum = 0.0f;
+        for (int i = 0; i < dfl_len; i++)
+        {
+            const float value = std::exp(values[i] - max_value);
+            exp_sum += value;
+            weighted_sum += value * i;
         }
-        box[b] = acc_sum;
+        box[b] = weighted_sum / exp_sum;
     }
 }
 
@@ -669,10 +677,25 @@ int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter
         int id = classId[n];
         float obj_conf = objProbs[i];
 
-        od_results->results[last_count].box.left = (int)(clamp(x1, 0, model_in_w) / letter_box->scale);
-        od_results->results[last_count].box.top = (int)(clamp(y1, 0, model_in_h) / letter_box->scale);
-        od_results->results[last_count].box.right = (int)(clamp(x2, 0, model_in_w) / letter_box->scale);
-        od_results->results[last_count].box.bottom = (int)(clamp(y2, 0, model_in_h) / letter_box->scale);
+        if (!std::isfinite(x1) || !std::isfinite(y1) ||
+            !std::isfinite(x2) || !std::isfinite(y2))
+        {
+            continue;
+        }
+
+        const int left = (int)(clamp(x1, 0, model_in_w) / letter_box->scale);
+        const int top = (int)(clamp(y1, 0, model_in_h) / letter_box->scale);
+        const int right = (int)(clamp(x2, 0, model_in_w) / letter_box->scale);
+        const int bottom = (int)(clamp(y2, 0, model_in_h) / letter_box->scale);
+        if (right <= left || bottom <= top)
+        {
+            continue;
+        }
+
+        od_results->results[last_count].box.left = left;
+        od_results->results[last_count].box.top = top;
+        od_results->results[last_count].box.right = right;
+        od_results->results[last_count].box.bottom = bottom;
         od_results->results[last_count].prop = obj_conf;
         od_results->results[last_count].cls_id = id;
         last_count++;

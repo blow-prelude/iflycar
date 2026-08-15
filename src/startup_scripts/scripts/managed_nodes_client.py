@@ -41,10 +41,16 @@ class ManagedNodesClient:
         self._traffic_light_enable_param = rospy.get_param(
             "~traffic_light_enable_param", "/start_traffic_light_det"
         )
+        self._vision_line_enable_param = rospy.get_param(
+            "~vision_line_enable_param", self._traffic_light_enable_param
+        )
         self._find_signal_enable_param = rospy.get_param(
             "~find_signal_enable_param", "/task1_all_done"
         )
-        self._traffic_light_targets = (
+        self._manage_find_signal = bool(
+            rospy.get_param("~manage_find_signal", True)
+        )
+        self._managed_targets = (
             "traffic_light_ros",
             "image_process",
             "vision_line_node",
@@ -53,6 +59,7 @@ class ManagedNodesClient:
         if poll_rate <= 0.0:
             raise ValueError("~parameter_poll_rate must be > 0")
         self._last_traffic_light_enabled = None
+        self._last_vision_line_enabled = None
         self._last_find_signal_enabled = None
         self._parameter_timer = rospy.Timer(
             rospy.Duration(1.0 / poll_rate), self._parameter_timer_callback
@@ -74,48 +81,70 @@ class ManagedNodesClient:
         traffic_light_enabled = self._read_bool_parameter(
             self._traffic_light_enable_param
         )
-        find_signal_requested = self._read_bool_parameter(
-            self._find_signal_enable_param
+        vision_line_enabled = self._read_bool_parameter(
+            self._vision_line_enable_param
         )
-        if traffic_light_enabled is None:
-            return
+        find_signal_requested = None
+        if self._manage_find_signal:
+            find_signal_requested = self._read_bool_parameter(
+                self._find_signal_enable_param
+            )
 
         # OCR is allowed only after task 1 and while traffic-light detection is idle.
-        find_signal_enabled = (
-            False if traffic_light_enabled else find_signal_requested
-        )
+        find_signal_enabled = None
+        if traffic_light_enabled is not None and self._manage_find_signal:
+            find_signal_enabled = (
+                False if traffic_light_enabled else find_signal_requested
+            )
 
         with self._call_lock:
-            if traffic_light_enabled:
-                self._sync_find_signal(
-                    find_signal_enabled,
-                    find_signal_requested,
-                    traffic_light_enabled,
-                )
-                self._sync_traffic_light(traffic_light_enabled)
-            else:
-                self._sync_traffic_light(traffic_light_enabled)
-                self._sync_find_signal(
-                    find_signal_enabled,
-                    find_signal_requested,
-                    traffic_light_enabled,
-                )
+            self._sync_vision_line(vision_line_enabled)
+            if traffic_light_enabled is not None:
+                if traffic_light_enabled:
+                    self._sync_find_signal(
+                        find_signal_enabled,
+                        find_signal_requested,
+                        traffic_light_enabled,
+                    )
+                    self._sync_traffic_light(traffic_light_enabled)
+                else:
+                    self._sync_traffic_light(traffic_light_enabled)
+                    self._sync_find_signal(
+                        find_signal_enabled,
+                        find_signal_requested,
+                        traffic_light_enabled,
+                    )
 
     def _sync_traffic_light(self, enabled: bool) -> None:
         if enabled == self._last_traffic_light_enabled:
             return
 
+        succeeded, message = self._call_target("traffic_light_ros", enabled)
+        if succeeded:
+            self._last_traffic_light_enabled = enabled
+            rospy.loginfo(
+                "%s=%s -> traffic_light_ros=%s (%s)",
+                self._traffic_light_enable_param,
+                int(enabled),
+                int(enabled),
+                message,
+            )
+
+    def _sync_vision_line(self, enabled: bool | None) -> None:
+        if enabled is None or enabled == self._last_vision_line_enabled:
+            return
+
         all_succeeded = True
         details = []
-        for target_name in self._traffic_light_targets:
+        for target_name in ("image_process", "vision_line_node"):
             succeeded, message = self._call_target(target_name, enabled)
             all_succeeded = all_succeeded and succeeded
             details.append(f"{target_name}={'ok' if succeeded else message}")
         if all_succeeded:
-            self._last_traffic_light_enabled = enabled
+            self._last_vision_line_enabled = enabled
             rospy.loginfo(
                 "%s=%s -> %s",
-                self._traffic_light_enable_param,
+                self._vision_line_enable_param,
                 int(enabled),
                 "; ".join(details),
             )
@@ -157,9 +186,9 @@ class ManagedNodesClient:
 
     def _set_enabled_callback(self, request: SetBool.Request) -> SetBoolResponse:
         if request.data:
-            order = self._traffic_light_targets
+            order = self._managed_targets
         else:
-            order = tuple(reversed(self._traffic_light_targets))
+            order = tuple(reversed(self._managed_targets))
 
         all_succeeded = True
         details = []
@@ -174,6 +203,9 @@ class ManagedNodesClient:
         if all_succeeded:
             self._last_traffic_light_enabled = self._read_bool_parameter(
                 self._traffic_light_enable_param
+            )
+            self._last_vision_line_enabled = self._read_bool_parameter(
+                self._vision_line_enable_param
             )
         return SetBoolResponse(success=all_succeeded, message=summary)
 
