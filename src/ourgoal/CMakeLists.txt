@@ -161,6 +161,13 @@ add_executable(switch_test2
   src/switch2_warehouse.cpp
   src/switch2_final_tasks.cpp
 )
+add_executable(switch_test2_pro
+  src/switch_test2_pro.cpp
+  src/switch2_core.cpp
+  src/switch2_initial_tasks_pro.cpp
+  src/switch2_warehouse.cpp
+  src/switch2_final_tasks.cpp
+)
 add_executable(callback src/callback.cpp)
 add_executable(getLaserPoint src/getLaserPoint.cpp)
 add_executable(vision_line2 src/vision_line2.cpp)
@@ -179,6 +186,7 @@ add_dependencies(TransformListener2 ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin
 add_dependencies(switch ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(switch_test ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(switch_test2 ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_dependencies(switch_test2_pro ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(callback ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(getLaserPoint ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(vision_line2 ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
@@ -197,6 +205,9 @@ target_link_libraries(switch_test
   ${catkin_LIBRARIES}
 )
 target_link_libraries(switch_test2
+  ${catkin_LIBRARIES}
+)
+target_link_libraries(switch_test2_pro
   ${catkin_LIBRARIES}
 )
 target_link_libraries(TransformListener2
