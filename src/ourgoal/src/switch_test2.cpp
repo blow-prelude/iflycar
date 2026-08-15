@@ -2432,7 +2432,7 @@ void OURSWITCH::GotoC(int target_num)
         ros::Rate rate(20);
 
         for (int view = 0;
-             view < view_count && ros::ok();
+             view <= view_count && ros::ok();
              ++view)
         {
             if (view > 0)
@@ -2906,15 +2906,15 @@ void OURSWITCH::GotoC(int target_num)
                                 "auto_park_status",
                                 "FAILED");
 
-                            // 导航成功但最终位置微调失败：
-                            // 停车，不播报。
-                            ready_to_announce = false;
+                            // 导航已经成功；最终位置微调即使失败，
+                            // 也在微调流程结束后允许播报。
+                            ready_to_announce = true;
 
                             ROS_WARN(
                                 "Navigation succeeded, but "
                                 "final position adjustment "
                                 "failed (lateral=%s front=%s); "
-                                "skip announcement",
+                                "continue with announcement",
                                 lateral_adjusted
                                     ? "true"
                                     : "false",
@@ -3543,8 +3543,8 @@ void OURSWITCH::GotoD()
 
     const bool reached_fixed_point =
         navigateWithRetry(
-            0.5,
-            -3.10,
+            0.4,
+            -3.05,
             -1.57,
             20.0,
             "fixed GotoD point");

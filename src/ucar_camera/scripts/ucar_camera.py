@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/home/ucar/venv3.9/bin/python3
 # -*- coding: UTF-8 -*-
 import cv2
 import numpy as np
