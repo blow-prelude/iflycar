@@ -91,6 +91,7 @@ def create_server():
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((LISTEN_IP, LISTEN_PORT))
     server.listen(1)
+    server.settimeout(RECONNECT_INTERVAL)
 
     rospy.loginfo("Car TCP server listening on %s:%d", LISTEN_IP, LISTEN_PORT)
 
@@ -105,6 +106,8 @@ def accept_client(server):
             rospy.loginfo("VM client connected: %s", addr)
             conn.settimeout(None)
             return conn
+        except socket.timeout:
+            continue
         except Exception as e:
             rospy.logwarn("accept failed: %s", e)
             time.sleep(RECONNECT_INTERVAL)

@@ -194,9 +194,16 @@ def logic_worker():
             rospy.loginfo(f" 语音识别结果: {user_speech}")
             
         intent_res = get_spark_llm(
-            f"严格分析指令：“{user_speech}”。任务1是实体抓取，任务2是仿真抓取。\
-            请精确提取这两个大类（只能是：食品/日用品/电子产品）。\
-            返回严格的JSON格式：{{\"ACT\":\"[实体大类]\", \"SIM\":\"[仿真大类]\"}}")
+            "你是任务指令分类器。\n"
+            f"待解析指令：{json.dumps(user_speech, ensure_ascii=False)}\n"
+            "任务1是实体抓取，对应 ACT；任务2是仿真抓取，对应 SIM。\n"
+            "必须遵守以下规则：\n"
+            "1. ACT 和 SIM 的值只能是“食品”、“日用品”或“电子产品”。\n"
+            "2. 根据指令中的任务顺序分别提取，不得交换 ACT 和 SIM。\n"
+            "3. 若某个任务无法判断，ACT 使用“食品”，SIM 使用“电子产品”。\n"
+            "4. 只输出一个 JSON 对象，不要输出 Markdown、解释或其他文字。\n"
+            "输出格式：{\"ACT\":\"实体大类\",\"SIM\":\"仿真大类\"}"
+        )
         ACT_global = intent_res.get("ACT", "食品") if intent_res else "食品"
         SIM_global = intent_res.get("SIM", "电子产品") if intent_res else "电子产品"
         rospy.loginfo(f"🧠 大类识别完成: 实体={ACT_global}, 仿真={SIM_global}")
@@ -222,8 +229,25 @@ def logic_worker():
 
         # 7. 第二次大模型匹配
         items = fetch_items_from_urls(qr_urls)
-        allocate_res = get_spark_llm(f"物品：{items}。目标：实体={ACT_global}，仿真={SIM_global}。\
-            返回JSON：{{\"A1\":\"实体物品\", \"A2\":\"{ACT_global}\", \"A3\":\"实体车间\", \"B1\":\"仿真物品\", \"B2\":\"{SIM_global}\", \"B3\":\"仿真车间\"}}")
+        allocate_res = get_spark_llm(
+            "你是物品分类与任务分配器。\n"
+            f"候选物品（JSON）：{json.dumps(items, ensure_ascii=False)}\n"
+            f"实体任务目标类别：{ACT_global}\n"
+            f"仿真任务目标类别：{SIM_global}\n"
+            "必须遵守以下规则：\n"
+            "1. A1 和 B1 必须是候选物品中的原始物品名称，不得创造、改写或补充物品。\n"
+            "2. A1 必须属于实体目标类别，B1 必须属于仿真目标类别。\n"
+            f"3. A2 必须原样输出“{ACT_global}”，B2 必须原样输出“{SIM_global}”。\n"
+            "4. 类别与车间的唯一映射为：食品→食品车间，日用品→日用品车间，"
+            "电子产品→电子产品车间。\n"
+            "5. A3 必须是 A2 对应的车间，B3 必须是 B2 对应的车间。"
+            "禁止输出“物品名+生产车间”或任何其他车间名称。\n"
+            "6. 只输出一个 JSON 对象，键名和顺序必须严格为 "
+            "A1、A2、A3、B1、B2、B3，不要输出 Markdown、解释或其他文字。\n"
+            "输出格式："
+            "{\"A1\":\"实体物品\",\"A2\":\"实体大类\",\"A3\":\"实体车间\","
+            "\"B1\":\"仿真物品\",\"B2\":\"仿真大类\",\"B3\":\"仿真车间\"}"
+        )
 
         if allocate_res:
             # 上传关键参数给 switch_test2.cpp
