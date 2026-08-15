@@ -37,11 +37,14 @@ int classfy(const std::string &text)
     {
         return 0;
     }
-    if (contains({"日用品", "日", "用品"}))
+    if (contains({"日用品", "日", "用"}))
     {
         return 1;
     }
-    if (contains({"电子产品", "电子", "电", "产品"}))
+    {
+        return 1;
+    }
+    if (contains({"电子产品", "电子", "电", "产"}))
     {
         return 2;
     }

@@ -270,7 +270,7 @@ public:
 
         // 读取参数服务器配置
         turning_angular_vel_ = nh_.param("/turning_angular_vel", 0.5);
-        forward_duration_ = 0.35 / 0.3;
+        forward_duration_ = 0.33 / 0.3;
         rotate_duration_ = (75.0 * M_PI / 180.0) / turning_angular_vel_;
         initPID();
 

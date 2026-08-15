@@ -11,6 +11,7 @@ find_package(catkin REQUIRED COMPONENTS
   actionlib
   actionlib_msgs
   geometry_msgs
+  nav_msgs
   roscpp
   rospy
   sensor_msgs
@@ -119,7 +120,7 @@ generate_messages(
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES ourgoal
- CATKIN_DEPENDS actionlib actionlib_msgs geometry_msgs roscpp rospy sensor_msgs std_msgs message_runtime pcl_work
+ CATKIN_DEPENDS actionlib actionlib_msgs geometry_msgs nav_msgs roscpp rospy sensor_msgs std_msgs message_runtime pcl_work
 #  DEPENDS system_lib
 )
 
