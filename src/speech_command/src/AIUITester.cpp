@@ -468,7 +468,7 @@ void process_recv(const unsigned char *buf, int len)
 
 						ros::NodeHandle nh;
 						nh.setParam("/awake", 1);
-						ROS_INFO("唤醒成功：角度=%d，已设置 /awake=1，正在退出语音节点", angle);
+						ROS_INFO("wake up successfully: angle=%d,  already set /awake=1 ,exiting wake-up-node...", angle);
 						ros::requestShutdown();
 					}
 				}

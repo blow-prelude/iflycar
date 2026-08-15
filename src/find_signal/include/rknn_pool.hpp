@@ -24,6 +24,7 @@ private:
     std::unique_ptr<dpool::ThreadPool> pool;
     std::queue<std::future<outputType>> futs;
     std::vector<std::shared_ptr<rknnModel>> models;
+    std::vector<std::shared_ptr<std::mutex>> modelMtxes;
 
 protected:
     int getModelId();
@@ -63,12 +64,14 @@ int rknnPool<rknnModel, inputType, outputType>::init()
         {
             models.push_back(std::make_shared<rknnModel>(this->detModelPath,
                                                         this->recModelPath));
+            modelMtxes.push_back(std::make_shared<std::mutex>());
         }
     }
     catch (const std::bad_alloc &e)
     {
         std::cout << "Out of memory: " << e.what() << std::endl;
         models.clear();
+        modelMtxes.clear();
         pool.reset();
         return -1;
     }
@@ -78,6 +81,7 @@ int rknnPool<rknnModel, inputType, outputType>::init()
         if (ret != 0)
         {
             models.clear();
+            modelMtxes.clear();
             pool.reset();
             return ret;
         }
@@ -101,7 +105,16 @@ int rknnPool<rknnModel, inputType, outputType>::put(inputType inputData)
     std::lock_guard<std::mutex> lock(queueMtx);
     if (!pool || models.empty())
         return -1;
-    futs.push(pool->submit(&rknnModel::infer, models[this->getModelId()], inputData));
+    const int modelId = this->getModelId();
+    const std::shared_ptr<rknnModel> model = models[modelId];
+    const std::shared_ptr<std::mutex> modelMtx = modelMtxes[modelId];
+    futs.push(pool->submit([model, modelMtx, inputData]() mutable -> outputType
+                           {
+                               // Generic pool workers may finish out of order. Serialize each
+                               // RKNN context so a free worker cannot re-enter a busy model.
+                               std::lock_guard<std::mutex> modelLock(*modelMtx);
+                               return model->infer(inputData);
+                           }));
     return 0;
 }
 
