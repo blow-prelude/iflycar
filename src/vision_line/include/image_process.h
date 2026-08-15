@@ -15,7 +15,7 @@ struct ImageProcessConfig
     int x_continual = 10;
     int y_continual = 5;
     int search_offset = 30; // 起始搜索偏移量
-    int init_stable_count = 8;
+    int init_stable_count = 5;
     int miss_threshold = 3;
     float up_ratio = 0.50;
     float down_ratio = 0.90;

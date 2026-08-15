@@ -125,7 +125,7 @@ namespace
             {
                 const cv_bridge::CvImageConstPtr cv_image = cv_bridge::toCvShare(
                     message, sensor_msgs::image_encodings::BGR8);
-                frame = cv::Mat(cv_image->image);
+                frame = cv::Mat(cv_image->image.clone());
             }
             catch (const cv_bridge::Exception &error)
             {
@@ -196,7 +196,6 @@ namespace
             {
                 cv::imshow(kWindowName, result.image);
             }
-
         }
 
         const TrafficLightDetection *bestDirection(const YoloV8Result &result) const
