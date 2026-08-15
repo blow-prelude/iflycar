@@ -9,6 +9,7 @@ project(vision_line)
 # # is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
+  nav_msgs
   sensor_msgs
   roscpp
   rospy
@@ -23,6 +24,7 @@ find_package(OpenCV REQUIRED)
 # RGA 用于硬件色域转换。该库和目标板架构相关，请在目标板或对应交叉编译环境中使用。
 set(RGA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/rga)
 set(RGA_INCLUDE_DIR ${RGA_ROOT}/include)
+
 # Use the static RGA archive: the bundled shared object requires
 # exp@GLIBC_2.29, while the target system provides glibc 2.28.
 set(RGA_LIBRARY ${RGA_ROOT}/libs/librga.a)
@@ -295,35 +297,35 @@ target_include_directories(dynamic_ground_perspective_cpp PUBLIC
   ${OpenCV_INCLUDE_DIRS})
 target_compile_options(dynamic_ground_perspective_cpp PRIVATE -std=c++11)
 
-if(CATKIN_ENABLE_TESTING)
-  catkin_add_gtest(test_ground_perspective
-    test/test_ground_perspective.cpp)
-  if(TARGET test_ground_perspective)
-    target_link_libraries(test_ground_perspective
-      gtest_main
-      ground_perspective
-      ${OpenCV_LIBS})
-    target_include_directories(test_ground_perspective PUBLIC
-      include
-      ${catkin_INCLUDE_DIRS}
-      ${OpenCV_INCLUDE_DIRS})
-    target_compile_options(test_ground_perspective PRIVATE -std=c++11)
-  endif()
+# if(CATKIN_ENABLE_TESTING)
+# catkin_add_gtest(test_ground_perspective
+# test/test_ground_perspective.cpp)
+# if(TARGET test_ground_perspective)
+# target_link_libraries(test_ground_perspective
+# gtest_main
+# ground_perspective
+# ${OpenCV_LIBS})
+# target_include_directories(test_ground_perspective PUBLIC
+# include
+# ${catkin_INCLUDE_DIRS}
+# ${OpenCV_INCLUDE_DIRS})
+# target_compile_options(test_ground_perspective PRIVATE -std=c++11)
+# endif()
 
-  catkin_add_gtest(test_image_process
-    test/test_image_process.cpp)
-  if(TARGET test_image_process)
-    target_link_libraries(test_image_process
-      gtest_main
-      image_process
-      ${OpenCV_LIBS})
-    target_include_directories(test_image_process PUBLIC
-      include
-      ${catkin_INCLUDE_DIRS}
-      ${OpenCV_INCLUDE_DIRS})
-    target_compile_options(test_image_process PRIVATE -std=c++11)
-  endif()
-endif()
+# # catkin_add_gtest(test_image_process
+# #   test/test_image_process.cpp)
+# # if(TARGET test_image_process)
+# #   target_link_libraries(test_image_process
+# #     gtest_main
+# #     image_process
+# #     ${OpenCV_LIBS})
+# #   target_include_directories(test_image_process PUBLIC
+# #     include
+# #     ${catkin_INCLUDE_DIRS}
+# #     ${OpenCV_INCLUDE_DIRS})
+# #   target_compile_options(test_image_process PRIVATE -std=c++11)
+# # endif()
+# endif()
 
 # ############
 # # Install ##

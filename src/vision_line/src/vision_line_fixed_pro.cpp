@@ -1,5 +1,6 @@
 #include <ros/ros.h>
 #include "geometry_msgs/Twist.h"
+#include "nav_msgs/Odometry.h"
 #include "sensor_msgs/LaserScan.h"
 #include "std_msgs/Bool.h"
 #include "std_msgs/Float32MultiArray.h"
@@ -28,8 +29,12 @@ private:
     const double LOOP_RATE = 50.0;         // 主循环频率 (Hz)
 
     // 巡线避障机动距离。速度通过私有参数配置，按速度×时长给出名义位移。
-    const double AVOIDANCE_LATERAL_DISTANCE = 0.4;
-    const double AVOIDANCE_FORWARD_DISTANCE = 0.3;
+    const double AVOIDANCE_LATERAL_DISTANCE = 0.5;
+    const double AVOIDANCE_FORWARD_DISTANCE = 0.75;
+    const double FORCE_YAW_TURN_TARGET = -1.57;  // left/right 避障后的绝对目标航向 (rad)
+    const double FORCE_YAW_STRAIGHT_TARGET = 0.0; // straight 避障后的绝对目标航向 (rad)
+    const double FORCE_YAW_KP = 2.0;              // 参考 GotoA 的 Kp_yaw
+    const double FORCE_YAW_TOLERANCE = 0.05;      // 航向收敛阈值 (rad)
 
     // 方向机动状态机
     enum class ManeuverState
@@ -48,9 +53,10 @@ private:
     ros::Subscriber direction_sub_;
     ros::Publisher direction_pub_;
     std::string last_direction_ = "straight"; // 存储收到的方向，供转发
+    bool direction_received_ = false;          // 仅收到有效 direction 后才允许触发避障
 
     // 巡线期间的避障状态机（进程内最多触发一次）：
-    // 停车 -> 横移避开 -> 前进 -> 横移回线 -> 等待前方清空。
+    // 停车 -> 横移避开 -> 前进 -> 横移回线 -> 等待前方清空 -> 强制航向。
     enum class AvoidanceState
     {
         IDLE,
@@ -58,7 +64,8 @@ private:
         LATERAL_OUT,
         MOVE_FORWARD,
         LATERAL_BACK,
-        WAIT_CLEAR
+        WAIT_CLEAR,
+        FORCE_YAW
     };
     AvoidanceState avoidance_state_ = AvoidanceState::IDLE;
     bool avoidance_used_ = false; // 本节点进程生命周期内只允许触发一次雷达避障
@@ -66,20 +73,25 @@ private:
     double avoidance_lateral_direction_ = 1.0; // +1=左移，-1=右移（底盘+Y为左）
     double avoidance_lateral_duration_ = 0.0;
     double avoidance_forward_duration_ = 0.0;
+    double force_yaw_target_ = FORCE_YAW_STRAIGHT_TARGET;
 
     // 雷达前方障碍检测缓存。
     ros::Subscriber scan_sub_;
+    ros::Subscriber odom_sub_;
     ros::Publisher avoidance_active_pub_;
     bool front_obstacle_detected_ = false;
     bool front_scan_valid_ = false;
     double front_obstacle_distance_ = std::numeric_limits<double>::infinity();
     ros::Time last_scan_time_;
-    double obstacle_distance_threshold_ = 0.5;
+    double obstacle_distance_threshold_ = 0.001;
     double obstacle_front_half_angle_ = 20.0 * M_PI / 180.0;
     double obstacle_scan_timeout_ = 0.5;
     double avoidance_lateral_speed_ = 0.2;
     double avoidance_forward_speed_ = 0.3;
     double avoidance_stop_duration_ = 0.15;
+    double current_yaw_ = 0.0;
+    bool yaw_valid_ = false;
+    ros::Time last_odom_time_;
 
     // PID 控制器结构体
     struct PIDController
@@ -209,12 +221,80 @@ private:
         avoidance_state_ = AvoidanceState::IDLE;
         avoidance_start_time_ = ros::Time(0);
         avoidance_lateral_direction_ = 1.0;
+        force_yaw_target_ = FORCE_YAW_STRAIGHT_TARGET;
         if (was_active)
         {
             std_msgs::Bool msg;
             msg.data = false;
             avoidance_active_pub_.publish(msg);
         }
+    }
+
+    // 将角度归一化到 [-pi, pi]，用于绝对航向误差计算。
+    double normalizeAngle(double angle) const
+    {
+        while (angle > M_PI)
+            angle -= 2.0 * M_PI;
+        while (angle < -M_PI)
+            angle += 2.0 * M_PI;
+        return angle;
+    }
+
+    // /odom 回调：提取当前车体 yaw，和 GotoA 中的 yaw 反馈作用相同。
+    void odomCallback(const nav_msgs::Odometry::ConstPtr &msg)
+    {
+        const geometry_msgs::Quaternion &q = msg->pose.pose.orientation;
+        const double sin_yaw = 2.0 * (q.w * q.z + q.x * q.y);
+        const double cos_yaw = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+        const double yaw = std::atan2(sin_yaw, cos_yaw);
+        if (!std::isfinite(yaw))
+            return;
+
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        current_yaw_ = yaw;
+        yaw_valid_ = true;
+        last_odom_time_ = ros::Time::now();
+    }
+
+    // 优先使用新鲜 /odom；若车上已有 TransformListener2，也允许用 CarYaw 参数兜底。
+    bool getCurrentYaw(double &yaw)
+    {
+        bool odom_valid = false;
+        {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            const double odom_age = (ros::Time::now() - last_odom_time_).toSec();
+            odom_valid = yaw_valid_ && !last_odom_time_.isZero() &&
+                         odom_age >= 0.0 && odom_age <= obstacle_scan_timeout_;
+            if (odom_valid)
+                yaw = current_yaw_;
+        }
+        if (odom_valid)
+            return true;
+
+        double parameter_yaw = 0.0;
+        if (nh_.getParam("CarYaw", parameter_yaw) && std::isfinite(parameter_yaw))
+        {
+            yaw = parameter_yaw;
+            return true;
+        }
+        return false;
+    }
+
+    // 完成避障后的公共收尾：清 PID/视觉缓存并恢复巡线。
+    void finishAvoidance()
+    {
+        avoidance_state_ = AvoidanceState::IDLE;
+        current_error_ = 0.0;
+        angular_pid_.err_last = 0.0;
+        angular_pid_.err_sum = 0.0;
+        {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            vision_data_ = {0.0f, 0.0f, false, false};
+        }
+        std_msgs::Bool active_msg;
+        active_msg.data = false;
+        avoidance_active_pub_.publish(active_msg);
+        ROS_INFO("Avoidance complete: resume line following");
     }
 
     // 读取雷达缓存，并检查数据是否仍在有效时间内。
@@ -284,6 +364,9 @@ private:
 
         // 在首次进入避障状态时消耗唯一一次机会；resetAvoidance() 不会清除此标志。
         avoidance_used_ = true;
+        force_yaw_target_ = last_direction_ == "straight"
+                                ? FORCE_YAW_STRAIGHT_TARGET
+                                : FORCE_YAW_TURN_TARGET;
         avoidance_state_ = AvoidanceState::STOP;
         avoidance_start_time_ = ros::Time::now();
         std_msgs::Bool active_msg;
@@ -309,9 +392,10 @@ private:
 
         if (avoidance_state_ == AvoidanceState::IDLE)
         {
-            const bool direction_valid = last_direction_ == "left" ||
-                                         last_direction_ == "right" ||
-                                         last_direction_ == "straight";
+            const bool direction_valid = direction_received_ &&
+                                         (last_direction_ == "left" ||
+                                          last_direction_ == "right" ||
+                                          last_direction_ == "straight");
             if (!avoidance_used_ && scan_valid && scan_fresh &&
                 obstacle_detected && direction_valid)
             {
@@ -323,7 +407,7 @@ private:
             {
                 ROS_WARN_THROTTLE(
                     1.0,
-                    "Front obstacle detected, but direction '%s' is not active",
+                    "Front obstacle detected, but no active direction is available (last='%s')",
                     last_direction_.c_str());
                 cmd = geometry_msgs::Twist();
                 return true;
@@ -385,20 +469,43 @@ private:
         case AvoidanceState::WAIT_CLEAR:
             if (scan_valid && scan_fresh && !obstacle_detected)
             {
-                avoidance_state_ = AvoidanceState::IDLE;
-                current_error_ = 0.0;
-                angular_pid_.err_last = 0.0;
-                angular_pid_.err_sum = 0.0;
-                {
-                    std::lock_guard<std::mutex> lock(data_mutex_);
-                    vision_data_ = {0.0f, 0.0f, false, false};
-                }
-                std_msgs::Bool active_msg;
-                active_msg.data = false;
-                avoidance_active_pub_.publish(active_msg);
-                ROS_INFO("Avoidance complete: front scan is clear, resume line following");
+                avoidance_state_ = AvoidanceState::FORCE_YAW;
+                avoidance_start_time_ = ros::Time::now();
+                ROS_INFO("Avoidance: front scan is clear, force yaw to %.2f rad",
+                         force_yaw_target_);
             }
             break;
+
+        case AvoidanceState::FORCE_YAW:
+        {
+            double current_yaw = 0.0;
+            if (!getCurrentYaw(current_yaw))
+            {
+                ROS_WARN_THROTTLE(1.0,
+                                  "Cannot force yaw to %.2f: no fresh /odom or CarYaw",
+                                  force_yaw_target_);
+                break;
+            }
+
+            const double yaw_error =
+                normalizeAngle(force_yaw_target_ - current_yaw);
+            if (std::fabs(yaw_error) <= FORCE_YAW_TOLERANCE)
+            {
+                finishAvoidance();
+                break;
+            }
+
+            const double yaw_speed_limit = std::min(
+                MAX_ANGULAR_VEL,
+                std::max(0.05, std::fabs(turning_angular_vel_)));
+            cmd.angular.z = std::max(
+                -yaw_speed_limit,
+                std::min(yaw_speed_limit, FORCE_YAW_KP * yaw_error));
+            ROS_INFO_THROTTLE(0.5,
+                              "Forcing yaw: current=%.3f target=%.3f error=%.3f cmd=%.3f",
+                              current_yaw, force_yaw_target_, yaw_error, cmd.angular.z);
+            break;
+        }
 
         case AvoidanceState::IDLE:
             // 已在函数开头处理。
@@ -421,6 +528,7 @@ private:
             maneuver_state_ = ManeuverState::DONE;
             resetAvoidance();
             last_direction_ = "stop";
+            direction_received_ = false;
             std_msgs::String dir_msg;
             dir_msg.data = last_direction_;
             direction_pub_.publish(dir_msg);
@@ -468,6 +576,7 @@ private:
         {
             return;
         }
+        direction_received_ = true;
         maneuver_state_ = ManeuverState::FORWARD;
         maneuver_start_time_ = ros::Time::now();
         ROS_INFO("Maneuver: IDLE -> FORWARD (direction=%s)", dir.c_str());
@@ -516,6 +625,7 @@ public:
             nh_.advertise<std_msgs::Bool>("/vision_line_avoidance_active", 1, true);
         vision_sub_ = nh_.subscribe("/vision_line", 10, &VisionErrorController::visionCallback, this);
         scan_sub_ = nh_.subscribe("/scan", 10, &VisionErrorController::scanCallback, this);
+        odom_sub_ = nh_.subscribe("/odom", 10, &VisionErrorController::odomCallback, this);
         direction_sub_ = nh_.subscribe("/vision_line_direction", 10, &VisionErrorController::directionCallback, this);
         direction_pub_ = nh_.advertise<std_msgs::String>("/vision_line_direction_out", 10);
         std_msgs::Bool initial_avoidance_state;
@@ -527,7 +637,7 @@ public:
 
         // 避障参数：距离和角度可按实际雷达安装/底盘速度调整。
         nh_private_.param("obstacle_distance_threshold",
-                          obstacle_distance_threshold_, 0.1);
+                          obstacle_distance_threshold_, 0.001);
         nh_private_.param("obstacle_front_half_angle", // rad
                           obstacle_front_half_angle_, 20.0 * M_PI / 180.0);
         nh_private_.param("obstacle_scan_timeout", obstacle_scan_timeout_, 0.5);
@@ -597,6 +707,7 @@ public:
         enabled_ = request.data;
         maneuver_state_ = ManeuverState::IDLE;
         resetAvoidance();
+        direction_received_ = false;
         turning_mode_ = false;
         is_stopped_ = false;
         stable_count_ = 0;
@@ -838,3 +949,4 @@ int main(int argc, char **argv)
     controller.run();
     return 0;
 }
+
