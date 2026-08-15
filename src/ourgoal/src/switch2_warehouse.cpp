@@ -861,12 +861,13 @@ void OURSWITCH::GotoC(int target_num)
         search_regions.push_back(region);
     };
 
-    // 墙面垂直观察距离和稳定识别上限均为 1.25 m；
-    // 中段每三个墙格共用一个位置，四角由共享位置覆盖相邻两面墙。
+    // 上墙中段每两个墙格共用一个位置，其余墙面中段仍每三个墙格
+    // 共用一个位置；四角由共享位置覆盖相邻两面墙。
     auto addCoarseWall =
         [&](int wall,
             int first_slot,
             int last_slot,
+            int slots_per_position,
             bool reverse)
     {
         if (first_slot > last_slot)
@@ -881,16 +882,18 @@ void OURSWITCH::GotoC(int target_num)
         };
 
         std::vector<SlotRange> ranges;
+        slots_per_position =
+            std::max(1, slots_per_position);
 
         for (int first = first_slot;
              first <= last_slot;
-             first += 3)
+             first += slots_per_position)
         {
             SlotRange range;
             range.first = first;
             range.last =
                 std::min(
-                    first + 2,
+                    first + slots_per_position - 1,
                     last_slot);
             ranges.push_back(range);
         }
@@ -932,8 +935,8 @@ void OURSWITCH::GotoC(int target_num)
     const int vertical_corner_span =
         std::min(2, production_rows);
 
-    // 快速阶段按顺时针绕场一周。默认 10 x 4 格时共 8 个位置：
-    // 四个共享角点，以及上下长墙中段各两个位置。
+    // 快速阶段按顺时针绕场一周。默认 10 x 4 格时共 9 个位置：
+    // 四个共享角点、上墙中段三个位置和下墙中段两个位置。
     addCornerObservationRegion(
         LEFT_WALL,
         0,
@@ -951,6 +954,7 @@ void OURSWITCH::GotoC(int target_num)
         TOP_WALL,
         horizontal_corner_span,
         production_columns - horizontal_corner_span - 1,
+        2,
         false);
 
     addCornerObservationRegion(
@@ -970,6 +974,7 @@ void OURSWITCH::GotoC(int target_num)
         RIGHT_WALL,
         vertical_corner_span,
         production_rows - vertical_corner_span - 1,
+        3,
         false);
 
     addCornerObservationRegion(
@@ -989,6 +994,7 @@ void OURSWITCH::GotoC(int target_num)
         BOTTOM_WALL,
         horizontal_corner_span,
         production_columns - horizontal_corner_span - 1,
+        3,
         true);
 
     addCornerObservationRegion(
@@ -1008,6 +1014,7 @@ void OURSWITCH::GotoC(int target_num)
         LEFT_WALL,
         vertical_corner_span,
         production_rows - vertical_corner_span - 1,
+        3,
         true);
 
     const std::size_t coarse_region_count =
@@ -2622,3 +2629,4 @@ void OURSWITCH::GotoC(int target_num)
             ? GOTOC2_
             : Gazebo_;
 }
+
