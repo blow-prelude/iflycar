@@ -583,7 +583,7 @@ void AIUITester::test()
 		usleep(20000);
 	}
 
-	printf("收到 ROS 退出请求，停止串口监听。\n");
+	printf("recieved ROS exit signal.\n");
 	if (_serial.isOpen())
 		_serial.close();
 }

@@ -177,6 +177,7 @@ target_compile_definitions(traffic_light_demo PRIVATE DISABLE_RGA)
 
 add_executable(traffic_light_ros
   src/traffic_light_ros.cpp
+  src/traffic_light_decision.cc
   src/yolov8_model.cc
   src/yolov8.cc
   src/postprocess.cc
@@ -251,6 +252,18 @@ install(TARGETS traffic_light_ros
 # target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME})
 # endif()
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_traffic_light_decision
+    test/test_traffic_light_decision.cpp
+    src/traffic_light_decision.cc
+  )
+
+  if(TARGET test_traffic_light_decision)
+    target_link_libraries(test_traffic_light_decision
+      ${OpenCV_LIBS}
+      gtest_main
+    )
+  endif()
+
   catkin_add_gtest(test_rknn_pool test/test_rknn_pool.cpp)
 
   if(TARGET test_rknn_pool)
