@@ -23,7 +23,7 @@
 
 namespace
 {
-    const std::chrono::seconds kStopExitDelay(5);
+    const std::chrono::seconds kStopDisableDelay(5);
 }
 
 enum State
@@ -146,10 +146,13 @@ public:
                 continue;
             }
 
-            if (stopExitDelayElapsed())
+            if (stopDisableDelayElapsed())
             {
-                ROS_INFO("STOP has been active for 5 seconds; exiting find_way_ros");
-                break;
+                // STOP 满 5 秒不退出进程,改为自动禁用,等待任务流程再次启用
+                enabled_ = false;
+                resetProcessingState();
+                ROS_INFO("STOP has been active for 5 seconds; disabling find_way_ros (enabled_=false)");
+                continue;
             }
 
             cv::Mat frame;
@@ -550,17 +553,9 @@ private:
         ROS_INFO("Direction set to: %s", dir.c_str());
     }
 
-    bool setEnabledCallback(std_srvs::SetBool::Request &request,
-                            std_srvs::SetBool::Response &response)
+    // 切换 enabled 与 STOP 自动禁用共用的复位逻辑:清帧缓存、回 IDLE、复位停止线检测等
+    void resetProcessingState()
     {
-        if (enabled_ == request.data)
-        {
-            response.success = true;
-            response.message = enabled_ ? "already enabled" : "already disabled";
-            return true;
-        }
-
-        enabled_ = request.data;
         {
             std::lock_guard<std::mutex> lock(frame_mutex_);
             latest_frame_.release();
@@ -575,6 +570,20 @@ private:
         resetStopLineState();
         has_last_valid_msg_ = false;
         ros::param::set(turning_flag_param_, 0);
+    }
+
+    bool setEnabledCallback(std_srvs::SetBool::Request &request,
+                            std_srvs::SetBool::Response &response)
+    {
+        if (enabled_ == request.data)
+        {
+            response.success = true;
+            response.message = enabled_ ? "already enabled" : "already disabled";
+            return true;
+        }
+
+        enabled_ = request.data;
+        resetProcessingState();
 
         response.success = true;
         response.message = enabled_ ? "enabled" : "disabled";
@@ -710,17 +719,17 @@ private:
             stop_exit_timer_active_ = true;
             ros::param::set("/vision_line_done", 1);
             ROS_INFO("STOP entered: crossed %d stop lines, suppressing publish; "
-                     "/vision_line_done=1; exiting in 5 seconds",
+                     "/vision_line_done=1; disabling (enabled_=false) in 5 seconds",
                      stop_line_count_);
             return true;
         }
         return false;
     }
 
-    bool stopExitDelayElapsed() const
+    bool stopDisableDelayElapsed() const
     {
         return in_stop_ && stop_exit_timer_active_ &&
-               std::chrono::steady_clock::now() - stop_entered_at_ >= kStopExitDelay;
+               std::chrono::steady_clock::now() - stop_entered_at_ >= kStopDisableDelay;
     }
 
     // 清零停止线检测全部状态（换方向复位时调用）
