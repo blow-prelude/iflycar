@@ -154,7 +154,13 @@ add_executable(PID_test src/PID_test.cpp)
 add_executable(TransformListener2 src/TransformListener2.cpp)
 add_executable(switch src/switch.cpp)
 add_executable(switch_test src/switch_test.cpp)
-add_executable(switch_test2 src/switch_test2.cpp)
+add_executable(switch_test2
+  src/switch_test2.cpp
+  src/switch2_core.cpp
+  src/switch2_initial_tasks.cpp
+  src/switch2_warehouse.cpp
+  src/switch2_final_tasks.cpp
+)
 add_executable(callback src/callback.cpp)
 add_executable(getLaserPoint src/getLaserPoint.cpp)
 add_executable(vision_line2 src/vision_line2.cpp)

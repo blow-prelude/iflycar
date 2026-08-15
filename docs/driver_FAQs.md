@@ -87,9 +87,15 @@ roslaunch speech_command speech_command.launch \
 
 #### 现象
 
-局域网内通过 SSH 或远程桌面连接板卡后，交互过程中发送命令会出现卡顿。
-`sudo dmesg | grep -i -E "wlan|wifi|firmware|under-voltage|error"`
-系统启动日志中 `wlan0` 最终成功进入可用状态：
+局域网内通过 SSH 或远程桌面连接板卡后，开机最初几分钟交互卡顿，发送命令
+后不能及时响应。使用以下命令检查相关内核日志：
+
+```bash
+sudo dmesg |
+grep -iE 'rtl|wlan|mmc1|sdio|timeout|crc|deauth|disconnect'
+```
+
+`wlan0` 最终可以正常进入可用状态：
 
 ```text
 [WLAN_RFKILL]: wlan_platdata_parse_dt: wifi_chip_type = rtl8821cs
@@ -109,7 +115,9 @@ IPv6: ADDRCONF(NETDEV_CHANGE): wlan0: link becomes ready
 `error -71` 也不是该网卡的错误，因为无线网卡实际使用 SDIO 总线。
 
 #### 已确认的网卡与驱动信息
-输入 `/sbin/ethtool -i wlan0` 查看驱动信息 ，得到
+
+使用 `/sbin/ethtool -i wlan0`、`modinfo RTL8821CS` 和 `/proc/modules`
+检查得到：
 
 ```text
 driver: rtl8821cs
@@ -125,7 +133,9 @@ module file: /lib/modules/5.10.176/extra/RTL8821CS.ko
 `/usr/lib/modules` 下显示的模块路径通常来自 usr-merge，是同一份模块，不代表
 加载了两个相互冲突的驱动。
 
-接口层查询 `iw dev wlan0 get power_save` ，结果为：
+#### 排查一：驱动内部省电
+
+接口层查询 `iw dev wlan0 get power_save` 的结果为：
 
 ```text
 Power save: off
@@ -148,23 +158,146 @@ rtw_en_gro        = 1
 `rtw_ips_mode=1` 表示 IPS 已启用，`rtw_lps_level=1` 对应 SDIO 低时钟省电
 状态。NAPI 和 GRO 已启用，通常不是交互卡顿的原因。
 
-#### 解决方案
-向配置文件 `/etc/modprobe.d/8821cs.conf` 里写入非省电配置
+向 `/etc/modprobe.d/rtl8821cs.conf` 写入模块参数：
 
-```test
-options RTL8821CS rtw_power_mgnt=0 rtw_ips_mode=0
+```bash
+printf '%s\n' \
+  'options RTL8821CS rtw_power_mgnt=0 rtw_ips_mode=0' |
+sudo tee /etc/modprobe.d/rtl8821cs.conf
+sudo reboot
 ```
 
-关闭积极的省电模式
+重启后确认配置已经生效：
 
-#### 当前分析结论
+```text
+rtw_power_mgnt = 0
+rtw_ips_mode   = 0
+```
 
-网卡已成功初始化和关联，现有日志不足以证明设备树提示、固件或 USB 错误是
-SSH 卡顿的直接原因。接口层报告省电关闭，但 Realtek 厂商驱动内部仍配置了
-LPS/IPS，因此驱动从空闲省电状态恢复时产生延迟是当前的主要怀疑方向，尤其
-符合“空闲后第一条命令卡顿、随后短时间恢复正常”的表现。
+`rtw_smart_ps` 和 `rtw_lps_level` 仍保留默认值是正常现象；它们只定义 LPS
+启用时采用的方式，主开关 `rtw_power_mgnt=0` 后不会实际进入 LPS。
 
-该判断目前仍是排查结论，不是已经验证的根因。需要通过修改驱动加载参数前后
-的对照测试，并结合网关 ping 延迟、`iw dev wlan0 station dump` 中的重传和
-失败计数，才能区分省电唤醒、无线信号干扰和 SDIO 传输问题。目前尚未形成
-经过验证的最终解决方案。
+关闭驱动内部省电后，开机最初几分钟仍有卡顿，因此省电设置不是本次问题的
+唯一根因。
+
+#### 排查二：AP 和 STA 共用单射频
+
+板卡同时运行了两个无线接口：
+
+```text
+phy#0
+├─ wlan0  managed  wtrrr_5G  channel 60 / 5300 MHz / 40 MHz
+└─ p2p0   AP       ucar-*    channel 60 / 5300 MHz / 40 MHz
+```
+
+但 `/etc/hostapd/hostapd.conf` 要求 p2p0 使用 2.4 GHz 信道 6：
+
+```text
+interface=p2p0
+hw_mode=g
+channel=6
+country_code=CN
+```
+
+RTL8821CS 只有一个 `phy#0`。开机时 hostapd 先让 p2p0 使用 2.4 GHz 信道
+6，随后 NetworkManager 让 wlan0 连接到 5 GHz 信道 60。驱动尝试将两个接口
+同步到相同信道，最终把 p2p0 强制迁移到信道 60，并在连接过程中触发：
+
+```text
+WARNING: ... rtw_chset_sync_chbw+0xd4/0x144 [RTL8821CS]
+rtw_join_done_chk_ch+0x15c/0x424 [RTL8821CS]
+```
+
+当前 SSH 实际使用 wlan0 的 `192.168.10.246`，没有通过 p2p0/br0 提供的
+`10.42.0.1` 热点连接。停用不需要的热点并重启：
+
+```bash
+sudo systemctl disable --now hostapd
+sudo reboot
+```
+
+重启后确认 hostapd 已停用、p2p0 已关闭：
+
+```bash
+systemctl is-enabled hostapd
+systemctl is-active hostapd
+ip -br address
+iw dev
+```
+
+实际结果为 hostapd `disabled/inactive`、p2p0 `DOWN`，且内核日志中不再出现
+`rtw_chset_sync_chbw()` WARNING。这一对照验证了该 WARNING 来自 RTL8821CS
+的 AP+STA 跨频段并发。
+
+如果以后需要恢复板卡热点：
+
+```bash
+sudo systemctl enable --now hostapd
+```
+
+需要同时保留热点和外部 Wi-Fi 时，应让 AP 与 STA 使用相同频段和信道，或者
+增加第二块无线网卡分别承担 AP 和 STA，避免单射频跨信道并发。
+
+#### 排查三：开机后的系统负载
+
+关闭 AP 后，无线链路状态良好：
+
+```text
+signal: -38 dBm
+rx bitrate: 135.0 MBit/s MCS 7 40MHz
+tx bitrate: 150.0 MBit/s MCS 7 40MHz short GI
+```
+
+但开机约 4 分钟时系统仍出现高负载：
+
+```text
+load average: 11.53, 10.58, 4.71
+iowait: 25%
+```
+
+进程检查显示主要资源占用来自：
+
+```text
+cpptools                         62.6%
+NoMachine nxnode.bin            34.3%
+Pylance                         19.0%
+VS Code Remote extensionHost    16.9%
+Xorg                            15.4%
+NoMachine nxcodec.bin            9.4%
+ToDesk                           6.6%
+```
+
+VS Code Remote 连接后，C/C++ 扩展、Pylance 和文件监视器会扫描整个工作区，
+同时 NoMachine、Xorg 和 ToDesk 也在工作。CPU 使用和大量文件读取造成了开机
+最初几分钟的高 load average 与 I/O wait，时间上与 SSH 卡顿一致。
+
+可用以下命令复查：
+
+```bash
+uptime
+vmstat 1 10
+ps -eo pid,ppid,user,stat,etimes,comm,%cpu,%mem,args \
+  --sort=-%cpu | head -30
+```
+
+关闭 VS Code Remote 窗口并断开不需要的 NoMachine、ToDesk 会话，只保留普通
+终端 SSH 进行对照后，交互恢复正常。长期使用时应减少同时运行的远程桌面
+服务，并限制 VS Code 对 `build`、`devel`、`install`、`log` 和 `.venv` 等
+大型生成目录的索引与文件监视。
+
+`systemd-analyze blame` 显示 `rc-local.service` 约耗时 16 秒，主要来自脚本中的
+固定等待和 USB Hub 重启。`netfilter-persistent.service` 与
+`ros_board_package.service` 虽然启动失败，但已经退出，不是持续占用 CPU 的
+进程，因此不是本次开机后数分钟卡顿的主要原因。
+
+#### 最终结论
+
+本次问题包含两个独立因素：
+
+1. p2p0 AP 与 wlan0 STA 共用 RTL8821CS 单射频并跨频段启动，导致驱动信道
+   同步 WARNING。关闭不需要的 hostapd 后，该 WARNING 消失。
+2. 关闭 AP 和驱动省电后，剩余的开机短时卡顿来自 VS Code Remote 索引及多个
+   远程桌面服务叠加产生的 CPU、存储负载。减少这些后台任务后 SSH 恢复正常。
+
+`host_wake_irq=0`、缺少 `ref_wifi_clk`/`sdio-supply`、USB `error -71` 以及
+GPU/SquashFS 日志均没有在本次排查中表现出与 SSH 卡顿的直接关联。
