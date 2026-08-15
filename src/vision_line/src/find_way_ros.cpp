@@ -78,7 +78,7 @@ public:
 
         // 停止线检测 / STOP 参数
         stop_line_target_ = loadStaticParameter<int>("stop_line_target", 2);
-        stop_y_cross_ = loadStaticParameter<double>("stop_y_cross", 0.85);
+        stop_y_cross_ = loadStaticParameter<double>("stop_y_cross", 0.80);
         straight_stop_y_cross_ = loadStaticParameter<double>("straight_stop_y_cross", 0.85);
         stop_far_min_frames_ = loadStaticParameter<int>("stop_far_min_frames", 3);
         stop_near_min_frames_ = loadStaticParameter<int>("stop_near_min_frames", 3);
@@ -396,7 +396,7 @@ private:
     int miss_run_ = 0; // 连续丢检测帧数
     // 停止线检测参数（由 ROS 参数注入）
     int stop_line_target_ = 2;            // 进入 STOP 所需停止线条数
-    double stop_y_cross_ = 0.80;          // LEFT/RIGHT 远/近端归一化 y 阈值
+    double stop_y_cross_ = 0.85;          // LEFT/RIGHT 远/近端归一化 y 阈值
     double straight_stop_y_cross_ = 0.90; // STRAIGHT 远/近端归一化 y 阈值
     int stop_far_min_frames_ = 3;         // 远端连续确认帧数
     int stop_near_min_frames_ = 3;        // 近端连续确认帧数

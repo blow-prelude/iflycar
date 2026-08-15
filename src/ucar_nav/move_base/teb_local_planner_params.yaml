@@ -17,6 +17,7 @@ TebLocalPlannerROS:
     line_start: [-0.10, 0.0]
     line_end: [0.10, 0.0]
 
+
   yaw_goal_tolerance: 0.15
   xy_goal_tolerance: 0.15
   free_goal_vel: false

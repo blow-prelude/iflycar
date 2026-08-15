@@ -10,6 +10,9 @@ controller_patience: 15.0
 conservative_reset_dist: 2.0
 #global planning运行频率
 planner_frequency: 10.0
+# GotoC 只用 make_plan 筛选观察候选点，不能在查询时清除固定锥桶。
+make_plan_clear_costmap: false
+make_plan_add_unreachable_goal: false
 #recovery恢复行为恢复等待超时时间
 oscillation_timeout: 120.0
 #recovery恢复有效移动距离

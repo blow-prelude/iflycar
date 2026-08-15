@@ -174,6 +174,20 @@ class OURSWITCH
         double locked_box_x_r_ = -1.0;
         int locked_signal_class_ = -1;
 
+        struct WarehouseParkingCache
+        {
+            bool valid = false;
+            double parking_x = 0.0;
+            double parking_y = 0.0;
+            double parking_yaw = 0.0;
+            double observation_x = 0.0;
+            double observation_y = 0.0;
+            double observation_yaw = 0.0;
+        };
+
+        // 食品、日用品、电子产品三个车间在本次运行中的停车位置。
+        WarehouseParkingCache warehouse_parking_cache_[3];
+
         // 任务参数
         double roll, pitch, yaw;
 
