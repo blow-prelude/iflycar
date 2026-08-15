@@ -9,6 +9,7 @@ project(vision_line)
 # # is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
+  sensor_msgs
   roscpp
   rospy
   std_msgs
@@ -158,6 +159,7 @@ catkin_package(
 # # The recommended prefix ensures that target names across packages don't collide
 add_executable(${PROJECT_NAME}_node src/vision_line.cpp)
 add_executable(${PROJECT_NAME}_node_fixed src/vision_line_fixed.cpp)
+add_executable(${PROJECT_NAME}_node_fixed_pro src/vision_line_fixed_pro.cpp)
 add_executable(find_way src/find_way.cpp)
 add_executable(find_way_ros src/find_way_ros.cpp)
 add_executable(camera_test src/camera_test.cpp)
@@ -180,6 +182,9 @@ target_link_libraries(${PROJECT_NAME}_node
   ${catkin_LIBRARIES}
 )
 target_link_libraries(${PROJECT_NAME}_node_fixed
+  ${catkin_LIBRARIES}
+)
+target_link_libraries(${PROJECT_NAME}_node_fixed_pro
   ${catkin_LIBRARIES}
 )
 target_link_libraries(find_way
@@ -213,6 +218,12 @@ target_include_directories(${PROJECT_NAME}_node
   ${OpenCV_INCLUDE_DIRS}
 )
 target_include_directories(${PROJECT_NAME}_node_fixed
+  PUBLIC
+  include
+  ${catkin_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
+)
+target_include_directories(${PROJECT_NAME}_node_fixed_pro
   PUBLIC
   include
   ${catkin_INCLUDE_DIRS}

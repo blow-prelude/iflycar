@@ -32,7 +32,7 @@
   <node pkg="traffic_light" type="traffic_light_ros" name="traffic_light_ros" output="screen">
     <param name="initial_enabled" value="false"/>
   </node>
-  <node pkg="vision_line" type="find_way_ros_final" name="image_process" output="screen"/>
+  <node pkg="vision_line" type="find_way_ros" name="image_process" output="screen"/>
   <node pkg="vision_line" type="vision_line_node_fixed" name="vision_line_node" output="screen"/>
   <node pkg="startup_scripts" type="managed_nodes_client.py" name="managed_nodes" output="screen">
     <param name="traffic_light_enable_param" value="/start_traffic_light_det"/>
