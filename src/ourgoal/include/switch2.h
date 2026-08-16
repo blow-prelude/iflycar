@@ -209,6 +209,8 @@ class OURSWITCH
         double odom_x_ = 0.0;
         double odom_y_ = 0.0;
         bool odom_received_ = false;
+        geometry_msgs::Quaternion odom_orientation_;
+        bool odom_orientation_received_ = false;
         ros::WallTime last_odom_wall_time_;
 
         // 传感器数据
@@ -267,3 +269,4 @@ class OURSWITCH
 };
 
 #endif
+

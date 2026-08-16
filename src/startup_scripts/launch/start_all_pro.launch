@@ -35,7 +35,7 @@
   <node pkg="vision_line" type="find_way_ros_pro" name="image_process" output="screen"/>
   <node pkg="vision_line" type="vision_line_node_fixed_pro" name="vision_line_node" output="screen">
     <!-- 巡线雷达避障参数（对应 vision_line_fixed_pro.cpp 的私有参数） -->
-    <param name="obstacle_distance_threshold" value="0.5"/>
+    <param name="obstacle_distance_threshold" value="0.35"/>
     <param name="obstacle_front_half_angle" value="0.3491"/>
     <param name="obstacle_scan_timeout" value="0.5"/>
     <param name="avoidance_lateral_speed" value="0.2"/>

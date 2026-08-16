@@ -136,69 +136,83 @@ void OURSWITCH::GotoA()
             cmd.linear.y = -Limit_Value(Kp_dist * error, max_vel, -max_vel);
             cmd.linear.x = 0;
             if (std::abs(error) < 0.05)
-            {
                 escape_state = 11;
-                if (!amcl_initial_pose_published)
-                {
-                    // 先停车，确保发布初始位姿时车辆已经回到平地并静止。
-                    geometry_msgs::Twist stop_cmd;
-                    cmd = stop_cmd;
-                    cmd_vel_pub__.publish(stop_cmd);
-                    ros::WallDuration(0.2).sleep();
-
-                    geometry_msgs::PoseWithCovarianceStamped initial_pose;
-                    initial_pose.header.frame_id = "map";
-                    initial_pose.pose.pose.position.x = -0.38;
-                    initial_pose.pose.pose.position.y = -1.0;
-                    initial_pose.pose.pose.position.z = 0.0;
-                    initial_pose.pose.pose.orientation.x = 0.0;
-                    initial_pose.pose.pose.orientation.y = 0.0;
-                    initial_pose.pose.pose.orientation.z = 0.0;
-                    initial_pose.pose.pose.orientation.w = 1.0;
-
-                    // 坐标是实测近似值，不使用过小协方差强行锁死 AMCL。
-                    const double position_stddev = 0.10;
-                    const double yaw_stddev = 10.0 * M_PI / 180.0;
-                    initial_pose.pose.covariance[0] =
-                        position_stddev * position_stddev;
-                    initial_pose.pose.covariance[7] =
-                        position_stddev * position_stddev;
-                    initial_pose.pose.covariance[35] =
-                        yaw_stddev * yaw_stddev;
-
-                    for (int i = 0; i < 3 && ros::ok(); ++i)
-                    {
-                        initial_pose.header.stamp = ros::Time::now();
-                        amcl_initial_pose_pub.publish(initial_pose);
-                        ros::WallDuration(0.1).sleep();
-                    }
-
-                    if (amcl_nomotion_update_client.waitForExistence(
-                            ros::Duration(0.5)))
-                    {
-                        std_srvs::Empty update_srv;
-                        if (!amcl_nomotion_update_client.call(update_srv))
-                        {
-                            ROS_WARN(
-                                "Failed to request AMCL no-motion update");
-                        }
-                    }
-                    else
-                    {
-                        ROS_WARN(
-                            "AMCL no-motion update service is unavailable");
-                    }
-
-                    amcl_initial_pose_published = true;
-                    ROS_INFO(
-                        "Published AMCL initial pose: "
-                        "x=-0.380 y=-1.000 yaw=0.000");
-                }
-            }
             break;
 
         case 11:
-            // 解除锁头，强行旋转 180 度调头
+        {
+            if (!amcl_initial_pose_published)
+            {
+                const bool odom_fresh =
+                    odom_orientation_received_ &&
+                    odom_received_ &&
+                    !last_odom_wall_time_.isZero() &&
+                    (ros::WallTime::now() - last_odom_wall_time_).toSec() <
+                        0.3;
+
+                if (!odom_fresh)
+                {
+                    cmd = geometry_msgs::Twist();
+                    ROS_WARN_THROTTLE(
+                        1.0,
+                        "GotoA case 11: fresh /odom orientation is "
+                        "unavailable; wait before rotating");
+                    break;
+                }
+
+                // 先停车，确保发布初始位姿时车辆已经回到平地并静止。
+                geometry_msgs::Twist stop_cmd;
+                cmd = stop_cmd;
+                cmd_vel_pub__.publish(stop_cmd);
+                ros::WallDuration(0.2).sleep();
+
+                geometry_msgs::PoseWithCovarianceStamped initial_pose;
+                initial_pose.header.frame_id = "map";
+                initial_pose.pose.pose.position.x = -0.38;
+                initial_pose.pose.pose.position.y = -1.0;
+                initial_pose.pose.pose.position.z = 0.0;
+                initial_pose.pose.pose.orientation = odom_orientation_;
+
+                // 坐标是实测近似值，不使用过小协方差强行锁死 AMCL。
+                const double position_stddev = 0.10;
+                const double yaw_stddev = 10.0 * M_PI / 180.0;
+                initial_pose.pose.covariance[0] =
+                    position_stddev * position_stddev;
+                initial_pose.pose.covariance[7] =
+                    position_stddev * position_stddev;
+                initial_pose.pose.covariance[35] =
+                    yaw_stddev * yaw_stddev;
+
+                for (int i = 0; i < 3 && ros::ok(); ++i)
+                {
+                    initial_pose.header.stamp = ros::Time::now();
+                    amcl_initial_pose_pub.publish(initial_pose);
+                    ros::WallDuration(0.1).sleep();
+                }
+
+                if (amcl_nomotion_update_client.waitForExistence(
+                        ros::Duration(0.5)))
+                {
+                    std_srvs::Empty update_srv;
+                    if (!amcl_nomotion_update_client.call(update_srv))
+                    {
+                        ROS_WARN(
+                            "Failed to request AMCL no-motion update");
+                    }
+                }
+                else
+                {
+                    ROS_WARN(
+                        "AMCL no-motion update service is unavailable");
+                }
+
+                amcl_initial_pose_published = true;
+                ROS_INFO(
+                    "Published AMCL initial pose from /odom orientation: "
+                    "x=-0.380 y=-1.000");
+            }
+
+            // 解除锁头，按固定角速度原地调头。
             cmd.angular.z = 1.57;
             cmd.linear.x = 0;
             cmd.linear.y = 0;
@@ -208,6 +222,7 @@ void OURSWITCH::GotoA()
                 task_finished = true;
             }
             break;
+        }
         }
 
         cmd_vel_pub__.publish(cmd);

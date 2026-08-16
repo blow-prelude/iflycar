@@ -258,6 +258,9 @@ if(CATKIN_ENABLE_TESTING)
   )
 
   if(TARGET test_traffic_light_decision)
+    target_compile_definitions(test_traffic_light_decision PRIVATE
+      VISION_LINE_TEST_PICTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../vision_line/pictures"
+    )
     target_link_libraries(test_traffic_light_decision
       ${OpenCV_LIBS}
       gtest_main

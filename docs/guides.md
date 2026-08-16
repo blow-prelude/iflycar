@@ -56,8 +56,8 @@ image_callback
 
 1. ROI 转 HSV:绿色灯罩掩膜(35-100 色调)+ 亮色箭头掩膜(V≥212),亮色与绿色膨胀支撑区求交,闭运算去噪。
 2. 连通域分析,按尺寸(宽 15-90、高 12-90)、面积、填充率、周边绿色得分/密度过滤候选。
-3. 取 `绿色得分 × 填充率` 最高的候选,PCA 判主轴必须水平(否则 unknown)。
-4. 把候选按宽度均分 8 个竖条,密度峰值条在前 4 条(≤3)判 `left`,后 4 条判 `right`;峰值并列判 unknown。
+3. 取 `绿色得分 × 填充率` 最高的候选,用 2×2 开运算去掉细亮斑并保留最大的连通主体,PCA 判主轴必须水平(否则 unknown)。
+4. 以主体最宽的水平行为箭杆中心,逐列统计中心线上、下方同时存在的“箭翼”像素;左半箭翼得分高判 `left`,右半高判 `right`,两侧差异不足 10% 判 `unknown`。
 
 ### 启动丢帧
 
@@ -110,22 +110,23 @@ image_callback
   ├─ pool_.get()                    # 取回一帧推理结果
   ├─ show_result()                  # visualize 时 imshow
   └─ publish_result()
-       ├─ get_biggest_result()      # 取面积最大的文本框,无框 → 重置确认状态
+       ├─ get_biggest_result()      # 取面积最大的文本框,无框 → 向投票窗口加入 -1
        ├─ 发布 /signal_detection(无确认机制,检出即发)
-       └─ classfy(text) → update_class_streak(class_id)
+       └─ classfy(text) → update_class_vote(class_id)
 ```
 
-### 类别确认机制(连续 5 帧防抖)
+### 类别确认机制(5 帧滑动窗口投票)
 
-`/signal_class` 不是单帧结果,而是**连续 `confirm_frames_`(默认 5)帧识别出同一类别后才确认发布**:
+`/signal_class` 不是单帧结果,而是根据最近 5 个处理帧做投票,任一有效类别达到 3 票后发布:
 
 1. 每帧对最大框的 OCR 文本跑 `classfy`,得到 `class_id`(匹配失败为 -1)。
-2. 严格"连续":出现不同类别、`-1`、或该帧没有检测框,计数立即归零重数。
-3. 累计满 5 帧后置 `last_confirmed_class_`,打 `class %d confirmed after %d consecutive frames` 日志。
-4. **确认后每帧持续发布**(不是只发一次):消费端 switch2 用 `maximum_detection_age` 按消息时间戳判断新鲜度,只发一次会被判过期。
-5. 断连(出现 -1/无框)即清空状态,下次重新数满 5 帧。类别切换(如 0→1)同样要重新数满 5 帧。
+2. 每个结果都加入容量为 5 的 FIFO 窗口;超过容量时淘汰最早结果。
+3. `0`、`1`、`2` 分别为有效票。`-1` 或无检测框也以 `-1` 占用窗口位置以淘汰旧票,但不能获胜。
+4. 任一有效类别达到 3 票即成为当前获胜类别;窗口无需先填满,前三个结果相同时可在第三帧发布。
+5. **存在多数票时每帧持续发布**(不是只发一次):消费端 switch2 用 `maximum_detection_age` 按消息时间戳判断新鲜度,只发一次会被判过期。
+6. 每帧重新计算当前窗口结果;多数票被淘汰后立即停止发布旧类别,另一类别达到 3 票时立即切换。
 
-未确认期间(前 4 帧)只打节流日志 `OCR text: ..., streak: n/5`,不发 `/signal_class`。
+窗口状态使用节流日志 `OCR text: ..., votes: [食品票数,日用品票数,电子产品票数], window: n/5`;获胜类别变化时另打 INFO 日志。无类别达到 3 票时不发 `/signal_class`。
 
 ### 参数
 
@@ -134,7 +135,6 @@ image_callback
 | `~det_model_path` | `<pkg>/models/ppocrv4_det.rknn` | 检测模型 |
 | `~rec_model_path` | `<pkg>/models/ppocrv4_rec.rknn` | 识别模型 |
 | `~thread_count` | 3 | NPU worker 数,上限 3 |
-| `~confirm_frames` | 5 | 类别确认所需连续帧数 |
 | `~visualize` | true | 是否开 cv 窗口 |
 
 ### 启动说明

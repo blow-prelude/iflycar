@@ -98,6 +98,16 @@ void OURSWITCH::OdomCallback(const nav_msgs::Odometry::ConstPtr &msg)
     tf2::Matrix3x3 m(q);
     m.getRPY(roll, pitch, yaw);
 
+    odom_orientation_ = msg->pose.pose.orientation;
+    const double orientation_norm =
+        std::sqrt(
+            odom_orientation_.x * odom_orientation_.x +
+            odom_orientation_.y * odom_orientation_.y +
+            odom_orientation_.z * odom_orientation_.z +
+            odom_orientation_.w * odom_orientation_.w);
+    odom_orientation_received_ =
+        std::isfinite(orientation_norm) && orientation_norm > 1e-6;
+
     odom_x_ = msg->pose.pose.position.x;
     odom_y_ = msg->pose.pose.position.y;
     odom_received_ = true;
