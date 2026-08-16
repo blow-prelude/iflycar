@@ -23,6 +23,11 @@ import websocket
 MIC_DEVICE = "hw:XFMDPV0018"
 RECORD_SECONDS = 12
 WAV_DIR = Path(__file__).resolve().parents[1] / "wav"
+PIPER_DIR = Path(__file__).resolve().parents[3] / "3rdparty" / "piper"
+PIPER_EXECUTABLE = PIPER_DIR / "piper"
+PIPER_MODEL = PIPER_DIR / "models" / "zh_CN-huayan-medium.onnx"
+PIPER_CONFIG = PIPER_DIR / "models" / "zh_CN-huayan-medium.onnx.json"
+PIPER_WAV = Path("/tmp/ucar_piper_ai_no_ros.wav")
 
 APPID = os.environ.get("IFLYTEK_APPID", "f4ea634b")
 API_SECRET = os.environ.get("IFLYTEK_API_SECRET", "ZTA4YzI4NzNkNGE0NjVjODdiNWI5YjZm")
@@ -322,10 +327,45 @@ def match_items(act_category, sim_category):
 
 
 def play_offline_tts(text):
-    result = subprocess.run(
-        ["espeak", "-v", "zh+f2", str(text), "-s", "130"],
-        check=False,
-    )
+    LOGGER.info("播报：%s", text)
+    text = str(text)
+
+    try:
+        result = subprocess.run(
+            [
+                str(PIPER_EXECUTABLE),
+                "--model", str(PIPER_MODEL),
+                "--config", str(PIPER_CONFIG),
+                "--output_file", str(PIPER_WAV),
+            ],
+            input=text + "\n",
+            text=True,
+            encoding="utf-8",
+            cwd=str(PIPER_DIR),
+            check=False,
+        )
+        if result.returncode == 0:
+            result = subprocess.run(
+                ["aplay", "--quiet", str(PIPER_WAV)],
+                check=False,
+            )
+            if result.returncode == 0:
+                return
+            LOGGER.warning("Piper 音频播放失败，aplay 退出码：%s", result.returncode)
+        else:
+            LOGGER.warning("Piper 合成失败，退出码：%s", result.returncode)
+    except OSError as exc:
+        LOGGER.warning("Piper 播报启动失败：%s", exc)
+
+    try:
+        result = subprocess.run(
+            ["espeak", "-v", "zh+f2", text, "-s", "130"],
+            check=False,
+        )
+    except OSError as exc:
+        LOGGER.warning("espeak 降级播报启动失败：%s", exc)
+        return
+
     if result.returncode != 0:
         LOGGER.warning("语音播报失败，espeak 退出码：%s", result.returncode)
 

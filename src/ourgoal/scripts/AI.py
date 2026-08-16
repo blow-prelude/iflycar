@@ -17,6 +17,7 @@ import re
 import subprocess
 import time
 from datetime import datetime
+from pathlib import Path
 from time import mktime
 from urllib.parse import urlparse, urlencode
 from wsgiref.handlers import format_date_time
@@ -25,6 +26,11 @@ from cv_bridge import CvBridge
 
 # ================= 1. 配置区 =================
 MIC_DEVICE = "hw:XFMDPV0018"
+PIPER_DIR = Path(__file__).resolve().parents[3] / "3rdparty" / "piper"
+PIPER_EXECUTABLE = PIPER_DIR / "piper"
+PIPER_MODEL = PIPER_DIR / "models" / "zh_CN-huayan-medium.onnx"
+PIPER_CONFIG = PIPER_DIR / "models" / "zh_CN-huayan-medium.onnx.json"
+PIPER_WAV = Path("/tmp/ucar_piper_ai.wav")
 APPID = 'f4ea634b'
 APISecret = 'ZTA4YzI4NzNkNGE0NjVjODdiNWI5YjZm'
 APIKey = '1c7f09de8fd38d0aebbc11059fcba203'
@@ -208,10 +214,44 @@ def record_audio(duration=10, filename="/tmp/cmd.wav"):
 
 def play_offline_tts(text):
     rospy.loginfo(f" 播报: {text}")
-    result = subprocess.run(
-        ["espeak", "-v", "zh+f2", str(text), "-s", "130"],
-        check=False,
-    )
+    text = str(text)
+
+    try:
+        result = subprocess.run(
+            [
+                str(PIPER_EXECUTABLE),
+                "--model", str(PIPER_MODEL),
+                "--config", str(PIPER_CONFIG),
+                "--output_file", str(PIPER_WAV),
+            ],
+            input=text + "\n",
+            text=True,
+            encoding="utf-8",
+            cwd=str(PIPER_DIR),
+            check=False,
+        )
+        if result.returncode == 0:
+            result = subprocess.run(
+                ["aplay", "--quiet", str(PIPER_WAV)],
+                check=False,
+            )
+            if result.returncode == 0:
+                return
+            rospy.logwarn(f"Piper 音频播放失败，aplay 退出码: {result.returncode}")
+        else:
+            rospy.logwarn(f"Piper 合成失败，退出码: {result.returncode}")
+    except OSError as exc:
+        rospy.logwarn(f"Piper 播报启动失败: {exc}")
+
+    try:
+        result = subprocess.run(
+            ["espeak", "-v", "zh+f2", text, "-s", "130"],
+            check=False,
+        )
+    except OSError as exc:
+        rospy.logwarn(f"espeak 降级播报启动失败: {exc}")
+        return
+
     if result.returncode != 0:
         rospy.logwarn(f"语音播报失败，espeak 退出码: {result.returncode}")
 

@@ -126,6 +126,7 @@ class OURSWITCH
         void SignalDetectionCallback(const std_msgs::Float32MultiArray::ConstPtr &msg);
         
     private:
+        bool speakText(const std::string &text);
         // 从参数服务器获取center_x
         bool getCenterXFromParam();
         // 计算y方向速度（用于center_x调节）
@@ -266,4 +267,3 @@ class OURSWITCH
 };
 
 #endif
-

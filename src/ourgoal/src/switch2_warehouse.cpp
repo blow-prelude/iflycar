@@ -2949,17 +2949,11 @@ void OURSWITCH::GotoC(int target_num)
         nh_.getParam("real_item", item);
         nh_.getParam("real_room", room);
 
-        char tts_cmd[512];
-
-        std::snprintf(
-            tts_cmd,
-            sizeof(tts_cmd),
-            "espeak -v zh+f2 "
-            "\"已将%s放入%s\" -s 130",
-            item.c_str(),
-            room.c_str());
-
-        system(tts_cmd);
+        speakText(
+            std::string("已将") +
+            item +
+            "放入" +
+            room);
     }
 
     if (!target_found)
@@ -2978,4 +2972,3 @@ void OURSWITCH::GotoC(int target_num)
             ? GOTOC2_
             : Gazebo_;
 }
-

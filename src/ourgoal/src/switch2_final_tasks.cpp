@@ -31,10 +31,11 @@ void OURSWITCH::Gazebo()
     nh_.getParam("sim_item", sim_item);
     nh_.getParam("sim_room", sim_room);
 
-    char tts_cmd[512];
-    sprintf(tts_cmd, "espeak -v zh+f2 \"仿真任务已完成，已将%s放入%s\" -s 130",
-            sim_item.c_str(), sim_room.c_str());
-    system(tts_cmd);
+    speakText(
+        std::string("仿真任务已完成，已将") +
+        sim_item +
+        "放入" +
+        sim_room);
 
     current_state = GOTOD_;
 }
@@ -179,8 +180,8 @@ void OURSWITCH::GotoD()
 
     const bool reached_fixed_point =
         navigateWithRetry(
-            0.4,
-            -2.80,
+            0.3,
+            -3.02,
             -1.57,
             20.0,
             "fixed GotoD point");
@@ -224,8 +225,10 @@ void OURSWITCH::GotoD()
     bool gap_aligned = false;
     if (gap_alignment_enabled)
     {
+        // 墙线相对最终 base_link 原点的有符号前向距离：
+        // 正值表示仍在墙内，0 表示对齐墙线，负值表示越过墙线。
         const double target_gap_distance =
-            std::max(0.0, nh_.param("gotod_gap_target_distance", 0.15));
+            nh_.param("gotod_gap_target_distance", -0.10);
         const double alignment_timeout =
             std::max(1.0, nh_.param("gotod_gap_alignment_timeout", 8.0));
         const double sample_spread_limit =
@@ -237,7 +240,7 @@ void OURSWITCH::GotoD()
         const double maximum_correction =
             std::max(
                 position_tolerance,
-                nh_.param("gotod_gap_max_correction", 0.45));
+                nh_.param("gotod_gap_max_correction", 0.60));
         const double heading_tolerance = 3.0 * M_PI / 180.0;
         const double maximum_angular_speed = 0.15;
         const int required_stable_updates = 3;
@@ -351,6 +354,21 @@ void OURSWITCH::GotoD()
             const double correction_distance =
                 std::hypot(forward_correction, lateral_correction);
 
+            // 必须放在安全修正判断之前，确保修正被拒绝时也能看到
+            // 雷达扫描到的墙线距离和实际需要移动的距离。
+            ROS_INFO(
+                "GotoD wall-line scan: lidar_forward=%.3f m "
+                "base_link_forward=%.3f m lateral_offset=%.3f m "
+                "target_signed_distance=%.3f m "
+                "required_forward_travel=%.3f m "
+                "required_planar_travel=%.3f m",
+                gap_laser_x,
+                gap_base_x,
+                gap_base_y,
+                target_gap_distance,
+                forward_correction,
+                correction_distance);
+
             if (correction_distance > maximum_correction)
             {
                 ROS_ERROR(
@@ -405,8 +423,12 @@ void OURSWITCH::GotoD()
 
             ROS_INFO(
                 "Stationary GotoD scan locked: width=%.3f "
+                "gap_base=(%.3f, %.3f) target_wall_distance=%.3f "
                 "forward_correction=%.3f lateral_correction=%.3f",
                 detected_gap_width,
+                gap_base_x,
+                gap_base_y,
+                target_gap_distance,
                 forward_correction,
                 lateral_correction);
             break;
@@ -564,10 +586,8 @@ void OURSWITCH::vision_line()
     ros::Duration(2.0).sleep(); // 停稳后缓冲2秒，满足“停后须在10秒内开始播报”规则
     ROS_INFO("Broadcasting Final Mission Complete...");
 
-    // 直接调用 espeak 播报
-    system("espeak -v zh+f2 \"任务完成\" -s 130");
+    speakText("任务完成");
 
     ROS_INFO("ALL TASKS COMPLETED SUCCESSFULLY! SHUTTING DOWN.");
     ros::shutdown();
 }
-

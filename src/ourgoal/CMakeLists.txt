@@ -160,6 +160,7 @@ add_executable(switch_test2
   src/switch2_initial_tasks.cpp
   src/switch2_warehouse.cpp
   src/switch2_final_tasks.cpp
+  src/switch2_tts.cpp
 )
 add_executable(switch_test2_pro
   src/switch_test2_pro.cpp
@@ -167,6 +168,7 @@ add_executable(switch_test2_pro
   src/switch2_initial_tasks_pro.cpp
   src/switch2_warehouse.cpp
   src/switch2_final_tasks.cpp
+  src/switch2_tts.cpp
 )
 add_executable(callback src/callback.cpp)
 add_executable(getLaserPoint src/getLaserPoint.cpp)
@@ -277,4 +279,3 @@ target_link_libraries(vision_line2
 
 ## Add folders to be run by python nosetests
 # catkin_add_nosetests(test)
-
