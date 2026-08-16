@@ -408,7 +408,7 @@ private:
     bool enabled_ = false;
     ros::ServiceServer enable_service_;
     double left_tracking_left_weight_ = 0.65;
-    double right_tracking_left_weight_ = 0.40;
+    double right_tracking_left_weight_ = 0.45;
 
     // ---- 停止线检测 / STOP 状态 ----
     bool in_stop_ = false; // STOP 抑制标志：为 true 时巡线照跑但不发布
@@ -596,6 +596,8 @@ private:
         {
             avoidance_active_ = false;
             avoidance_reset_requested_ = true;
+            left_tracking_left_weight_ = 0.5;
+            right_tracking_left_weight_ = 0.5;
         }
     }
 
@@ -659,25 +661,18 @@ private:
             if (idx < 0)
                 idx += line_size; // 负索引从末尾计数
 
-            if (idx >= line_size)
+            if (idx < 0 || idx >= line_size)
                 idx = line_size - 1; // 中线点数不足时，追踪最上方的点
 
-            if (idx < 0)
-            {
-                valid = false;
-            }
-            else
-            {
-                const double scale_x = static_cast<double>(orig_w) / proc_w;
-                const double scale_y = static_cast<double>(orig_h) / proc_h;
-                const cv::Point pt = line_points[static_cast<std::size_t>(idx)];
-                double x_raw = pt.x * scale_x;
-                double y_raw = pt.y * scale_y;
-                double x_error = x_raw - (orig_w / 2.0);
-                // ROS_INFO(" ptx: %.2f, pty: %.2f, x_raw: %.2f, x_error: %.2f, y_raw: %.2f, idx: %d", static_cast<double>(pt.x), static_cast<double>(pt.y), x_raw, x_error, y_raw, target_index);
+            const double scale_x = static_cast<double>(orig_w) / proc_w;
+            const double scale_y = static_cast<double>(orig_h) / proc_h;
+            const cv::Point pt = line_points[static_cast<std::size_t>(idx)];
+            double x_raw = pt.x * scale_x;
+            double y_raw = pt.y * scale_y;
+            double x_error = x_raw - (orig_w / 2.0);
+            // ROS_INFO(" ptx: %.2f, pty: %.2f, x_raw: %.2f, x_error: %.2f, y_raw: %.2f, idx: %d", static_cast<double>(pt.x), static_cast<double>(pt.y), x_raw, x_error, y_raw, target_index);
 
-                msg.data = {static_cast<float>(x_error), static_cast<float>(y_raw)};
-            }
+            msg.data = {static_cast<float>(x_error), static_cast<float>(y_raw)};
         }
 
         if (valid)
@@ -688,7 +683,7 @@ private:
             return msg;
         }
 
-        // 本帧中线无效（为空或负索引越界）：回退到上一帧有效数据，避免给下游发送 {0,-1} 哨兵
+        // 本帧中线无效（为空）：回退到上一帧有效数据，避免给下游发送 {0,-1} 哨兵
         if (has_last_valid_msg_)
             return last_valid_msg_;
 

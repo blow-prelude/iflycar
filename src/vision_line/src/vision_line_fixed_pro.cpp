@@ -30,6 +30,8 @@ private:
 
     // 巡线避障机动距离。速度通过私有参数配置，按速度×时长给出名义位移。
     const double AVOIDANCE_LATERAL_DISTANCE = 0.5;
+    const double RIGHT_AVOIDANCE_LATERAL_OUT_DISTANCE = 0.6;
+    const double RIGHT_AVOIDANCE_LATERAL_BACK_DISTANCE = 0.5;
     const double AVOIDANCE_FORWARD_DISTANCE = 0.65;
     const double FORCE_YAW_TURN_TARGET = -1.57;   // left/right 避障后的绝对目标航向 (rad)
     const double FORCE_YAW_STRAIGHT_TARGET = 0.0; // straight 避障后的绝对目标航向 (rad)
@@ -71,7 +73,8 @@ private:
     bool avoidance_used_ = false; // 本节点进程生命周期内只允许触发一次雷达避障
     ros::Time avoidance_start_time_;
     double avoidance_lateral_direction_ = 1.0; // +1=左移，-1=右移（底盘+Y为左）
-    double avoidance_lateral_duration_ = 0.0;
+    double avoidance_lateral_out_duration_ = 0.0;
+    double avoidance_lateral_back_duration_ = 0.0;
     double avoidance_forward_duration_ = 0.0;
     double force_yaw_target_ = FORCE_YAW_STRAIGHT_TARGET;
 
@@ -355,12 +358,25 @@ private:
     // 根据 direction 选择横移方向并启动避障。straight/right 左移，left 右移。
     void startAvoidance(double obstacle_distance)
     {
+        double lateral_out_distance = AVOIDANCE_LATERAL_DISTANCE;
+        double lateral_back_distance = AVOIDANCE_LATERAL_DISTANCE;
         if (last_direction_ == "left")
             avoidance_lateral_direction_ = -1.0;
-        else if (last_direction_ == "straight" || last_direction_ == "right")
+        else if (last_direction_ == "right")
+        {
+            avoidance_lateral_direction_ = 1.0;
+            lateral_out_distance = RIGHT_AVOIDANCE_LATERAL_OUT_DISTANCE;
+            lateral_back_distance = RIGHT_AVOIDANCE_LATERAL_BACK_DISTANCE;
+        }
+        else if (last_direction_ == "straight")
             avoidance_lateral_direction_ = 1.0;
         else
             return;
+
+        avoidance_lateral_out_duration_ =
+            lateral_out_distance / avoidance_lateral_speed_;
+        avoidance_lateral_back_duration_ =
+            lateral_back_distance / avoidance_lateral_speed_;
 
         // 在首次进入避障状态时消耗唯一一次机会；resetAvoidance() 不会清除此标志。
         avoidance_used_ = true;
@@ -376,9 +392,9 @@ private:
                  "forward %.2fm, return %.2fm",
                  obstacle_distance,
                  avoidance_lateral_direction_ > 0.0 ? "left" : "right",
-                 AVOIDANCE_LATERAL_DISTANCE,
+                 lateral_out_distance,
                  AVOIDANCE_FORWARD_DISTANCE,
-                 AVOIDANCE_LATERAL_DISTANCE);
+                 lateral_back_distance);
     }
 
     // 处理避障状态；返回 true 表示本周期不应再执行视觉巡线控制。
@@ -438,7 +454,7 @@ private:
 
         case AvoidanceState::LATERAL_OUT:
             cmd.linear.y = avoidance_lateral_direction_ * avoidance_lateral_speed_;
-            if (elapsed >= avoidance_lateral_duration_)
+            if (elapsed >= avoidance_lateral_out_duration_)
             {
                 avoidance_state_ = AvoidanceState::MOVE_FORWARD;
                 avoidance_start_time_ = ros::Time::now();
@@ -458,7 +474,7 @@ private:
 
         case AvoidanceState::LATERAL_BACK:
             cmd.linear.y = -avoidance_lateral_direction_ * avoidance_lateral_speed_;
-            if (elapsed >= avoidance_lateral_duration_)
+            if (elapsed >= avoidance_lateral_back_duration_)
             {
                 avoidance_state_ = AvoidanceState::WAIT_CLEAR;
                 avoidance_start_time_ = ros::Time::now();
@@ -662,7 +678,9 @@ public:
             std::min(avoidance_lateral_speed_, MAX_LINEAR_VEL);
         avoidance_forward_speed_ =
             std::min(avoidance_forward_speed_, MAX_LINEAR_VEL);
-        avoidance_lateral_duration_ =
+        avoidance_lateral_out_duration_ =
+            AVOIDANCE_LATERAL_DISTANCE / avoidance_lateral_speed_;
+        avoidance_lateral_back_duration_ =
             AVOIDANCE_LATERAL_DISTANCE / avoidance_lateral_speed_;
         avoidance_forward_duration_ =
             AVOIDANCE_FORWARD_DISTANCE / avoidance_forward_speed_;
