@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
 #include "traffic_light_decision.hpp"
@@ -47,6 +48,78 @@ TEST(TrafficLightDecision, ClassifiesSyntheticLeftAndRightArrows)
 
     EXPECT_EQ("left", traffic_light::classifyArrowDirection(left, box));
     EXPECT_EQ("right", traffic_light::classifyArrowDirection(right, box));
+}
+
+TEST(TrafficLightDecision, ClassifiesCapturedLeftAndRightArrows)
+{
+    const std::string picture_dir = VISION_LINE_TEST_PICTURE_DIR;
+    cv::Mat left = cv::imread(
+        picture_dir + "/captured_image_20260816_231732.jpg");
+    cv::Mat right = cv::imread(
+        picture_dir + "/captured_image_20260816_231728.jpg");
+    ASSERT_FALSE(left.empty());
+    ASSERT_FALSE(right.empty());
+
+    const cv::Rect captured_boxes[] = {
+        cv::Rect(130, 107, 32, 30),
+        cv::Rect(132, 108, 24, 24),
+        cv::Rect(125, 103, 21, 29)};
+    for (int scale = 1; scale <= 2; ++scale)
+    {
+        for (const cv::Rect &captured_box : captured_boxes)
+        {
+            const cv::Rect traffic_light_box(
+                captured_box.x * scale,
+                captured_box.y * scale,
+                captured_box.width * scale,
+                captured_box.height * scale);
+            EXPECT_EQ("left",
+                      traffic_light::classifyArrowDirection(
+                          left, traffic_light_box));
+            EXPECT_EQ("right",
+                      traffic_light::classifyArrowDirection(
+                          right, traffic_light_box));
+        }
+
+        if (scale == 1)
+        {
+            cv::resize(left, left, cv::Size(), 2.0, 2.0, cv::INTER_LINEAR);
+            cv::resize(right, right, cv::Size(), 2.0, 2.0, cv::INTER_LINEAR);
+        }
+    }
+}
+
+TEST(TrafficLightDecision, ClassifiesExistingCapturedArrowSet)
+{
+    struct CapturedArrow
+    {
+        const char *filename;
+        const char *expected_label;
+    };
+    const CapturedArrow captured_arrows[] = {
+        {"00010.jpg", "right"},
+        {"00017.jpg", "left"},
+        {"00107.jpg", "right"},
+        {"003_0030.jpg", "left"},
+        {"006_0018.jpg", "left"},
+        {"capture_1779365603.jpg", "right"},
+        {"capture_1779365606.jpg", "right"},
+        {"capture_1779365607.jpg", "right"},
+        {"capture_1779365615.jpg", "right"},
+        {"capture_1786544471347320238_000720.jpg", "right"},
+        {"capture_1786544476988825876_000839.jpg", "left"}};
+
+    const std::string picture_dir = TRAFFIC_LIGHT_TEST_PICTURE_DIR;
+    for (const CapturedArrow &captured_arrow : captured_arrows)
+    {
+        const cv::Mat image = cv::imread(
+            picture_dir + "/" + captured_arrow.filename);
+        ASSERT_FALSE(image.empty()) << captured_arrow.filename;
+        EXPECT_EQ(captured_arrow.expected_label,
+                  traffic_light::classifyArrowDirection(
+                      image, cv::Rect(0, 0, image.cols, image.rows)))
+            << captured_arrow.filename;
+    }
 }
 
 TEST(TrafficLightDecision, RejectsInvalidArrowInputs)
@@ -95,19 +168,39 @@ TEST(TrafficLightDecision, StraightModelVotesCanReachTheNormalThreshold)
     EXPECT_EQ("straight", decision.processFrame("straight", "unknown"));
 }
 
-TEST(TrafficLightDecision, ConflictingDirectionsEnterCvFallback)
+TEST(TrafficLightDecision, ConflictingDirectionsUseCvFallback)
 {
-    traffic_light::DirectionDecisionAccumulator decision(10, 8, 30, 2);
-    for (int frame = 0; frame < 29; ++frame)
+    struct ConflictCase
     {
-        EXPECT_TRUE(decision.processFrame("left", "right").empty());
-    }
-    EXPECT_FALSE(decision.inFallback());
-    EXPECT_TRUE(decision.processFrame("left", "right").empty());
-    EXPECT_TRUE(decision.inFallback());
+        const char *model_label;
+        const char *cv_label;
+    };
+    const ConflictCase conflicts[] = {
+        {"left", "right"},
+        {"right", "left"}};
 
-    EXPECT_TRUE(decision.processFrame("left", "left").empty());
-    EXPECT_EQ("left", decision.processFrame("left", "left"));
+    for (const ConflictCase &conflict : conflicts)
+    {
+        traffic_light::DirectionDecisionAccumulator decision(8, 5, 5, 2);
+        for (int frame = 0; frame < 4; ++frame)
+        {
+            EXPECT_TRUE(decision.processFrame(
+                conflict.model_label, conflict.cv_label).empty());
+        }
+        EXPECT_EQ(0, decision.voteCountFor(conflict.model_label));
+        EXPECT_EQ(0, decision.voteCountFor(conflict.cv_label));
+
+        EXPECT_TRUE(decision.processFrame(
+            conflict.model_label, conflict.cv_label).empty());
+        EXPECT_TRUE(decision.inFallback());
+        EXPECT_EQ(0u, decision.voteCount());
+
+        EXPECT_TRUE(decision.processFrame(
+            conflict.model_label, conflict.cv_label).empty());
+        EXPECT_EQ(conflict.cv_label,
+                  decision.processFrame(
+                      conflict.model_label, conflict.cv_label));
+    }
 }
 
 TEST(TrafficLightDecision, InvalidCvFrameBreaksStrictFallbackStreak)

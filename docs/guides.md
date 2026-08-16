@@ -36,17 +36,17 @@ image_callback
 
 ### 方向决策机制(`DirectionDecisionAccumulator`)
 
-常量:投票窗口 `kVoteWindowSize=10`,确认阈值 `kVoteThreshold=8`,兜底帧数上限 `kFallbackFrameLimit=30`,兜底 CV 连续数 `kFallbackCvStreak=2`。
+常量:投票窗口 `kVoteWindowSize=8`,确认阈值 `kVoteThreshold=5`,兜底帧数上限 `kFallbackFrameLimit=15`,兜底 CV 连续数 `kFallbackCvStreak=3`。
 
 **启动门槛**:决策器只有在某帧 model_label 是有效方向后才开始计帧,之前的帧(纯 stop/无检出)不计入。
 
 **正常投票模式**:
 
-1. 每帧向滑动窗口(容量 8,先进先出)投一票 model_label。
-2. 若 model_label 与 cv_label 都是 left/right 且**一致**,额外再投一票(CV 确认票,即一帧最多两票)。
+1. model_label 为有效方向且没有与 CV 的 left/right 结果冲突时,向滑动窗口(容量 8,先进先出)投一票。
+2. 若 model_label 与 cv_label 是一致的 left/right,额外加入一票 CV 确认票(即一帧最多两票);二者方向冲突时双方都不入窗口,避免任一来源在正常阶段单独发布。
 3. 任一方向票数 ≥ 5 → 该方向胜出,发布。
 
-**CV 兜底模式**:处理满 15 帧仍未有方向达到 5 票 → 切换到 CV-only 模式(打 WARN 日志):此后只看 cv_label,连续 3 帧一致且该两帧 model_label 也是 left/right → 发布该方向。兜底模式下不回退到投票模式。
+**CV 兜底模式**:处理满 15 帧仍未有方向达到 5 票 → 切换到 CV-only 模式(打 WARN 日志):此后只看 cv_label,连续 3 帧一致且这些帧的 model_label 也是 left/right → 发布该方向。兜底模式下不回退到投票模式。
 
 **发布后**:节点自动 `enabled_ = false`(一次红绿灯只报一次),由任务流程通过 `~set_enabled` 服务重新启用;重新启用时会重置决策器并丢弃在途的旧推理结果。
 
@@ -57,7 +57,7 @@ image_callback
 1. ROI 转 HSV:绿色灯罩掩膜(35-100 色调)+ 亮色箭头掩膜(V≥212),亮色与绿色膨胀支撑区求交,闭运算去噪。
 2. 连通域分析,按尺寸(宽 15-90、高 12-90)、面积、填充率、周边绿色得分/密度过滤候选。
 3. 取 `绿色得分 × 填充率` 最高的候选,用 2×2 开运算去掉细亮斑并保留最大的连通主体,PCA 判主轴必须水平(否则 unknown)。
-4. 以主体最宽的水平行为箭杆中心,逐列统计中心线上、下方同时存在的“箭翼”像素;左半箭翼得分高判 `left`,右半高判 `right`,两侧差异不足 10% 判 `unknown`。
+4. 计算主体像素的水平偏度:细箭杆构成与箭头相反方向的分布长尾,正偏判 `left`,负偏判 `right`;偏度绝对值不足 0.02 的近似对称轮廓判 `unknown`。
 
 ### 启动丢帧
 

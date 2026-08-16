@@ -19,10 +19,12 @@ const int kCandidateMinArea = 80;
 const int kCandidateMinColorScore = 200;
 const double kCandidateMinFillDensity = 0.15;
 const double kCandidateMinColorDensity = 0.10;
+const int kDetectionBoxPadding = 20;
 const int kCandidatePadding = 10;
 const int kCloseKernelSize = 3;
+const int kOpenKernelSize = 2;
 const int kColorSupportKernelSize = 12;
-const double kDensityEpsilon = 1e-9;
+const double kMinHorizontalSkewness = 0.02;
 
 int scaledLength(int value, double scale)
 {
@@ -50,8 +52,57 @@ struct ArrowCandidate
 
 bool classifyComponent(const cv::Mat &component_mask, std::string &label)
 {
+    const cv::Mat open_kernel = cv::getStructuringElement(
+        cv::MORPH_RECT,
+        cv::Size(kOpenKernelSize, kOpenKernelSize));
+    cv::Mat opened_mask;
+    cv::morphologyEx(component_mask,
+                     opened_mask,
+                     cv::MORPH_OPEN,
+                     open_kernel);
+
+    cv::Mat opened_labels;
+    cv::Mat opened_stats;
+    cv::Mat opened_centroids;
+    const int opened_component_count = cv::connectedComponentsWithStats(
+        opened_mask,
+        opened_labels,
+        opened_stats,
+        opened_centroids,
+        8,
+        CV_32S);
+
+    int largest_component_id = -1;
+    int largest_component_area = 0;
+    for (int component_id = 1;
+         component_id < opened_component_count;
+         ++component_id)
+    {
+        const int area = opened_stats.at<int>(component_id, cv::CC_STAT_AREA);
+        if (area > largest_component_area)
+        {
+            largest_component_id = component_id;
+            largest_component_area = area;
+        }
+    }
+    if (largest_component_id < 0)
+    {
+        return false;
+    }
+
+    const cv::Rect largest_component_box(
+        opened_stats.at<int>(largest_component_id, cv::CC_STAT_LEFT),
+        opened_stats.at<int>(largest_component_id, cv::CC_STAT_TOP),
+        opened_stats.at<int>(largest_component_id, cv::CC_STAT_WIDTH),
+        opened_stats.at<int>(largest_component_id, cv::CC_STAT_HEIGHT));
+    cv::Mat arrow_mask;
+    cv::compare(opened_labels(largest_component_box),
+                largest_component_id,
+                arrow_mask,
+                cv::CMP_EQ);
+
     std::vector<cv::Point> points;
-    cv::findNonZero(component_mask, points);
+    cv::findNonZero(arrow_mask, points);
     if (points.size() < 2)
     {
         return false;
@@ -77,41 +128,40 @@ bool classifyComponent(const cv::Mat &component_mask, std::string &label)
         return false;
     }
 
-    const int width = component_mask.cols;
-    const int height = component_mask.rows;
-    double maximum_density = -1.0;
-    int peak = -1;
-    bool tied_peak = false;
-    for (int band = 0; band < 8; ++band)
+    double mean_x = 0.0;
+    for (const cv::Point &point : points)
     {
-        const int x1 = band * width / 8;
-        const int x2 = (band + 1) * width / 8;
-        if (x2 <= x1)
-        {
-            continue;
-        }
-
-        const cv::Mat band_mask = component_mask(cv::Rect(x1, 0, x2 - x1, height));
-        const double density = static_cast<double>(cv::countNonZero(band_mask)) /
-                               static_cast<double>(band_mask.total());
-        if (density > maximum_density + kDensityEpsilon)
-        {
-            maximum_density = density;
-            peak = band;
-            tied_peak = false;
-        }
-        else if (std::abs(density - maximum_density) <= kDensityEpsilon)
-        {
-            tied_peak = true;
-        }
+        mean_x += point.x;
     }
+    mean_x /= static_cast<double>(points.size());
 
-    if (peak < 0 || tied_peak)
+    double second_moment = 0.0;
+    double third_moment = 0.0;
+    for (const cv::Point &point : points)
+    {
+        const double centered_x = point.x - mean_x;
+        second_moment += centered_x * centered_x;
+        third_moment += centered_x * centered_x * centered_x;
+    }
+    second_moment /= static_cast<double>(points.size());
+    third_moment /= static_cast<double>(points.size());
+
+    if (second_moment <= 0.0)
     {
         return false;
     }
 
-    label = peak <= 3 ? "left" : "right";
+    // The thin shaft forms the tail of the horizontal pixel distribution, so
+    // its skew points away from the arrowhead. This uses the whole component
+    // and is less sensitive to one bright column than the previous band peak.
+    const double horizontal_skewness =
+        third_moment / std::pow(second_moment, 1.5);
+    if (std::abs(horizontal_skewness) < kMinHorizontalSkewness)
+    {
+        return false;
+    }
+
+    label = horizontal_skewness > 0.0 ? "left" : "right";
     return true;
 }
 
@@ -137,7 +187,7 @@ std::string classifyArrowDirection(const cv::Mat &bgr_frame,
         return "unknown";
     }
 
-    const int padding = scaledLength(kCandidatePadding, scale);
+    const int padding = scaledLength(kDetectionBoxPadding, scale);
     const cv::Rect expanded_box(
         detection_box.x - padding,
         detection_box.y - padding,
@@ -418,10 +468,16 @@ std::string DirectionDecisionAccumulator::processFrame(
         return std::string();
     }
 
-    vote_window_.add(model_label);
-    if (isCvDirection(model_label) && isCvDirection(cv_label))
+    const bool direction_conflict =
+        isCvDirection(model_label) && isCvDirection(cv_label) &&
+        model_label != cv_label;
+    if (!direction_conflict)
     {
-        vote_window_.add(cv_label);
+        vote_window_.add(model_label);
+        if (isCvDirection(model_label) && model_label == cv_label)
+        {
+            vote_window_.add(cv_label);
+        }
     }
 
     const std::string winner = vote_window_.winner();

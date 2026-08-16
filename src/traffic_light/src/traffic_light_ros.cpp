@@ -27,6 +27,7 @@ namespace
     const char *kDefaultImageTopic = "/ucar_camera/image_raw";
     const char *kDirectionTopic = "/vision_line_direction";
     const char *kWindowName = "Traffic Light Detection";
+    const char *kCvConflictFramePath = "/tmp/traffic_light_cv_conflict.jpg";
 
     class TrafficLightRosNode
     {
@@ -108,6 +109,7 @@ namespace
             {
                 discard_results_ = queued_frames_;
                 last_output_time_ = Clock::now() - std::chrono::seconds(1);
+                conflict_frame_saved_ = false;
                 createWindow();
             }
             else if (window_created_)
@@ -275,6 +277,71 @@ namespace
             }
 
             const bool was_fallback = decision_.inFallback();
+            const bool model_cv_conflict =
+                (model_label == "left" || model_label == "right") &&
+                (cv_label == "left" || cv_label == "right") &&
+                model_label != cv_label;
+            if (model_cv_conflict && !conflict_frame_saved_)
+            {
+                conflict_frame_saved_ = true;
+                try
+                {
+                    if (cv::imwrite(kCvConflictFramePath, source_frame))
+                    {
+                        ROS_WARN("Saved model/CV conflict frame to %s: "
+                                 "model=%s cv=%s box=(%d, %d, %d, %d)",
+                                 kCvConflictFramePath,
+                                 model_label.c_str(),
+                                 cv_label.c_str(),
+                                 best_direction->box.x,
+                                 best_direction->box.y,
+                                 best_direction->box.x + best_direction->box.width,
+                                 best_direction->box.y + best_direction->box.height);
+                    }
+                    else
+                    {
+                        ROS_WARN("Failed to save model/CV conflict frame to %s",
+                                 kCvConflictFramePath);
+                    }
+                }
+                catch (const cv::Exception &error)
+                {
+                    ROS_WARN("Failed to save model/CV conflict frame: %s",
+                             error.what());
+                }
+            }
+
+            const std::size_t next_frame = decision_.processedFrameCount() + 1;
+            const bool inference_enters_window =
+                !was_fallback && (model_label == "straight" ||
+                                  model_label == "left" ||
+                                  model_label == "right") &&
+                !model_cv_conflict;
+            if (inference_enters_window)
+            {
+                ROS_INFO("vote-window input: frame=%zu source=inference label=%s",
+                         next_frame, model_label.c_str());
+            }
+
+            const bool cv_enters_window =
+                inference_enters_window &&
+                (model_label == "left" || model_label == "right") &&
+                model_label == cv_label;
+            if (cv_enters_window)
+            {
+                ROS_INFO("vote-window input: frame=%zu source=cv-processing label=%s",
+                         next_frame, cv_label.c_str());
+            }
+            if (!was_fallback && model_cv_conflict)
+            {
+                ROS_INFO("vote-window skipped: frame=%zu "
+                         "source=inference label=%s "
+                         "source=cv-processing label=%s reason=conflict",
+                         next_frame,
+                         model_label.c_str(),
+                         cv_label.c_str());
+            }
+
             const std::string final_label = decision_.processFrame(
                 model_label, cv_label);
             if (!was_fallback && decision_.inFallback())
@@ -333,6 +400,7 @@ namespace
         std::deque<cv::Mat> pending_frames_;
         traffic_light::DirectionDecisionAccumulator decision_;
         bool window_created_ = false;
+        bool conflict_frame_saved_ = false;
         Clock::time_point last_output_time_;
         cv::Mat map_x_;
         cv::Mat map_y_;

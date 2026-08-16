@@ -30,8 +30,8 @@ private:
 
     // 巡线避障机动距离。速度通过私有参数配置，按速度×时长给出名义位移。
     const double AVOIDANCE_LATERAL_DISTANCE = 0.5;
-    const double AVOIDANCE_FORWARD_DISTANCE = 0.75;
-    const double FORCE_YAW_TURN_TARGET = -1.57;  // left/right 避障后的绝对目标航向 (rad)
+    const double AVOIDANCE_FORWARD_DISTANCE = 0.65;
+    const double FORCE_YAW_TURN_TARGET = -1.57;   // left/right 避障后的绝对目标航向 (rad)
     const double FORCE_YAW_STRAIGHT_TARGET = 0.0; // straight 避障后的绝对目标航向 (rad)
     const double FORCE_YAW_KP = 2.0;              // 参考 GotoA 的 Kp_yaw
     const double FORCE_YAW_TOLERANCE = 0.05;      // 航向收敛阈值 (rad)
@@ -53,7 +53,7 @@ private:
     ros::Subscriber direction_sub_;
     ros::Publisher direction_pub_;
     std::string last_direction_ = "straight"; // 存储收到的方向，供转发
-    bool direction_received_ = false;          // 仅收到有效 direction 后才允许触发避障
+    bool direction_received_ = false;         // 仅收到有效 direction 后才允许触发避障
 
     // 巡线期间的避障状态机（进程内最多触发一次）：
     // 停车 -> 横移避开 -> 前进 -> 横移回线 -> 等待前方清空 -> 强制航向。
@@ -83,7 +83,7 @@ private:
     bool front_scan_valid_ = false;
     double front_obstacle_distance_ = std::numeric_limits<double>::infinity();
     ros::Time last_scan_time_;
-    double obstacle_distance_threshold_ = 0.001;
+    double obstacle_distance_threshold_ = 0.35;
     double obstacle_front_half_angle_ = 20.0 * M_PI / 180.0;
     double obstacle_scan_timeout_ = 0.5;
     double avoidance_lateral_speed_ = 0.2;
@@ -637,7 +637,7 @@ public:
 
         // 避障参数：距离和角度可按实际雷达安装/底盘速度调整。
         nh_private_.param("obstacle_distance_threshold",
-                          obstacle_distance_threshold_, 0.001);
+                          obstacle_distance_threshold_, 0.35);
         nh_private_.param("obstacle_front_half_angle", // rad
                           obstacle_front_half_angle_, 20.0 * M_PI / 180.0);
         nh_private_.param("obstacle_scan_timeout", obstacle_scan_timeout_, 0.5);
@@ -949,4 +949,3 @@ int main(int argc, char **argv)
     controller.run();
     return 0;
 }
-

@@ -323,6 +323,7 @@ public:
                                              TrackingTarget::TURNING);
                         cv::imshow("binary", binary_img);
                         cv::imshow("processed_img", canvas);
+                        cv::waitKey(1);
                     }
                     else
                     {
@@ -350,6 +351,7 @@ public:
                         cv::imshow("perspective", pers_frame);
                         cv::imshow("binary", binary_img);
                         cv::imshow("processed_img", canvas);
+                        cv::waitKey(1);
                     }
                 }
                 catch (const cv::Exception &e)
@@ -431,7 +433,7 @@ private:
     int stop_near_min_frames_ = 3;        // 近端连续确认帧数
     int stop_miss_min_frames_ = 3;        // 持续丢线多少帧才放弃当前 phase
 
-    // ---- 中线丢帧回退：当前帧中线无效（空或太短）时，沿用上一帧有效数据 ----
+    // ---- 中线丢帧回退：当前帧中线为空时，沿用上一帧有效数据 ----
     std_msgs::Float32MultiArray last_valid_msg_;
     bool has_last_valid_msg_ = false;
 
@@ -657,7 +659,10 @@ private:
             if (idx < 0)
                 idx += line_size; // 负索引从末尾计数
 
-            if (idx < 0 || idx >= line_size)
+            if (idx >= line_size)
+                idx = line_size - 1; // 中线点数不足时，追踪最上方的点
+
+            if (idx < 0)
             {
                 valid = false;
             }
@@ -683,7 +688,7 @@ private:
             return msg;
         }
 
-        // 本帧中线无效（为空或太短）：回退到上一帧有效数据，避免给下游发送 {0,-1} 哨兵
+        // 本帧中线无效（为空或负索引越界）：回退到上一帧有效数据，避免给下游发送 {0,-1} 哨兵
         if (has_last_valid_msg_)
             return last_valid_msg_;
 
