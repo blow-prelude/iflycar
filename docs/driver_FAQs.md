@@ -301,3 +301,117 @@ ps -eo pid,ppid,user,stat,etimes,comm,%cpu,%mem,args \
 
 `host_wake_irq=0`、缺少 `ref_wifi_clk`/`sdio-supply`、USB `error -71` 以及
 GPU/SquashFS 日志均没有在本次排查中表现出与 SSH 卡顿的直接关联。
+
+---
+### 离线中文语音播报方案
+
+#### 需求与现象
+
+系统自带的 espeak 可以离线播报中文，但合成声音电子感明显，部分物品名和车间名
+吐字不够清楚。项目的播报内容又包含大模型动态生成的物品名称，不能全部替换成
+提前录制的固定 WAV，因此需要一套完全离线、支持动态中文文本的 TTS。
+
+目标运行环境为 ARM64、Debian 10，系统 CMake 版本为 `3.13`。语音方案不能要求
+升级系统 glibc、libstdc++ 或整套编译工具链，也不能依赖比赛现场的互联网连接。
+
+#### 尝试一：sherpa-onnx + Kokoro
+
+sherpa-onnx 可以完全离线运行，支持多种 TTS 模型；Kokoro 支持中英文，并提供
+INT8 量化模型，从功能和音质上能够满足需求。
+
+实际接入时发现，能够支持中文 TTS 的相关发布版本至少要求 CMake `3.14.5`，而
+本机只有 `3.13`。如果继续使用该方案，需要升级本机 CMake，或者额外维护一套
+独立构建工具链，会扩大目标机环境改动范围。
+
+本项目决定不为语音播报升级系统工具链，因此放弃该方案。
+
+#### 最终方案：Piper
+
+Piper 体积和运行开销较小，提供 ARM64 预编译版本，可以直接加载 ONNX 声音模型，
+不需要在目标机重新编译推理框架。项目使用中文
+`zh_CN-huayan-medium.onnx` 模型，配置中的采样率为 22050 Hz、质量级别为
+`medium`。
+
+当前完整运行时放在：
+
+```text
+3rdparty/piper/
+├── piper
+├── libonnxruntime.so.1.14.1
+├── libespeak-ng.so -> libespeak-ng.so.1.1.51
+├── libespeak-ng.so.1 -> libespeak-ng.so.1.1.51
+├── libespeak-ng.so.1.1.51
+├── espeak-ng-data/
+└── models/
+    ├── zh_CN-huayan-medium.onnx
+    └── zh_CN-huayan-medium.onnx.json
+```
+
+`piper` 的 RUNPATH 包含 `$ORIGIN`，因此会优先从可执行文件所在目录加载
+`libonnxruntime` 和 `libespeak-ng`，不需要把这些库安装到系统目录，也不需要修改
+全局 `LD_LIBRARY_PATH`。
+
+#### 版本兼容问题
+
+Piper 预编译包并非都能运行在 Debian 10。较新的 ARM64 发布包在本机启动时曾出现：
+
+```text
+version `GLIBC_2.29' not found
+version `GLIBCXX_3.4.26' not found
+```
+
+这表示该二进制是在更新的系统工具链上构建的，不是模型文件损坏。不要通过替换
+系统 glibc 或 libstdc++ 强行运行，否则可能影响 ROS 和其他系统程序。
+
+最终采用较老的 `v0.0.2` 预编译版本。该版本可适配当前系统，并使用
+ONNX Runtime 1.14.1。迁移时必须同时保留 Piper 可执行文件、两个动态库、
+`espeak-ng-data`、模型和模型配置，只复制 `piper` 与 `.onnx` 文件并不完整。
+
+#### 基础验证
+
+先确认动态库和程序本身能够启动：
+
+```bash
+ldd 3rdparty/piper/piper | grep 'not found'
+3rdparty/piper/piper --help
+```
+
+第一条命令正常情况下没有输出。若出现 `not found`，应先补齐同目录动态库及符号
+链接，不要继续测试模型。
+
+使用实际中文模型进行合成：
+
+```bash
+cd 3rdparty/piper
+printf '%s\n' '任务完成' |
+./piper \
+  --model models/zh_CN-huayan-medium.onnx \
+  --config models/zh_CN-huayan-medium.onnx.json \
+  --output_file /tmp/piper_test.wav
+file /tmp/piper_test.wav
+aplay --quiet /tmp/piper_test.wav
+```
+
+正常输出应为 16-bit、单声道、22050 Hz WAV。当前目标机实测模型加载约 0.5 秒，
+短句推理约 0.5 秒；较长的物品分配播报推理约 1～2 秒，可以满足任务流程的播报
+时机要求。
+
+#### 项目中的使用情况
+
+以下流程均优先使用 Piper：
+
+- `switch_test2` 和 `switch_test2_pro`：实体仓储完成、仿真完成和最终任务完成播报；
+- `AI.py`：ROS 流程中识别完二维码后的物品分配播报；
+- `AI_no_ros.py`：独立 AI 流程中的物品分配播报。
+
+Piper 合成失败、输出文件异常或 `aplay` 播放失败时，会自动使用 espeak 播报相同
+文本。两种后端都失败时只记录错误，任务状态机继续执行，避免语音设备故障导致
+整车流程永久阻塞。
+
+
+#### 最终结论
+
+在不升级 Debian 10 工具链的前提下，旧版 Piper 配合
+`zh_CN-huayan-medium.onnx` 可以稳定提供离线中文动态播报。运行时依赖全部随项目
+保存在 `3rdparty/piper/`，正常路径使用 Piper 改善清晰度，异常路径保留 espeak
+兜底，兼顾播报效果和比赛流程可靠性。

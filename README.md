@@ -80,7 +80,7 @@ SLAM建图
 
 ---
 ### quick start
-一键启动 `./start_all.sh`
+一键启动 `./start_all.sh`   
 启动巡线测试 `roslaunch startup_scripts start_vision_line.launch`
 
 ---
@@ -193,8 +193,9 @@ rosparam set /start_traffic_light_det 1
 ---
 ###　外设问题
 
-[麦克风阵列不能识别唤醒词](./docs/driver_FAQs.md#speech_command-找不到麦克风设备问题)
-[网络质量太差，ssh连不上](./docs/driver_FAQs.md#无线连接卡顿)
+[麦克风阵列不能识别唤醒词](./docs/driver_FAQs.md#speech_command-找不到麦克风设备问题)   
+[网络质量太差，ssh连不上](./docs/driver_FAQs.md#无线连接卡顿)   
+[espeak合成语音播报太难听，换成piper](./docs/driver_FAQs.md#离线中文语音播报方案)   
 
 ---
 ### 更新日志
