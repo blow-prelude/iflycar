@@ -114,28 +114,86 @@ def get_iat_text(audio_path="/tmp/cmd.wav"):
     ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
     return iat_result_text
 
-def get_spark_llm(prompt):
+def get_spark_llm(prompt, call_name="未命名调用"):
     global spark_response
     spark_response = ""
     def on_message(ws, message):
         global spark_response
-        data = json.loads(message)
-        if data['header']['code'] == 0:
-            texts = data["payload"]["choices"].get("text", [])
-            if texts: spark_response += texts[0].get("content", "")
-            if data["payload"]["choices"]["status"] == 2: ws.close()
+        try:
+            data = json.loads(message)
+            header = data.get("header", {})
+            if header.get("code") != 0:
+                rospy.logerr(
+                    f"星火大模型调用失败[{call_name}]: "
+                    f"code={header.get('code')}, sid={header.get('sid')}, "
+                    f"message={header.get('message')}, 原始响应={message[:1000]}"
+                )
+                ws.close()
+                return
+
+            choices = data.get("payload", {}).get("choices", {})
+            texts = choices.get("text", [])
+            if texts:
+                spark_response += texts[0].get("content", "")
+            if choices.get("status") == 2:
+                ws.close()
+        except Exception as exc:
+            rospy.logerr(
+                f"解析星火响应失败[{call_name}]: {exc}, 原始响应={message[:1000]}"
+            )
+            ws.close()
+
+    def on_error(ws, error):
+        rospy.logerr(f"星火 WebSocket 异常[{call_name}]: {error}")
+
     def on_open(ws):
         def run(*args):
-            data = {"header": {"app_id": APPID, "uid": "robot_car"}, "parameter": {"chat": {"domain": "spark-x", "temperature": 0.1, "max_tokens": 512}}, "payload": {"message": {"text": [{"role": "user", "content": prompt}]}}}
-            ws.send(json.dumps(data))
+            try:
+                data = {"header": {"app_id": APPID, "uid": "robot_car"}, "parameter": {"chat": {"domain": "spark-x", "temperature": 0.1, "max_tokens": 512}}, "payload": {"message": {"text": [{"role": "user", "content": prompt}]}}}
+                ws.send(json.dumps(data))
+            except Exception as exc:
+                rospy.logerr(f"发送星火请求失败[{call_name}]: {exc}")
+                ws.close()
         thread.start_new_thread(run, ())
     wsParam = Ws_Param("wss://spark-api.xf-yun.com/x2")
-    ws = websocket.WebSocketApp(wsParam.create_url(), on_message=on_message, on_open=on_open)
-    ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
+    ws = websocket.WebSocketApp(
+        wsParam.create_url(),
+        on_message=on_message,
+        on_error=on_error,
+        on_open=on_open,
+    )
     try:
-        json_str = re.search(r'\{.*\}', spark_response, re.DOTALL).group(0)
-        return json.loads(json_str)
-    except: return None
+        ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
+    except Exception as exc:
+        rospy.logerr(f"星火 WebSocket 运行失败[{call_name}]: {exc}")
+        return None
+
+    if not spark_response:
+        rospy.logerr(f"星火大模型未返回有效内容[{call_name}]")
+        return None
+
+    match = re.search(r'\{.*\}', spark_response, re.DOTALL)
+    if not match:
+        rospy.logerr(
+            f"星火响应中未找到 JSON 对象[{call_name}]: {spark_response[:1000]}"
+        )
+        return None
+
+    try:
+        result = json.loads(match.group(0))
+    except json.JSONDecodeError as exc:
+        rospy.logerr(
+            f"星火响应 JSON 解析失败[{call_name}]: {exc}, "
+            f"原始内容={spark_response[:1000]}"
+        )
+        return None
+
+    if not isinstance(result, dict):
+        rospy.logerr(
+            f"星火响应 JSON 不是对象[{call_name}]: {spark_response[:1000]}"
+        )
+        return None
+    return result
 
 # ================= 业务工具 =================
 def record_audio(duration=10, filename="/tmp/cmd.wav"):
@@ -161,9 +219,27 @@ def fetch_items_from_urls(urls):
     items = []
     for url in urls:
         try:
-            res = requests.get(url, timeout=3).json()
-            if res.get("code") == 200: items.append(res.get("result"))
-        except: pass
+            response = requests.get(url, timeout=3)
+        except requests.RequestException as exc:
+            rospy.logerr(f"请求二维码物品接口失败: url={url}, error={exc}")
+            continue
+
+        try:
+            res = response.json()
+        except ValueError as exc:
+            rospy.logerr(
+                f"二维码物品接口响应不是有效 JSON: url={url}, "
+                f"status={response.status_code}, error={exc}"
+            )
+            continue
+
+        if res.get("code") != 200:
+            rospy.logerr(
+                f"二维码物品接口返回失败: url={url}, status={response.status_code}, "
+                f"response={str(res)[:1000]}"
+            )
+            continue
+        items.append(res.get("result"))
     return items
 
 # ================= 后台逻辑线程 =================
@@ -202,7 +278,8 @@ def logic_worker():
             "2. 根据指令中的任务顺序分别提取，不得交换 ACT 和 SIM。\n"
             "3. 若某个任务无法判断，ACT 使用“食品”，SIM 使用“电子产品”。\n"
             "4. 只输出一个 JSON 对象，不要输出 Markdown、解释或其他文字。\n"
-            "输出格式：{\"ACT\":\"实体大类\",\"SIM\":\"仿真大类\"}"
+            "输出格式：{\"ACT\":\"实体大类\",\"SIM\":\"仿真大类\"}",
+            call_name="大类识别",
         )
         ACT_global = intent_res.get("ACT", "食品") if intent_res else "食品"
         SIM_global = intent_res.get("SIM", "电子产品") if intent_res else "电子产品"
@@ -246,7 +323,8 @@ def logic_worker():
             "A1、A2、A3、B1、B2、B3，不要输出 Markdown、解释或其他文字。\n"
             "输出格式："
             "{\"A1\":\"实体物品\",\"A2\":\"实体大类\",\"A3\":\"实体车间\","
-            "\"B1\":\"仿真物品\",\"B2\":\"仿真大类\",\"B3\":\"仿真车间\"}"
+            "\"B1\":\"仿真物品\",\"B2\":\"仿真大类\",\"B3\":\"仿真车间\"}",
+            call_name="物品分配",
         )
 
         if allocate_res:

@@ -97,6 +97,11 @@ void OURSWITCH::OdomCallback(const nav_msgs::Odometry::ConstPtr &msg)
         msg->pose.pose.orientation.w);
     tf2::Matrix3x3 m(q);
     m.getRPY(roll, pitch, yaw);
+
+    odom_x_ = msg->pose.pose.position.x;
+    odom_y_ = msg->pose.pose.position.y;
+    odom_received_ = true;
+    last_odom_wall_time_ = ros::WallTime::now();
 }
 
 void OURSWITCH::UltrasoundCallback(const pcl_work::ultrasoundConstPtr &msg)
@@ -496,3 +501,4 @@ void OURSWITCH::sendPos(double x, double y, double yaw)
     ac_.sendGoal(goal);
     ROS_INFO("Sent goal: x=%f, y=%f, yaw=%f", x, y, yaw);
 }
+

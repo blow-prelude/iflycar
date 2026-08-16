@@ -199,3 +199,13 @@ rosparam set /start_traffic_light_det 1
 ---
 ### 更新日志
 [视觉巡线更新日志](./src/vision_line/README.md)
+
+---
+### FAQS
+- 现象：调用星火大模型鉴权失败
+- 原因：系统时间和真实时间差距较大，握手失败 
+- 解决方案：先查看当前状态是否同步 `timedatectl`  
+  1. 设置时区  `sudo timedatectl set-timezone Asia/Shanghai`  
+开启NTP自动同步 `sudo timedatectl set-ntp true`  
+  2. 手动同步阿里云时间  `sudo ntpdate ntp.aliyun.com `   
+  3. 或者编辑 `/etc/systemd/timesyncd.conf`  

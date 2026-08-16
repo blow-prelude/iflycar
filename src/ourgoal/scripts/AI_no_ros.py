@@ -173,19 +173,29 @@ def get_iat_text(audio_path):
     return "".join(result_text)
 
 
-def extract_json(text):
+def extract_json(text, call_name="未命名调用"):
     """从大模型可能附带 Markdown 的响应中提取 JSON 对象。"""
     match = re.search(r"\{.*\}", text or "", re.DOTALL)
     if not match:
+        LOGGER.error("星火响应中未找到 JSON 对象[%s]：%s", call_name, (text or "")[:1000])
         return None
     try:
         result = json.loads(match.group(0))
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        LOGGER.error(
+            "星火响应 JSON 解析失败[%s]：%s，原始内容=%s",
+            call_name,
+            exc,
+            (text or "")[:1000],
+        )
         return None
-    return result if isinstance(result, dict) else None
+    if not isinstance(result, dict):
+        LOGGER.error("星火响应 JSON 不是对象[%s]：%s", call_name, (text or "")[:1000])
+        return None
+    return result
 
 
-def get_spark_llm(prompt):
+def get_spark_llm(prompt, call_name="未命名调用"):
     response_text = []
 
     def on_message(ws, message):
@@ -193,7 +203,14 @@ def get_spark_llm(prompt):
             data = json.loads(message)
             header = data.get("header", {})
             if header.get("code") != 0:
-                LOGGER.error("星火大模型请求失败：%s", data)
+                LOGGER.error(
+                    "星火大模型调用失败[%s]：code=%s，sid=%s，message=%s，原始响应=%s",
+                    call_name,
+                    header.get("code"),
+                    header.get("sid"),
+                    header.get("message"),
+                    message[:1000],
+                )
                 ws.close()
                 return
             choices = data.get("payload", {}).get("choices", {})
@@ -201,27 +218,37 @@ def get_spark_llm(prompt):
                 response_text.append(text.get("content", ""))
             if choices.get("status") == 2:
                 ws.close()
-        except (TypeError, ValueError, KeyError) as exc:
-            LOGGER.warning("无法解析星火响应：%s", exc)
+        except Exception as exc:
+            LOGGER.error(
+                "解析星火响应失败[%s]：%s，原始响应=%s",
+                call_name,
+                exc,
+                message[:1000],
+            )
+            ws.close()
 
     def on_error(_ws, error):
-        LOGGER.error("星火大模型 WebSocket 错误：%s", error)
+        LOGGER.error("星火 WebSocket 异常[%s]：%s", call_name, error)
 
     def on_open(ws):
-        request = {
-            "header": {"app_id": APPID, "uid": "standalone_ai"},
-            "parameter": {
-                "chat": {
-                    "domain": "spark-x",
-                    "temperature": 0.1,
-                    "max_tokens": 512,
-                }
-            },
-            "payload": {
-                "message": {"text": [{"role": "user", "content": prompt}]}
-            },
-        }
-        ws.send(json.dumps(request, ensure_ascii=False))
+        try:
+            request = {
+                "header": {"app_id": APPID, "uid": "standalone_ai"},
+                "parameter": {
+                    "chat": {
+                        "domain": "spark-x",
+                        "temperature": 0.1,
+                        "max_tokens": 512,
+                    }
+                },
+                "payload": {
+                    "message": {"text": [{"role": "user", "content": prompt}]}
+                },
+            }
+            ws.send(json.dumps(request, ensure_ascii=False))
+        except Exception as exc:
+            LOGGER.error("发送星火请求失败[%s]：%s", call_name, exc)
+            ws.close()
 
     ws_param = WsParam("wss://spark-api.xf-yun.com/x2")
     websocket_app = websocket.WebSocketApp(
@@ -230,8 +257,17 @@ def get_spark_llm(prompt):
         on_error=on_error,
         on_open=on_open,
     )
-    websocket_app.run_forever(sslopt={"cert_reqs": 0})
-    return extract_json("".join(response_text))
+    try:
+        websocket_app.run_forever(sslopt={"cert_reqs": 0})
+    except Exception as exc:
+        LOGGER.error("星火 WebSocket 运行失败[%s]：%s", call_name, exc)
+        return None
+
+    response = "".join(response_text)
+    if not response:
+        LOGGER.error("星火大模型未返回有效内容[%s]", call_name)
+        return None
+    return extract_json(response, call_name)
 
 
 def normalize_category(value, default):
@@ -260,7 +296,7 @@ def match_items(act_category, sim_category):
         "\"A3\":\"实体车间\",\"B1\":\"仿真物品\","
         "\"B2\":\"仿真大类\",\"B3\":\"仿真车间\"}"
     )
-    result = get_spark_llm(prompt)
+    result = get_spark_llm(prompt, call_name="物品分配")
     if not result:
         return None
 
@@ -311,7 +347,8 @@ def main():
         intent = get_spark_llm(
             f"严格分析这条语音指令：“{speech}”。任务1是实体抓取，任务2是仿真抓取。"
             "请提取两个大类，只能是：食品/日用品/电子产品。"
-            "只返回严格 JSON：{\"ACT\":\"实体大类\",\"SIM\":\"仿真大类\"}"
+            "只返回严格 JSON：{\"ACT\":\"实体大类\",\"SIM\":\"仿真大类\"}",
+            call_name="大类识别",
         ) or {}
         act_category = normalize_category(intent.get("ACT"), "食品")
         sim_category = normalize_category(intent.get("SIM"), "电子产品")
