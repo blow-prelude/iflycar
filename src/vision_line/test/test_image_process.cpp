@@ -302,9 +302,11 @@ TEST(ScanSideLinesHorizontalBar, ShortBarResumesFromPreservedAnchor)
 }
 
 // 计划测试 4（普通丢线仍按 miss_threshold 累计和重置）：稳定跟踪阶段左边线
-// 突然跳到远离锚点的位置（40 像素 > x_continual），中间若干行无左边线。
-// 期望：连续被拒后 miss 超过阈值触发重置，从未稳定搜索起点重新锁定 5。
-TEST(ScanSideLinesHorizontalBar, NormalMissStillResetsAndReacquires)
+// 突然跳到远离上一行的位置（40 像素 > x_continual），中间若干行无左边线。
+// 期望：连续被拒后 miss 超过阈值触发重置；重置后 x=5 的候选与上一行边线
+// 末点（45）的 x 差距仍很大，不进入边线列表而是逐行计入 miss——左边线最终
+// 只保留丢线前的 45 段，空洞上方不再出现跳变边线点。
+TEST(ScanSideLinesHorizontalBar, NormalMissStillResetsAndRejectsFarEdge)
 {
     ImageProcessConfig config;
     ImageProcess process(config);
@@ -320,17 +322,19 @@ TEST(ScanSideLinesHorizontalBar, NormalMissStillResetsAndReacquires)
     }
     for (int y = 60; y <= 92; ++y)
     {
-        draw_edge_stripe(binary, y, 5); // 远离锚点的真实左边线
+        draw_edge_stripe(binary, y, 5); // 与上一行边线跳变的远处左边线
     }
     // 93..95 行故意不留左边线，制造普通丢线行。
 
     const cv::Mat canvas = run_task2_and_draw(process, binary);
 
-    // 重置后从未稳定搜索起点重新锁定 x=5 的左边线。
-    const int above_rows[] = {62, 70, 80, 90};
+    // 重置后跳变边线（x=5）不加入边线列表：空洞上方（含触发重置的 92 行）
+    // 都没有左边线点。94/95 行不断言：96 行圆点（半径 2）的弧线像素会延伸
+    // 到这两行。
+    const int above_rows[] = {62, 70, 80, 90, 92, 93};
     for (const int y : above_rows)
     {
-        EXPECT_NEAR(5 - 2, left_line_min_col(canvas, y), 1) << "row " << y;
+        EXPECT_EQ(-1, left_line_min_col(canvas, y)) << "row " << y;
     }
     // 丢线前的旧边线保持 45。
     const int below_rows[] = {98, 103, 107};

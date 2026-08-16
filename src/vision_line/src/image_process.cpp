@@ -1305,6 +1305,9 @@ void ImageProcess::scan_side_lines(const ValidatedScanFrame &frame,
         rx = -1;
         bool left_added = false;
         bool right_added = false;
+        // 本行找到的边线是否因与上一行 x 差距过大而被拒（参与 miss 计数）
+        bool left_far_jump = false;
+        bool right_far_jump = false;
 
         // 搜索左边线
         if (side != RIGHT_ONLY)
@@ -1353,12 +1356,21 @@ void ImageProcess::scan_side_lines(const ValidatedScanFrame &frame,
                     }
                 }
 
-                // 先进行稳定点判断
+                // 先进行稳定点判断。除了最开始的几行（边线列表为空）外，
+                // 当前行找到的边线与上一行的 x 差距较大时不加入边线列表：
+                // 稳定阶段本就会被 add_point_with_stable_start 的连续性检查
+                // 拒绝；未稳定阶段在此拦截，避免 miss 重置后重新锁定到与
+                // 旧边线跳变的远处边缘。
                 if (lx >= 0)
                 {
                     assert(lx <= max_edge_x);
-                    left_added = add_point_with_stable_start(
-                        this->left_line_, cv::Point(lx, y), left_stable_buf, left_stable_flag);
+                    left_far_jump = !this->left_line_.empty() &&
+                                    std::abs(this->left_line_.back().x - lx) >= this->config_.x_continual;
+                    if (!left_far_jump)
+                    {
+                        left_added = add_point_with_stable_start(
+                            this->left_line_, cv::Point(lx, y), left_stable_buf, left_stable_flag);
+                    }
                 }
 
                 // 如果当前行的点没有加入左边线，则下一行的搜索起点不更新
@@ -1388,8 +1400,10 @@ void ImageProcess::scan_side_lines(const ValidatedScanFrame &frame,
                     }
                 }
 
-                // miss计数逻辑应该在left_added条件之外
-                if (left_stable_flag && !left_added)
+                // miss计数逻辑应该在left_added条件之外：稳定阶段未加入的点
+                // 计 miss；未稳定阶段仅因 x 跳变被拒的候选计 miss，稳定点
+                // 缓冲区的正常积累不算 miss。
+                if ((left_stable_flag && !left_added) || left_far_jump)
                     miss_left_count++;
                 else
                     miss_left_count = 0;
@@ -1449,11 +1463,21 @@ void ImageProcess::scan_side_lines(const ValidatedScanFrame &frame,
                         break; // 右侧搜索：找到第一个跳变点就停止
                     }
                 }
+                // 先进行稳定点判断。除了最开始的几行（边线列表为空）外，
+                // 当前行找到的边线与上一行的 x 差距较大时不加入边线列表：
+                // 稳定阶段本就会被 add_point_with_stable_start 的连续性检查
+                // 拒绝；未稳定阶段在此拦截，避免 miss 重置后重新锁定到与
+                // 旧边线跳变的远处边缘。
                 if (rx >= 0)
                 {
                     assert(rx <= max_edge_x);
-                    right_added = add_point_with_stable_start(
-                        this->right_line_, cv::Point(rx, y), right_stable_buf, right_stable_flag);
+                    right_far_jump = !this->right_line_.empty() &&
+                                     std::abs(this->right_line_.back().x - rx) >= this->config_.x_continual;
+                    if (!right_far_jump)
+                    {
+                        right_added = add_point_with_stable_start(
+                            this->right_line_, cv::Point(rx, y), right_stable_buf, right_stable_flag);
+                    }
                 }
 
                 if (right_added)
@@ -1482,8 +1506,10 @@ void ImageProcess::scan_side_lines(const ValidatedScanFrame &frame,
                     }
                 }
 
-                // miss计数逻辑应该在right_added条件之外
-                if (right_stable_flag && !right_added)
+                // miss计数逻辑应该在right_added条件之外：稳定阶段未加入的
+                // 点计 miss；未稳定阶段仅因 x 跳变被拒的候选计 miss，稳定点
+                // 缓冲区的正常积累不算 miss。
+                if ((right_stable_flag && !right_added) || right_far_jump)
                     miss_right_count++;
                 else
                     miss_right_count = 0;
