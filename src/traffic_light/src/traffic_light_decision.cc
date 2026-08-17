@@ -24,7 +24,7 @@ const int kCandidatePadding = 10;
 const int kCloseKernelSize = 3;
 const int kOpenKernelSize = 2;
 const int kColorSupportKernelSize = 12;
-const double kMinHorizontalSkewness = 0.02;
+const double kMinWingSideOffsetRatio = 0.05;
 
 int scaledLength(int value, double scale)
 {
@@ -128,40 +128,74 @@ bool classifyComponent(const cv::Mat &component_mask, std::string &label)
         return false;
     }
 
-    double mean_x = 0.0;
+    // Wing-based direction: the upper and lower wings of the arrowhead only
+    // exist on the side the arrow points to, while the shaft runs through the
+    // horizontal middle. Split rows around the widest (shaft) row and require
+    // both wing bands to sit on the same side of the shaft's column mean.
+    const int width = largest_component_box.width;
+    const int height = largest_component_box.height;
+    std::vector<int> row_count(height, 0);
+    std::vector<double> row_sum_x(height, 0.0);
     for (const cv::Point &point : points)
     {
-        mean_x += point.x;
+        ++row_count[point.y];
+        row_sum_x[point.y] += point.x;
     }
-    mean_x /= static_cast<double>(points.size());
 
-    double second_moment = 0.0;
-    double third_moment = 0.0;
-    for (const cv::Point &point : points)
+    int peak_row = 0;
+    for (int y = 1; y < height; ++y)
     {
-        const double centered_x = point.x - mean_x;
-        second_moment += centered_x * centered_x;
-        third_moment += centered_x * centered_x * centered_x;
+        if (row_count[y] > row_count[peak_row])
+        {
+            peak_row = y;
+        }
     }
-    second_moment /= static_cast<double>(points.size());
-    third_moment /= static_cast<double>(points.size());
 
-    if (second_moment <= 0.0)
+    const int wing_margin = std::max(1, height / 4);
+    std::size_t shaft_count = 0;
+    std::size_t top_count = 0;
+    std::size_t bottom_count = 0;
+    double shaft_sum = 0.0;
+    double top_sum = 0.0;
+    double bottom_sum = 0.0;
+    for (int y = 0; y < height; ++y)
+    {
+        if (y <= peak_row - wing_margin)
+        {
+            top_count += row_count[y];
+            top_sum += row_sum_x[y];
+        }
+        else if (y >= peak_row + wing_margin)
+        {
+            bottom_count += row_count[y];
+            bottom_sum += row_sum_x[y];
+        }
+        else
+        {
+            shaft_count += row_count[y];
+            shaft_sum += row_sum_x[y];
+        }
+    }
+    if (shaft_count == 0 || top_count == 0 || bottom_count == 0)
     {
         return false;
     }
 
-    // The thin shaft forms the tail of the horizontal pixel distribution, so
-    // its skew points away from the arrowhead. This uses the whole component
-    // and is less sensitive to one bright column than the previous band peak.
-    const double horizontal_skewness =
-        third_moment / std::pow(second_moment, 1.5);
-    if (std::abs(horizontal_skewness) < kMinHorizontalSkewness)
+    const double shaft_mean_x = shaft_sum / static_cast<double>(shaft_count);
+    const double top_offset =
+        top_sum / static_cast<double>(top_count) - shaft_mean_x;
+    const double bottom_offset =
+        bottom_sum / static_cast<double>(bottom_count) - shaft_mean_x;
+
+    const double min_offset = kMinWingSideOffsetRatio * width;
+    if (std::abs(top_offset) < min_offset ||
+        std::abs(bottom_offset) < min_offset ||
+        (top_offset > 0.0) != (bottom_offset > 0.0))
     {
         return false;
     }
 
-    label = horizontal_skewness > 0.0 ? "left" : "right";
+    label = top_offset > 0.0 ? "right" : "left";
     return true;
 }
 

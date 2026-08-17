@@ -382,7 +382,7 @@ private:
     bool enabled_ = false;
     ros::ServiceServer enable_service_;
     double left_tracking_left_weight_ = 0.58;
-    double right_tracking_left_weight_ = 0.40;
+    double right_tracking_left_weight_ = 0.45;
 
     // ---- 停止线检测 / STOP 状态 ----
     bool in_stop_ = false; // STOP 抑制标志：为 true 时巡线照跑但不发布
