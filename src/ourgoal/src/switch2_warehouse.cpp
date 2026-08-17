@@ -665,7 +665,7 @@ void OURSWITCH::GotoC(int target_num)
             1,
             nh_.param(
                 "warehouse_observation_cache_confirmations",
-                2));
+                1));
     const double observation_cache_center_tolerance =
         std::max(
             0.0,
