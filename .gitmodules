@@ -1,0 +1,3 @@
+[submodule "gazebo_ws"]
+	path = gazebo_ws
+	url = git@github.com:muchengxue666/gazebo_ws.git
