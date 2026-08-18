@@ -190,16 +190,12 @@ rosparam set /start_traffic_light_det 1
 该 launch 没有启动 `find_signal`，因此给管理节点设置了
 `~manage_find_signal=false`，不会等待或调用不存在的 OCR 服务。
 
----
-###　外设问题
-
-[麦克风阵列不能识别唤醒词](./docs/driver_FAQs.md#speech_command-找不到麦克风设备问题)   
-[网络质量太差，ssh连不上](./docs/driver_FAQs.md#无线连接卡顿)   
-[espeak合成语音播报太难听，换成piper](./docs/driver_FAQs.md#离线中文语音播报方案)   
 
 ---
 ### 更新日志
-[视觉巡线更新日志](./src/vision_line/README.md)
+[视觉巡线更新日志](./docs/updates/vision_line.md)
+[ocr更新日志](./docs/updates/find_signal.md)
+[交通灯识别更新日志](./docs/updates/traffic_light.md)
 
 ---
 ### FAQS
@@ -210,3 +206,10 @@ rosparam set /start_traffic_light_det 1
 开启NTP自动同步 `sudo timedatectl set-ntp true`  
   2. 手动同步阿里云时间  `sudo ntpdate ntp.aliyun.com `   
   3. 或者编辑 `/etc/systemd/timesyncd.conf`  
+
+
+####　外设问题
+
+[麦克风阵列不能识别唤醒词](./docs/driver_FAQs.md#speech_command-找不到麦克风设备问题)   
+[网络质量太差，ssh连不上](./docs/driver_FAQs.md#无线连接卡顿)   
+[espeak合成语音播报太难听，换成piper](./docs/driver_FAQs.md#离线中文语音播报方案)   
