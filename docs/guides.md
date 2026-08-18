@@ -1,5 +1,113 @@
 # 节点指南
 
+
+---
+## `managed_nodes_client.py` 节点生命周期管理
+
+`startup_scripts/scripts/managed_nodes_client.py` 通过各节点提供的
+`std_srvs/SetBool` 服务统一切换视觉节点的运行状态。这里的“生命周期管理”
+指启用或禁用节点的业务处理；被禁用的 ROS 进程仍然存活，服务仍可调用，
+不会被脚本启动、终止或重启。
+
+`start_all.launch` 启动名为 `/managed_nodes` 的管理节点。默认管理关系如下：
+
+| 逻辑名称 | 服务配置参数 | 默认 `SetBool` 服务 | 作用 |
+| --- | --- | --- | --- |
+| `traffic_light_ros` | `~traffic_light_service` | `/traffic_light_ros/set_enabled` | 交通灯检测 |
+| `image_process` | `~image_process_service` | `/image_process/set_enabled` | 视觉巡线图像处理 |
+| `vision_line_node` | `~vision_line_service` | `/vision_line_node/set_enabled` | 视觉巡线控制 |
+| `find_signal` | `~find_signal_service` | `/find_signal/set_enabled` | OCR 标志牌识别 |
+
+服务名称可通过表中的管理节点私有参数覆盖。调用服务前最多等待
+`~service_wait_timeout` 秒，默认值为 2 秒；调用失败时不更新状态缓存，后续
+轮询会继续尝试。
+
+#### 参数驱动的状态切换
+
+管理节点默认以 10 Hz（`~parameter_poll_rate`）读取以下 ROS 参数：
+
+- `~traffic_light_enable_param`：交通灯检测开关参数名，默认指向
+  `/start_traffic_light_det`。
+- `~vision_line_enable_param`：视觉巡线开关参数名，默认与交通灯开关参数相同。
+- `~find_signal_enable_param`：OCR 请求参数名，默认指向 `/task1_all_done`。
+- `~manage_find_signal`：是否管理 OCR 节点，默认值为 `true`。
+
+`start_all.launch` 将交通灯和视觉巡线开关都绑定到
+`/start_traffic_light_det`，因此该启动方式下它们仍然同步启停。
+
+OCR 与交通灯检测互斥，`find_signal` 的实际启用条件为：
+
+```text
+find_signal_enabled = task1_all_done && !start_traffic_light_det
+```
+
+完整状态关系如下：
+
+| `/start_traffic_light_det` | `/task1_all_done` | 交通灯和巡线节点 | `find_signal` |
+| ---: | ---: | --- | --- |
+| 0 | 0 | 禁用 | 禁用，静默等待 |
+| 0 | 1 | 禁用 | 启用 |
+| 1 | 0 | 启用 | 禁用，静默等待 |
+| 1 | 1 | 启用 | 禁用，静默等待 |
+
+当 `/start_traffic_light_det` 变为 `1` 时，管理节点会在启用
+`traffic_light_ros` 前禁用 `find_signal`，避免 OCR 与交通灯推理同时占用计算
+资源。当该参数恢复为 `0` 时，先禁用交通灯，再根据 `/task1_all_done` 决定
+是否恢复 OCR。视觉巡线节点独立服从 `~vision_line_enable_param` 指向的参数。
+
+`init_params.launch` 在整套系统启动时将两个参数都初始化为 `0`，因此所有
+受管视觉处理默认处于禁用状态。`find_signal` 被禁用后仍接收图像回调，但会
+直接返回，不进行 OCR 推理或发布识别结果，表现为静默等待。
+
+可手动检查或切换参数：
+
+```bash
+rosparam get /start_traffic_light_det
+rosparam get /task1_all_done
+rosparam set /start_traffic_light_det 1
+rosparam set /task1_all_done 1
+```
+
+#### 手动管理服务
+
+管理节点还提供 `/managed_nodes/set_enabled` 服务。该服务仅统一控制
+`traffic_light_ros`、`image_process` 和 `vision_line_node`，不控制
+`find_signal`，也不会修改上述两个 ROS 参数。启用时按照表中顺序调用三个
+节点；禁用时按相反顺序调用。
+
+```bash
+rosservice call /managed_nodes/set_enabled "data: true"
+rosservice call /managed_nodes/set_enabled "data: false"
+```
+
+参数轮询和手动服务调用使用同一把锁进行串行化，避免多个启停请求同时修改
+受管节点状态。
+
+#### 单独启动巡线任务
+
+`start_vision_line.launch` 将视觉巡线开关单独绑定到始终为 `true` 的
+`/start_vision_line_enabled`，所以启动后会立即启用 `image_process` 和
+`vision_line_node`。交通灯 ROS 进程始终启动，但检测业务由
+`/start_traffic_light_det` 决定，默认启用：
+
+```bash
+# 启动巡线，默认同时启用交通灯检测
+roslaunch startup_scripts start_vision_line.launch
+
+# 启动巡线，但不启用交通灯检测业务
+roslaunch startup_scripts start_vision_line.launch traffic_light_enabled:=false
+```
+
+运行期间也可以独立切换交通灯业务，不会关闭巡线：
+
+```bash
+rosparam set /start_traffic_light_det 0
+rosparam set /start_traffic_light_det 1
+```
+
+该 launch 没有启动 `find_signal`，因此给管理节点设置了
+`~manage_find_signal=false`，不会等待或调用不存在的 OCR 服务。
+
 ## `traffic_light_ros`(traffic_light_ros.cpp)红绿灯方向识别节点
 
 ### 功能概述
@@ -478,6 +586,127 @@ false: 避障完成或取消，图像节点完整复位后重新巡线
 `managed_node_client_pro.py` 通过各节点的 `~set_enabled` 服务统一管理生命周期。
 普通版 `find_way_ros` / `vision_line_node_fixed` 不参与这条 pro 链路。
 
+
+---
+
+## `managed_nodes`（managed_node_client_pro.py）pro 节点生命周期管理
+
+### 功能概述
+
+`startup_scripts/scripts/managed_node_client_pro.py` 是普通版
+`managed_nodes_client.py` 的 pro 变体，在 pro 启动链中统一启停视觉节点。
+启停语义与普通版完全相同：通过各节点的 `std_srvs/SetBool` 服务切换业务
+处理，被禁用的进程仍然存活、服务仍可调用，不会被启动、终止或重启。
+
+两个脚本的管理逻辑逐行一致（参数、服务名、轮询同步、手动服务均相同），
+区别只在于由哪个 launch 启动，以及各服务名背后对应的可执行文件换成了
+pro 版本：
+
+| 逻辑名称 | 服务配置参数 | 默认 `SetBool` 服务 | pro 链路中的实际节点 |
+| --- | --- | --- | --- |
+| `traffic_light_ros` | `~traffic_light_service` | `/traffic_light_ros/set_enabled` | `traffic_light_ros`（与普通版相同） |
+| `image_process` | `~image_process_service` | `/image_process/set_enabled` | `find_way_ros_pro`（pro 图像巡线） |
+| `vision_line_node` | `~vision_line_service` | `/vision_line_node/set_enabled` | `vision_line_node_fixed_pro`（pro 雷达避障控制） |
+| `find_signal` | `~find_signal_service` | `/find_signal/set_enabled` | `find_signal`（与普通版相同） |
+
+服务名与普通版保持不变：pro launch 中 `find_way_ros_pro` 仍以节点名
+`image_process` 启动、`vision_line_node_fixed_pro` 仍以 `vision_line_node`
+启动，因此管理脚本无需修改任何服务配置即可直接复用。
+
+节点名仍为 `managed_nodes`（与普通版同名，两者不应同时运行），对外提供
+`/managed_nodes/set_enabled` 手动管理服务。调用各目标服务前最多等待
+`~service_wait_timeout` 秒（默认 2 秒）；调用失败不更新状态缓存，下一轮
+轮询继续尝试（`image_process` 与 `vision_line_node` 要求两者都成功才更新
+缓存，因此部分失败时下一轮会对两者一起重试，重复的 `SetBool` 调用是
+幂等的）。就绪日志为 `Managed-node control service (pro) is ready`，可用于
+确认当前运行的是 pro 脚本。
+
+### 参数驱动的状态切换
+
+管理节点以 `~parameter_poll_rate`（默认 10 Hz）轮询以下参数，参数取值校验
+（只认 bool 或整数 0/1，非法值节流告警并跳过）与普通版一致：
+
+- `~traffic_light_enable_param`：交通灯开关参数名，默认 `/start_traffic_light_det`。
+- `~vision_line_enable_param`：巡线开关参数名，默认与交通灯开关参数相同。
+- `~find_signal_enable_param`：OCR 请求参数名，默认 `/task1_all_done`。
+- `~manage_find_signal`：是否管理 OCR 节点，默认 `true`。
+
+每轮先同步巡线节点（`image_process` 与 `vision_line_node` 一起启停），再处理
+交通灯与 OCR 的互斥关系，实际启用条件与普通版相同：
+
+```text
+find_signal_enabled = task1_all_done && !start_traffic_light_det
+```
+
+`/start_traffic_light_det` 变为 `1` 时，先禁用 `find_signal` 再启用
+`traffic_light_ros`，避免 OCR 与交通灯推理同时占用 NPU；恢复为 `0` 时先
+禁用交通灯，再按 `/task1_all_done` 决定是否恢复 OCR。状态真值表与各参数
+组合下的行为详见上文「节点指南」篇 `managed_nodes_client.py` 一节，此处
+不再重复。
+
+### 两个 pro launch 的参数绑定
+
+`start_all_pro.launch`（全场比赛链路）：
+
+- 交通灯与巡线开关都显式绑定 `/start_traffic_light_det`：总调度
+  `switch_test2_pro` 抵达巡线起点（GotoD）后置 1，管理节点随即联动启用
+  `traffic_light_ros`、`find_way_ros_pro` 与 `vision_line_node_fixed_pro`；
+  巡线结束后无需额外复位，参数值不变则不会再触发启停。
+- `init_params_pro.launch` 在整套系统启动时将 `/start_traffic_light_det`、
+  `/task1_all_done` 等握手参数清零，所有受管视觉处理默认禁用；
+  `traffic_light_ros` 也在 launch 中显式设置 `initial_enabled=false`，启用
+  完全交给管理节点。
+
+`start_vision_line_pro.launch`（单独巡线调试）：
+
+- 巡线开关绑定恒为 `true` 的 `/start_vision_line_enabled`，启动后管理节点
+  首轮轮询即启用 `image_process`（find_way_ros_pro）与 `vision_line_node`
+  （vision_line_node_fixed_pro）。
+- 交通灯业务由 `/start_traffic_light_det` 决定，默认 `true`；运行期间可独立
+  切换该参数，不影响巡线。
+- 该 launch 未启动 `find_signal`，因此设置 `~manage_find_signal=false`，
+  不会等待或调用不存在的 OCR 服务。
+
+```bash
+# 启动 pro 巡线，默认同时启用交通灯检测
+roslaunch startup_scripts start_vision_line_pro.launch
+
+# 启动 pro 巡线，但不启用交通灯检测业务
+roslaunch startup_scripts start_vision_line_pro.launch traffic_light_enabled:=false
+```
+
+### 手动管理服务
+
+`/managed_nodes/set_enabled` 仅统一控制 `traffic_light_ros`、`image_process`、
+`vision_line_node` 三个目标（不含 `find_signal`），也不会修改上述 ROS 参数。
+启用时按此顺序调用，禁用时按相反顺序调用；全部成功后会把交通灯与巡线的
+状态缓存刷新为当前参数值，因此在下一次参数值发生变化之前，手动启停不会
+被轮询覆盖。参数轮询与手动服务调用共用同一把锁串行化，避免并发启停请求
+交错修改受管节点。
+
+```bash
+rosservice call /managed_nodes/set_enabled "data: true"
+rosservice call /managed_nodes/set_enabled "data: false"
+
+# 检查与切换参数
+rosparam get /start_traffic_light_det
+rosparam get /task1_all_done
+rosparam set /start_traffic_light_det 1
+```
+
+### 与普通版的差异清单
+
+- 代码：仅模块说明与就绪日志文案不同，管理逻辑逐行一致；独立成文件便于
+  pro 链路单独演化，改动任一版本时注意同步另一份的行为。
+- 启动：由 `start_all_pro.launch` / `start_vision_line_pro.launch` 启动并
+  配合 `switch_test2_pro`；普通版 launch 只启动普通版脚本，同名节点不会
+  同时存在。
+- 受管对象：`/image_process/set_enabled` 与 `/vision_line_node/set_enabled`
+  背后是 pro 可执行文件（雷达避障巡线链路），`traffic_light_ros` 与
+  `find_signal` 与普通链路共用同一可执行文件。
+- 参数绑定：两个 pro launch 与普通版 launch 的参数绑定一一对应，无新增
+  参数。
+
 ---
 
 ## `find_way_ros_pro`（find_way_ros_pro.cpp）pro 视觉巡线节点
@@ -732,5 +961,6 @@ rostopic echo /cmd_vel
 
 正常启动后 `/vision_line_avoidance_active` 应先得到锁存的 `false`；检测到障碍时
 变为 `true`，三段动作完成且前方扫描清空后恢复为 `false`。
+
 
 ---
