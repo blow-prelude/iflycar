@@ -27,6 +27,8 @@ namespace
     const char *kDefaultImageTopic = "/ucar_camera/image_raw";
     const char *kDirectionTopic = "/vision_line_direction";
     const char *kWindowName = "Traffic Light Detection";
+    const double kRoiStart = 0.4; // ROI 起始比例(x、y 均取 0.4~0.6)
+    const double kRoiSpan = 0.2;  // ROI 宽高比例
     const char *kCvConflictFramePath = "/tmp/traffic_light_cv_conflict.jpg";
 
     class TrafficLightRosNode
@@ -43,8 +45,7 @@ namespace
               decision_(kVoteWindowSize,
                         kVoteThreshold,
                         kFallbackFrameLimit,
-                        kFallbackCvStreak),
-              last_output_time_(Clock::now() - std::chrono::seconds(1))
+                        kFallbackCvStreak)
         {
         }
 
@@ -108,7 +109,6 @@ namespace
             if (enabled_)
             {
                 discard_results_ = queued_frames_;
-                last_output_time_ = Clock::now() - std::chrono::seconds(1);
                 conflict_frame_saved_ = false;
                 createWindow();
             }
@@ -149,6 +149,17 @@ namespace
                 return;
             }
 
+            // 先裁剪中心 ROI(x、y 均取 0.4~0.6),再送入模型处理
+            const cv::Size original_size = frame.size();
+            const int roi_x = static_cast<int>(frame.cols * kRoiStart);
+            const int roi_y = static_cast<int>(frame.rows * kRoiStart);
+            const int roi_width = static_cast<int>(frame.cols * kRoiSpan);
+            const int roi_height = static_cast<int>(frame.rows * kRoiSpan);
+            frame = frame(cv::Rect(roi_x, roi_y, roi_width, roi_height)).clone();
+            ROS_INFO_ONCE("ROI crop %dx%d -> %dx%d (letterbox 会缩放到模型输入尺寸)",
+                          original_size.width, original_size.height,
+                          frame.cols, frame.rows);
+
             if (frame.empty() || pool_.put(frame) != 0)
             {
                 ROS_WARN_THROTTLE(1.0, "empty image or inference queue failure");
@@ -187,12 +198,7 @@ namespace
                 }
                 else
                 {
-                    const Clock::time_point now = Clock::now();
-                    if (now - last_output_time_ >= std::chrono::seconds(1))
-                    {
-                        showResult(result);
-                        last_output_time_ = now;
-                    }
+                    showResult(result);
                     if (has_source_frame)
                     {
                         updateDirectionDecision(result, source_frame);
@@ -264,8 +270,23 @@ namespace
                 {
                     try
                     {
+                        const Clock::time_point cv_start = Clock::now();
                         cv_label = traffic_light::classifyArrowDirection(
                             source_frame, best_direction->box);
+                        const long long cv_elapsed_us =
+                            std::chrono::duration_cast<std::chrono::microseconds>(
+                                Clock::now() - cv_start)
+                                .count();
+                        ROS_INFO("CV arrow: model=%s cv=%s confidence=%.3f "
+                                 "frame=%dx%d box=(%d,%d,%d,%d) elapsed=%lldus "
+                                 "rule=green-bright-component+pca+wing-offset",
+                                 model_label.c_str(), cv_label.c_str(),
+                                 best_direction->confidence,
+                                 source_frame.cols, source_frame.rows,
+                                 best_direction->box.x, best_direction->box.y,
+                                 best_direction->box.x + best_direction->box.width,
+                                 best_direction->box.y + best_direction->box.height,
+                                 cv_elapsed_us);
                     }
                     catch (const cv::Exception &error)
                     {
@@ -401,7 +422,6 @@ namespace
         traffic_light::DirectionDecisionAccumulator decision_;
         bool window_created_ = false;
         bool conflict_frame_saved_ = false;
-        Clock::time_point last_output_time_;
         cv::Mat map_x_;
         cv::Mat map_y_;
         cv::Size map_size_;

@@ -99,7 +99,7 @@ void OURSWITCH::GotoA()
             // 避免将斜坡误识别成后方墙面而提前停车。
             if (current_x >= 1.0)
             {
-                cmd.linear.x = -max_vel;
+                cmd.linear.x = -0.6;
                 ROS_INFO_THROTTLE(
                     1.0,
                     "GotoA case 7: crossing ramp, CarX=%.3f",
@@ -481,4 +481,3 @@ void OURSWITCH::XingHuoAI()
 
     current_state = GOTOC1_;
 }
-

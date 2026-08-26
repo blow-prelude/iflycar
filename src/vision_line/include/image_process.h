@@ -63,7 +63,7 @@ struct ImageProcessConfig
     int tracking2_target_p_index = -15;
 
     // TURNING 状态下用单边线生成 mid_line 的横向偏移（像素）
-    int turning_mid_offset = 33;
+    int turning_mid_offset = 27;
 };
 
 // 线性拟合结果

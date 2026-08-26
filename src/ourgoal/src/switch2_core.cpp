@@ -40,7 +40,7 @@ OURSWITCH::OURSWITCH()
     safe_F = 0.15;
     safe_B = 0.35;
     safe_L = 0.20;
-    safe_R = 0.20;
+    safe_R = 0.26;
     Kp_dist = 1.0;
     Kp_yaw = 2.0;
     max_vel = 0.5;
@@ -511,4 +511,3 @@ void OURSWITCH::sendPos(double x, double y, double yaw)
     ac_.sendGoal(goal);
     ROS_INFO("Sent goal: x=%f, y=%f, yaw=%f", x, y, yaw);
 }
-

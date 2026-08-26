@@ -1,8 +1,10 @@
 #include <ros/ros.h>
 #include "geometry_msgs/Twist.h"
+#include "sensor_msgs/LaserScan.h"
 #include "std_msgs/Float32MultiArray.h"
 #include "std_msgs/String.h"
 #include "std_srvs/SetBool.h"
+#include <limits>
 #include <vector>
 #include <cmath>
 #include <mutex>
@@ -12,16 +14,19 @@ class VisionErrorController
 {
 private:
     // 配置参数
-    const double MAX_ANGULAR_VEL = 1.0;    // 最大角速度 (rad/s)
-    const double MAX_LINEAR_VEL = 0.5;     // 最大线速度 (m/s)
-    const double MIN_LINEAR_VEL = 0.05;    // 最小线速度 (m/s)
-    const int PIXEL_ERROR_THRESHOLD = 10;  // x 误差收敛阈值
-    const int STABLE_COUNT_THRESHOLD = 5;  // 误差稳定计数阈值
-    const int Y_LOWER_BOUND = 225;         // y 值有效范围下限
-    const int Y_UPPER_BOUND = 460;         // y 值有效范围上限
-    const double X_REFERENCE = 0.0;        // x 方向参考值
-    const double Y_ERROR_TOLERANCE = 0.05; // y方向位置误差容忍值 (m)
-    const double LOOP_RATE = 50.0;         // 主循环频率 (Hz)
+    const double MAX_ANGULAR_VEL = 1.0;                        // 最大角速度 (rad/s)
+    const double MAX_LINEAR_VEL = 0.5;                         // 最大线速度 (m/s)
+    const double MIN_LINEAR_VEL = 0.05;                        // 最小线速度 (m/s)
+    const int PIXEL_ERROR_THRESHOLD = 10;                      // x 误差收敛阈值
+    const int STABLE_COUNT_THRESHOLD = 5;                      // 误差稳定计数阈值
+    const int Y_LOWER_BOUND = 225;                             // y 值有效范围下限
+    const int Y_UPPER_BOUND = 460;                             // y 值有效范围上限
+    const double X_REFERENCE = 0.0;                            // x 方向参考值
+    const double Y_ERROR_TOLERANCE = 0.05;                     // y方向位置误差容忍值 (m)
+    const double LOOP_RATE = 50.0;                             // 主循环频率 (Hz)
+    const double RADAR_STOP_DISTANCE = 0.1;                    // 前方挡板停车距离 (m)，固定值
+    const double RADAR_FRONT_HALF_ANGLE = 20.0 * M_PI / 180.0; // 前方检测半角
+    const double RADAR_SCAN_TIMEOUT = 0.5;                     // 雷达数据有效期 (s)
 
     // 方向机动状态机
     enum class ManeuverState
@@ -66,6 +71,12 @@ private:
     bool enabled_ = false;
     double disabled_rate_ = 10.0;
     ros::Subscriber vision_sub_;
+    ros::Subscriber scan_sub_;
+    bool front_obstacle_detected_ = false;
+    bool front_scan_valid_ = false;
+    bool radar_stop_triggered_ = false;
+    double front_obstacle_distance_ = std::numeric_limits<double>::infinity();
+    ros::Time last_scan_time_;
     PIDController angular_pid_; // 角速度PID控制器（按方向切换参数）
     PIDController linear_pid_;  // 线速度PID控制器
     // straight 用 angular_pid_ 的现参数；left/right 用另一套。
@@ -164,7 +175,7 @@ private:
     // 方向指令回调函数
     void directionCallback(const std_msgs::String::ConstPtr &msg)
     {
-        if (!enabled_)
+        if (!enabled_ || radar_stop_triggered_)
             return;
         std::string dir = msg->data;
 
@@ -220,6 +231,77 @@ private:
         ROS_INFO("Maneuver: IDLE -> FORWARD (direction=%s)", dir.c_str());
     }
 
+    // /scan 回调：沿用 pro 版规则，只取车体正前方 +/-20 度内的最近有效量程。
+    void scanCallback(const sensor_msgs::LaserScan::ConstPtr &msg)
+    {
+        double min_range = std::numeric_limits<double>::infinity();
+        bool has_valid_range = false;
+
+        if (msg->angle_increment > 0.0)
+        {
+            const double min_range_limit = std::max(0.0, static_cast<double>(msg->range_min));
+            const double max_range_limit = static_cast<double>(msg->range_max);
+            const bool has_range_max = std::isfinite(max_range_limit) &&
+                                       max_range_limit > min_range_limit;
+            for (std::size_t i = 0; i < msg->ranges.size(); ++i)
+            {
+                double angle = msg->angle_min +
+                               static_cast<double>(i) * msg->angle_increment;
+                while (angle > M_PI)
+                    angle -= 2.0 * M_PI;
+                while (angle < -M_PI)
+                    angle += 2.0 * M_PI;
+
+                if (std::fabs(angle) > RADAR_FRONT_HALF_ANGLE)
+                    continue;
+
+                const double range = msg->ranges[i];
+                if (!std::isfinite(range) || range < min_range_limit ||
+                    (has_range_max && range > max_range_limit))
+                    continue;
+
+                has_valid_range = true;
+                min_range = std::min(min_range, range);
+            }
+        }
+
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        front_scan_valid_ = has_valid_range;
+        front_obstacle_distance_ = min_range;
+        front_obstacle_detected_ = has_valid_range && min_range <= RADAR_STOP_DISTANCE;
+        last_scan_time_ = ros::Time::now();
+    }
+
+    // 首次检测到挡板时锁存停车，并通知总调度巡线完成。
+    bool stopForFrontObstacle(geometry_msgs::Twist &cmd)
+    {
+        bool detected = false;
+        bool valid = false;
+        double distance = std::numeric_limits<double>::infinity();
+        bool fresh = false;
+        {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            detected = front_obstacle_detected_;
+            valid = front_scan_valid_;
+            distance = front_obstacle_distance_;
+            const double scan_age = (ros::Time::now() - last_scan_time_).toSec();
+            fresh = !last_scan_time_.isZero() && scan_age >= 0.0 &&
+                    scan_age <= RADAR_SCAN_TIMEOUT;
+        }
+
+        if (!valid || !fresh || !detected)
+            return false;
+
+        radar_stop_triggered_ = true;
+        is_stopped_ = true;
+        cmd = geometry_msgs::Twist();
+        ros::param::set("/vision_line_done", 1);
+        ROS_WARN("Front obstacle detected at %.3fm (threshold %.2fm): "
+                 "stopping and setting /vision_line_done=1",
+                 distance, RADAR_STOP_DISTANCE);
+        return true;
+    }
+
     // 视觉数据回调函数
     void visionCallback(const std_msgs::Float32MultiArray::ConstPtr &msg)
     {
@@ -260,6 +342,7 @@ public:
         // 创建发布者和订阅者
         cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>("/cmd_vel", 10);
         vision_sub_ = nh_.subscribe("/vision_line", 10, &VisionErrorController::visionCallback, this);
+        scan_sub_ = nh_.subscribe("/scan", 10, &VisionErrorController::scanCallback, this);
         direction_sub_ = nh_.subscribe("/vision_line_direction", 10, &VisionErrorController::directionCallback, this);
         direction_pub_ = nh_.advertise<std_msgs::String>("/vision_line_direction_out", 10);
         nh_private_.param("disabled_rate", disabled_rate_, 10.0);
@@ -297,6 +380,7 @@ public:
         maneuver_state_ = ManeuverState::IDLE;
         turning_mode_ = false;
         is_stopped_ = false;
+        radar_stop_triggered_ = false;
         stable_count_ = 0;
         current_error_ = 0.0;
         prev_start_vision_line2_ = 0;
@@ -328,6 +412,13 @@ public:
         // 检查启动标志
         nh_.getParam("/start_vision1", start_vision_);
         nh_.getParam("/start_vision_line2", start_vision_line2_);
+
+        // 雷达停车一旦触发便保持最高优先级，等待节点被生命周期服务复位。
+        if (radar_stop_triggered_)
+        {
+            cmd_vel_pub_.publish(cmd);
+            return;
+        }
 
         // DONE 状态：停车等待 /start_vision1 == 1
         if (maneuver_state_ == ManeuverState::DONE)
@@ -397,6 +488,12 @@ public:
 
         bool start_line2_trigger = (start_vision_line2_ && !prev_start_vision_line2_);
         prev_start_vision_line2_ = start_vision_line2_;
+
+        if (stopForFrontObstacle(cmd))
+        {
+            cmd_vel_pub_.publish(cmd);
+            return;
+        }
 
         // if (start_line2_trigger && !turning_mode_)
         // {

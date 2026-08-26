@@ -58,7 +58,7 @@ private:
     bool direction_received_ = false;         // 仅收到有效 direction 后才允许触发避障
 
     // 巡线期间的避障状态机（进程内最多触发一次）：
-    // 停车 -> 横移避开 -> 前进 -> 横移回线 -> 等待前方清空 -> 强制航向。
+    // 停车 -> 横移避开 -> 前进 -> 横移回线 -> 强制航向。
     enum class AvoidanceState
     {
         IDLE,
@@ -66,7 +66,6 @@ private:
         LATERAL_OUT,
         MOVE_FORWARD,
         LATERAL_BACK,
-        WAIT_CLEAR,
         FORCE_YAW
     };
     AvoidanceState avoidance_state_ = AvoidanceState::IDLE;
@@ -476,18 +475,9 @@ private:
             cmd.linear.y = -avoidance_lateral_direction_ * avoidance_lateral_speed_;
             if (elapsed >= avoidance_lateral_back_duration_)
             {
-                avoidance_state_ = AvoidanceState::WAIT_CLEAR;
-                avoidance_start_time_ = ros::Time::now();
-                ROS_INFO("Avoidance: LATERAL_BACK -> WAIT_CLEAR");
-            }
-            break;
-
-        case AvoidanceState::WAIT_CLEAR:
-            if (scan_valid && scan_fresh && !obstacle_detected)
-            {
                 avoidance_state_ = AvoidanceState::FORCE_YAW;
                 avoidance_start_time_ = ros::Time::now();
-                ROS_INFO("Avoidance: front scan is clear, force yaw to %.2f rad",
+                ROS_INFO("Avoidance: LATERAL_BACK -> FORCE_YAW (target %.2f rad)",
                          force_yaw_target_);
             }
             break;

@@ -74,7 +74,7 @@ public:
         loop_rate_ = loadStaticParameter<int>("loop_rate", 120);
         disabled_rate_ = loadStaticParameter<double>("disabled_rate", 10.0);
         left_tracking_left_weight_ = loadStaticParameter<double>("left_tracking_left_weight", 0.65);
-        right_tracking_left_weight_ = loadStaticParameter<double>("right_tracking_left_weight", 0.40);
+        right_tracking_left_weight_ = loadStaticParameter<double>("right_tracking_left_weight", 0.45);
 
         // 停止线检测 / STOP 参数
         stop_line_target_ = loadStaticParameter<int>("stop_line_target", 2);
