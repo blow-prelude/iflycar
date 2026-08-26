@@ -91,9 +91,9 @@ SLAM建图
 
 ---
 ### 更新日志
-[视觉巡线更新日志](./docs/updates/vision_line.md)
-[ocr更新日志](./docs/updates/find_signal.md)
-[交通灯识别更新日志](./docs/updates/traffic_light.md)
+[视觉巡线更新日志](./docs/updates/vision_line.md)   
+[ocr更新日志](./docs/updates/find_signal.md)   
+[交通灯识别更新日志](./docs/updates/traffic_light.md)   
 
 ---
 ### FAQS
